@@ -32,7 +32,13 @@ export const DEFAULTS = {
   "lock_volume": false,
   "target_volume": 29.0,
   "stations": 161,
-  "section_points": 48
+  "section_points": 48,
+  "anchors": {
+    "outline": [],
+    "rocker": [],
+    "thickness": []
+  },
+  "slices": []
 };
 
 export const NOSE_TYPES = {

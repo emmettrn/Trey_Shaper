@@ -23,6 +23,7 @@
       <svg viewBox="0 0 40 16" class="logo" aria-hidden="true"><path d="M2 8 C 8 1, 30 1, 38 8 C 30 15, 8 15, 2 8 Z" /><line x1="4" y1="8" x2="36" y2="8" /></svg>
       <span>Surfboard Designer</span>
     </div>
+    <div class="readout" id="stats"><b id="s-vol">--</b><small>L</small><span id="s-dims"></span></div>
     <div class="top-actions">
       <label class="preset">
         <span>Preset</span>
@@ -48,12 +49,7 @@
 
     <section class="stage">
       <div class="viewport" id="viewport">
-        <div class="stats" id="stats">
-          <div class="vol"><span id="s-vol">--</span><small>L</small></div>
-          <div class="dims" id="s-dims">--</div>
-          <div class="sub" id="s-sub"></div>
-          <div class="warnings" id="warnings"></div>
-        </div>
+        <div class="warnings" id="warnings"></div>
         <div class="viewbar">
           <div class="seg" id="views">
             <button data-view="threeq" class="on">3/4</button>
@@ -63,19 +59,32 @@
             <button data-view="tail">Tail</button>
           </div>
           <div class="seg">
+            <button id="t-light" title="Hard side lighting, like a shaping bay, to show the foil and contours">Bay lights</button>
             <button id="t-wire">Wire</button>
             <button id="t-stringer" class="on">Stringer</button>
+            <button id="t-max" data-act="max" title="Expand">⤢</button>
           </div>
         </div>
-        <div class="hint" id="hint">Drag to rotate · scroll or pinch to zoom · pick a preset or type your own measurements on the left</div>
+        <div class="hint" id="hint">Drag to rotate · scroll to zoom · on the graphs below, click a curve to add an anchor point and drag it</div>
         <div class="busy" id="busy"></div>
       </div>
 
       <div class="panels">
-        <figure class="panel"><figcaption>Plan <span>outline</span></figcaption><canvas id="c-plan"></canvas></figure>
-        <figure class="panel"><figcaption>Profile <span>rocker &amp; foil, vertical ×3</span></figcaption><canvas id="c-rocker"></canvas></figure>
-        <figure class="panel"><figcaption>Sections <span>vertical ×2</span>
-          <em><i class="key k1"></i> tail 12″ <i class="key k2"></i> center <i class="key k3"></i> nose 12″</em></figcaption><canvas id="c-sections"></canvas></figure>
+        <figure class="panel" data-panel="plan">
+          <figcaption><b>Plan</b><span>outline</span>
+            <span class="tools"><button data-act="clear" hidden title="Remove the anchor points on the outline">Clear points</button><button data-act="in" title="Zoom in (or scroll)">+</button><button data-act="fit" title="Fit to panel">Fit</button><button data-act="max" title="Expand">⤢</button></span>
+          </figcaption><canvas id="c-plan"></canvas>
+        </figure>
+        <figure class="panel" data-panel="profile">
+          <figcaption><b>Profile</b><span>rocker &amp; foil</span>
+            <span class="tools"><button data-act="clear" hidden title="Remove the anchor points on the rocker and deck">Clear points</button><button data-act="vex" title="Switch between true scale and exaggerated height"></button><button data-act="in" title="Zoom in (or scroll)">+</button><button data-act="fit" title="Fit to panel">Fit</button><button data-act="max" title="Expand">⤢</button></span>
+          </figcaption><canvas id="c-rocker"></canvas>
+        </figure>
+        <figure class="panel" data-panel="sections">
+          <figcaption><b>Sections</b><span class="slicebar" id="slicebar"></span>
+            <span class="tools"><button data-act="clear" hidden title="Remove the anchor points on this section">Clear points</button><button data-act="vex" title="Switch between true scale and exaggerated height"></button><button data-act="in" title="Zoom in (or scroll)">+</button><button data-act="fit" title="Fit to panel">Fit</button><button data-act="max" title="Expand">⤢</button></span>
+          </figcaption><canvas id="c-sections"></canvas>
+        </figure>
       </div>
     </section>
   </main>

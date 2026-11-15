@@ -14,6 +14,15 @@ const A_MIN = 1.2;
 const K_MIN = 1.3, K_MAX = 6.0;
 const P_MIN = 1.2, P_MAX = 8.0;
 
+// Measurements that may be left blank (null). A blank value is filled in from the rest of
+// the board: tips by proportion, 12" stations from these default curve exponents.
+export const NULLABLE = ['nose_width_12', 'tail_width_12', 'tail_block_width', 'nose_rocker', 'nose_rocker_12',
+  'tail_rocker_12', 'tail_rocker', 'nose_thickness', 'nose_thickness_12', 'tail_thickness_12', 'tail_thickness'];
+const AUTO = { nose_a: 2.3, tail_a: 1.6, nose_k: 2.4, tail_k: 2.0, foil_p: 2.0 };
+const ANCHOR_LIMIT = { outline: 6, rocker: 4, thickness: 2 };   // max offset an anchor point may carry (inches)
+const ANCHOR_GAP = 0.75;                                         // min spacing between anchors / pinned points
+const GRID = 257;                                                // samples of a slice's deck / bottom offset curve
+
 const clip = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 const smoothstep = (t) => { t = clip(t, 0, 1); return t * t * (3 - 2 * t); };
 
@@ -70,20 +79,23 @@ function num(tok) {
    --------------------------------------------------------------------------- */
 const u12 = (L, x0, nose) => (nose ? (L - 12 - x0) / (L - x0) : (x0 - 12) / x0);
 
-/** Loose input -> full parameter set. Accepts '19 3/4' strings and designs saved by v1. */
+/** Loose input -> full parameter set. Accepts '19 3/4' strings, blanks, and designs saved by v1. */
 export function paramsFromDict(d = {}) {
   d = { ...d };
   for (const [k, v] of Object.entries(d)) {
-    if (k in DEFAULTS && typeof DEFAULTS[k] === 'number' && typeof v === 'string') d[k] = parseInches(v);
+    if (!(k in DEFAULTS) || typeof DEFAULTS[k] !== 'number') continue;
+    if (v === null || v === undefined || v === '' || v === 'auto') {
+      if (NULLABLE.includes(k)) d[k] = null; else delete d[k];
+    } else if (typeof v === 'string') d[k] = parseInches(v);
   }
   const base = { ...DEFAULTS };
   for (const k of Object.keys(DEFAULTS)) if (k in d) base[k] = d[k];
   const L = base.length;
   const xl = L / 2 + base.rocker_low_point, xt = L / 2 + base.thickness_point_offset;
   for (const [side, nose] of [['nose', true], ['tail', false]]) {
-    if (`${side}_kick` in d && !(`${side}_rocker_12` in d))
+    if (`${side}_kick` in d && !(`${side}_rocker_12` in d) && base[`${side}_rocker`] !== null)
       base[`${side}_rocker_12`] = base[`${side}_rocker`] * u12(L, xl, nose) ** Number(d[`${side}_kick`]);
-    if ('foil_fullness' in d && !(`${side}_thickness_12` in d)) {
+    if ('foil_fullness' in d && !(`${side}_thickness_12` in d) && base[`${side}_thickness`] !== null) {
       const te = base[`${side}_thickness`];
       base[`${side}_thickness_12`] = te + (base.thickness - te) * (1 - u12(L, xt, nose) ** Number(d.foil_fullness));
     }
@@ -91,10 +103,13 @@ export function paramsFromDict(d = {}) {
   return base;
 }
 
-/** Clamp into a buildable range; returns [params, warnings]. Same order and messages as Python. */
+/**
+ * Clamp into a buildable range and fill in blanks; returns [params, warnings].
+ * params._auto lists the measurements that were blank. Same order and messages as Python.
+ */
 export function validated(src) {
   const p = { ...src };
-  const w = [];
+  const w = [], auto = [];
   const clamp = (name, lo, hi, label) => {
     const v = p[name], nv = Math.min(Math.max(v, lo), hi);
     if (Math.abs(nv - v) > 1e-9) {
@@ -102,41 +117,51 @@ export function validated(src) {
       p[name] = nv;
     }
   };
+  const fill = (name, value) => { if (p[name] === null || p[name] === undefined) { p[name] = value; auto.push(name); } };
   if (!(p.nose_type in NOSE_TYPES)) { w.push(`unknown nose_type '${p.nose_type}', using pointed`); p.nose_type = 'pointed'; }
   if (!(p.tail_type in TAIL_TYPES)) { w.push(`unknown tail_type '${p.tail_type}', using squash`); p.tail_type = 'squash'; }
 
   clamp('length', 40, 144);
   clamp('width', 14, 26);
   clamp('thickness', 1.5, 4.5);
-  const half = p.length / 2;
+  const L = p.length, W = p.width, half = L / 2;
   clamp('wide_point_offset', -(half - 14), half - 14);
   clamp('rocker_low_point', -(half - 14), half - 14);
   clamp('thickness_point_offset', -(half - 14), half - 14);
 
-  clamp('nose_width_12', 3, p.width - 0.5);
   const tail = TAIL_TYPES[p.tail_type];
-  if (tail.closes) clamp('tail_width_12', 4, p.width - 0.5);
-  else { clamp('tail_block_width', 4, p.width - 2); clamp('tail_width_12', p.tail_block_width + 0.5, p.width - 0.5); }
+  const xw = half + p.wide_point_offset;
+  fill('nose_width_12', W * (1 - u12(L, xw, true) ** AUTO.nose_a) ** (1 / NOSE_TYPES[p.nose_type]));
+  clamp('nose_width_12', 3, W - 0.5);
+  fill('tail_block_width', 0.5 * W);
+  if (!tail.closes) clamp('tail_block_width', 4, W - 2);
+  const te0 = tail.closes ? 0 : p.tail_block_width / W;
+  fill('tail_width_12', W * (te0 + (1 - te0) * (1 - u12(L, xw, false) ** AUTO.tail_a) ** (1 / tail.b)));
+  clamp('tail_width_12', tail.closes ? 4 : p.tail_block_width + 0.5, W - 0.5);
   if (tail.notch) { clamp('swallow_width', 1, p.tail_block_width - 2 * tail.corner - 1); clamp('swallow_depth', 1, 10); }
 
-  const xw = half + p.wide_point_offset;
-  const rn = (1 - u12(p.length, xw, true) ** A_MIN) ** (1 / NOSE_TYPES[p.nose_type]);
-  clamp('nose_width_12', p.width * rn, p.width - 0.5, 'width 12" from nose');
-  const te0 = tail.closes ? 0 : p.tail_block_width / p.width;
-  const rt = (1 - u12(p.length, xw, false) ** A_MIN) ** (1 / tail.b);
-  clamp('tail_width_12', p.width * (te0 + (1 - te0) * rt), p.width - 0.5, 'width 12" from tail');
+  const rn = (1 - u12(L, xw, true) ** A_MIN) ** (1 / NOSE_TYPES[p.nose_type]);
+  clamp('nose_width_12', W * rn, W - 0.5, 'width 12" from nose');
+  const rt = (1 - u12(L, xw, false) ** A_MIN) ** (1 / tail.b);
+  clamp('tail_width_12', W * (te0 + (1 - te0) * rt), W - 0.5, 'width 12" from tail');
 
+  fill('nose_rocker', clip(6.6 - 0.022 * L, 4.0, 5.2));
+  fill('tail_rocker', clip(1.3 + 0.012 * L, 1.5, 3.0));
   clamp('nose_rocker', 0, 12);
   clamp('tail_rocker', 0, 8);
+  fill('nose_thickness', 0.35 * p.thickness);
+  fill('tail_thickness', 0.5 * p.thickness);
   clamp('nose_thickness', 0.3, p.thickness);
   clamp('tail_thickness', 0.3, p.thickness);
 
   const xl = half + p.rocker_low_point, xt = half + p.thickness_point_offset;
   for (const [side, nose] of [['nose', true], ['tail', false]]) {
-    const R = p[`${side}_rocker`]; let u = u12(p.length, xl, nose);
+    const R = p[`${side}_rocker`]; let u = u12(L, xl, nose);
+    fill(`${side}_rocker_12`, R * u ** (nose ? AUTO.nose_k : AUTO.tail_k));
     clamp(`${side}_rocker_12`, R * u ** K_MAX, R * u ** K_MIN, `rocker 12" from ${side}`);
-    const te = p[`${side}_thickness`]; u = u12(p.length, xt, nose);
+    const te = p[`${side}_thickness`]; u = u12(L, xt, nose);
     const span = p.thickness - te;
+    fill(`${side}_thickness_12`, te + span * (1 - u ** AUTO.foil_p));
     clamp(`${side}_thickness_12`, te + span * (1 - u ** P_MIN), te + span * (1 - u ** P_MAX), `thickness 12" from ${side}`);
   }
   clamp('rail_apex', 0.15, 0.6);
@@ -146,8 +171,166 @@ export function validated(src) {
   clamp('target_volume', 10, 120);
   p.stations = Math.trunc(clip(p.stations, 41, 401));
   p.section_points = Math.trunc(clip(p.section_points, 16, 128));
+  p._auto = auto;
+  p.anchors = cleanAnchors(p);
+  p.slices = cleanSlices(p);
   return [p, w];
 }
+
+/* ---------------------------------------------------------------------------
+   Anchor points
+   Each design curve (outline, rocker, thickness) is its closed-form base curve plus a
+   smooth correction through the anchor offsets that is zero (and level) at every measured
+   station and at the curve's origin (wide / low / thick point), and zero at the tips. So
+   anchors reshape a curve between measurements without changing the measurements. The
+   correction is a shape-preserving cubic: tangent-continuous, and it never overshoots
+   an anchor.
+   --------------------------------------------------------------------------- */
+const pairOk = (a) => Array.isArray(a) && Number.isFinite(a[0]) && Number.isFinite(a[1]);
+
+function pinsFor(p, name) {
+  const half = p.length / 2, a = p._auto;
+  const [origin, t12, n12] = {
+    outline: [half + p.wide_point_offset, 'tail_width_12', 'nose_width_12'],
+    rocker: [half + p.rocker_low_point, 'tail_rocker_12', 'nose_rocker_12'],
+    thickness: [half + p.thickness_point_offset, 'tail_thickness_12', 'nose_thickness_12'],
+  }[name];
+  return { origin, tail12: !a.includes(t12), nose12: !a.includes(n12) };   // a blank 12" station is not pinned
+}
+
+function cleanAnchors(p) {
+  const src = p.anchors || {}, L = p.length, out = {};
+  for (const name of ['outline', 'rocker', 'thickness']) {
+    const pin = pinsFor(p, name), lim = ANCHOR_LIMIT[name];
+    const fixed = [0, L, pin.origin];
+    if (pin.tail12) fixed.push(12);
+    if (pin.nose12) fixed.push(L - 12);
+    const pts = (Array.isArray(src[name]) ? src[name] : []).filter(pairOk)
+      .map((a) => [a[0], clip(a[1], -lim, lim)]).sort((a, b) => a[0] - b[0]);
+    const kept = [];
+    for (const a of pts) {
+      if (kept.length === 24) break;
+      if (fixed.some((f) => Math.abs(a[0] - f) < ANCHOR_GAP)) continue;
+      if (a[0] <= 0 || a[0] >= L) continue;
+      if (kept.length && a[0] - kept[kept.length - 1][0] < ANCHOR_GAP) continue;
+      kept.push(a);
+    }
+    out[name] = kept;
+  }
+  return out;
+}
+
+function cleanSlices(p) {
+  const L = p.length, kept = [];
+  const side = (list) => {
+    const pts = (Array.isArray(list) ? list : []).filter(pairOk)
+      .map((a) => [a[0], clip(a[1], -0.6, 0.6)]).sort((a, b) => a[0] - b[0]);
+    const k = [];
+    for (const a of pts) {
+      if (k.length === 16) break;
+      if (a[0] < 0.03 || a[0] > 0.97) continue;
+      if (k.length && a[0] - k[k.length - 1][0] < 0.03) continue;
+      k.push(a);
+    }
+    return k;
+  };
+  const src = (Array.isArray(p.slices) ? p.slices : []).filter((s) => s && Number.isFinite(s.x)).sort((a, b) => a.x - b.x);
+  for (const s of src) {
+    if (kept.length === 16) break;
+    if (s.x < 2 || s.x > L - 2) continue;
+    if (kept.length && s.x - kept[kept.length - 1].x < 1) continue;
+    kept.push({ x: s.x, id: s.id ?? null, deck: side(s.deck), bottom: side(s.bottom) });
+  }
+  return kept;
+}
+
+/**
+ * Shape-preserving cubic through (xs, ys) (monotone Hermite, Fritsch-Carlson slopes).
+ * It never overshoots the points it passes through and stays tangent-continuous.
+ * An end is held level when fixed, otherwise it takes the usual three-point end slope.
+ */
+function pchipSlopes(xs, ys, fixStart, fixEnd) {
+  const n = xs.length, m = new Float64Array(n);
+  const h = (i) => xs[i + 1] - xs[i], dl = (i) => (ys[i + 1] - ys[i]) / h(i);
+  for (let i = 1; i < n - 1; i++) {
+    const d0 = dl(i - 1), d1 = dl(i);
+    if (d0 * d1 <= 0) continue;
+    const w1 = 2 * h(i) + h(i - 1), w2 = h(i) + 2 * h(i - 1);
+    m[i] = (w1 + w2) / (w1 / d0 + w2 / d1);
+  }
+  const end = (h0, h1, d0, d1) => {
+    let s = ((2 * h0 + h1) * d0 - h0 * d1) / (h0 + h1);
+    if (Math.sign(s) !== Math.sign(d0)) s = 0;
+    else if (Math.sign(d0) !== Math.sign(d1) && Math.abs(s) > 3 * Math.abs(d0)) s = 3 * d0;
+    return s;
+  };
+  if (!fixStart) m[0] = n === 2 ? dl(0) : end(h(0), h(1), dl(0), dl(1));
+  if (!fixEnd) m[n - 1] = n === 2 ? dl(0) : end(h(n - 2), h(n - 3), dl(n - 2), dl(n - 3));
+  return m;
+}
+
+function hermiteAt(xs, ys, m, xq) {
+  let i = 0;
+  while (i < xs.length - 2 && xq > xs[i + 1]) i++;
+  const hh = xs[i + 1] - xs[i], t = (xq - xs[i]) / hh, u = 1 - t;
+  return (1 + 2 * t) * u * u * ys[i] + t * u * u * hh * m[i] + t * t * (3 - 2 * t) * ys[i + 1] + t * t * (t - 1) * hh * m[i + 1];
+}
+
+/**
+ * Correction for one design curve, evaluated at the stations x.
+ * The pinned points split the curve into spans that are solved separately and held level
+ * at each pin, so moving an anchor only reshapes its own span (no ripple into the rest of
+ * the board). At the tips the slope is left free.
+ */
+function curveDelta(p, name, x) {
+  const out = new Float64Array(x.length), pts = p.anchors[name];
+  if (!pts.length) return out;
+  const L = p.length, pin = pinsFor(p, name);
+  const P = [0];
+  if (pin.tail12) P.push(12);
+  P.push(pin.origin);
+  if (pin.nose12) P.push(L - 12);
+  P.push(L);
+  for (let s = 0; s < P.length - 1; s++) {
+    const a = P[s], b = P[s + 1];
+    const inside = pts.filter((q) => q[0] > a && q[0] < b);
+    if (!inside.length) continue;
+    const xs = [a, ...inside.map((q) => q[0]), b], ys = [0, ...inside.map((q) => q[1]), 0];
+    const m = pchipSlopes(xs, ys, s > 0, s < P.length - 2);
+    for (let i = 0; i < x.length; i++) if (x[i] > a && x[i] < b) out[i] = hermiteAt(xs, ys, m, x[i]);
+  }
+  return out;
+}
+
+/**
+ * Cross-section slices. Each slice carries anchor points on its deck and bottom lines:
+ * [eta, d] with eta = 0 at the stringer and 1 at the rail, d = vertical offset as a
+ * fraction of the local thickness. Offsets are zero at the stringer and the rail, and
+ * blend smoothly to nothing toward the neighbouring slices and the tips.
+ */
+function sliceTables(p) {
+  const sl = p.slices;
+  if (!sl.some((s) => s.deck.length || s.bottom.length)) return null;
+  const table = (pts) => {
+    const T = new Float64Array(GRID);
+    if (!pts.length) return T;
+    const xs = [0, ...pts.map((a) => a[0]), 1], ys = [0, ...pts.map((a) => a[1]), 0];
+    const m = pchipSlopes(xs, ys, true, false);          // level across the stringer
+    for (let g = 0; g < GRID; g++) T[g] = hermiteAt(xs, ys, m, g / (GRID - 1));
+    T[GRID - 1] = 0;
+    return T;
+  };
+  const zero = new Float64Array(GRID);
+  return {
+    kx: [0, ...sl.map((s) => s.x), p.length],
+    deck: [zero, ...sl.map((s) => table(s.deck)), zero],
+    bottom: [zero, ...sl.map((s) => table(s.bottom)), zero],
+  };
+}
+const gridAt = (row, eta) => {
+  const f = eta * (GRID - 1), i0 = Math.min(Math.floor(f), GRID - 2);
+  return row[i0] + (f - i0) * (row[i0 + 1] - row[i0]);
+};
 
 /* ---------------------------------------------------------------------------
    1D profiles
@@ -213,15 +396,14 @@ function rocker(p, x) {
     : p.tail_rocker * clip((xl - xi) / xl, 0, 1) ** kt));
 }
 
-function thickness(p, x, h, scale) {
+function foil(p, x) {
   const L = p.length, xt = L / 2 + p.thickness_point_offset;
   const [en, et] = foilExponents(p);
-  return Float64Array.from(x, (xi, i) => {
+  return Float64Array.from(x, (xi) => {
     const nose = xi >= xt;
     const u = nose ? (xi - xt) / (L - xt) : (xt - xi) / xt;
     const tEnd = nose ? p.nose_thickness : p.tail_thickness;
-    let t = (tEnd + (p.thickness - tEnd) * (1 - clip(u, 0, 1) ** (nose ? en : et))) * scale;
-    return t * Math.tanh((1.5 * h[i]) / Math.max(t, 1e-9));
+    return tEnd + (p.thickness - tEnd) * (1 - clip(u, 0, 1) ** (nose ? en : et));
   });
 }
 
@@ -240,13 +422,24 @@ for (let k = 0; k < K; k++) {
   TH_COS[k] = Math.abs(Math.cos(th)); TH_SIN[k] = Math.abs(Math.sin(th)); TH_DECK[k] = th >= 0 ? 1 : 0;
 }
 
-function sections(p, x, h, yin, t, zb, M) {
+function sections(p, x, h, yin, t, zb, M, sl) {
   const n = x.length;
   const Yo = new Float64Array(n * M), Zo = new Float64Array(n * M);
   const Y = new Float64Array(K), Z = new Float64Array(K), cum = new Float64Array(K);
   const ed = 1.7 + 1.4 * p.rail_fullness, ar = p.rail_apex;
+  const rowD = new Float64Array(GRID), rowB = new Float64Array(GRID);
   for (let i = 0; i < n; i++) {
     const hi = h[i], ti = t[i], eb = 2 + 6 * railHardness(p, x[i]);
+    if (sl) {                                            // blend the two neighbouring slices' offset curves
+      let j = 0;
+      while (j < sl.kx.length - 2 && x[i] >= sl.kx[j + 1]) j++;
+      const tt = clip((x[i] - sl.kx[j]) / (sl.kx[j + 1] - sl.kx[j]), 0, 1);
+      const wq = tt * tt * tt * (tt * (6 * tt - 15) + 10);
+      for (let g = 0; g < GRID; g++) {
+        rowD[g] = (1 - wq) * sl.deck[j][g] + wq * sl.deck[j + 1][g];
+        rowB[g] = (1 - wq) * sl.bottom[j][g] + wq * sl.bottom[j + 1][g];
+      }
+    }
     const zApex = zb[i] + ar * ti, td = (1 - ar) * ti, tb = ar * ti;
     const con = concaveAt(p, x[i]), vee = veeAt(p, x[i]);
     const hs = Math.max(hi, 1e-9), yi = yin[i];
@@ -257,6 +450,7 @@ function sections(p, x, h, yin, t, zb, M) {
       Z[k] = deck
         ? zApex + td * TH_SIN[k] ** (2 / ed) * (1 - 0.7 * p.deck_dome * eta * eta)
         : zApex - tb * TH_SIN[k] ** (2 / e) + con * (1 - eta * eta) ** 2 - vee * (1 - eta);
+      if (sl) Z[k] += ti * gridAt(deck ? rowD : rowB, eta);
       Y[k] = yi + (yraw * (hi - yi)) / hs;
     }
     // resample by arc length plus turning angle so hard rails stay crisp
@@ -303,6 +497,7 @@ function stationXs(p) {
   }
   xs.push(12, L - 12, half + p.wide_point_offset, half + p.rocker_low_point, half + p.thickness_point_offset);
   if (TAIL_TYPES[p.tail_type].notch) xs.push(p.swallow_depth);
+  for (const s of p.slices) xs.push(s.x);
   xs.sort((a, b) => a - b);
   const out = [xs[0]];
   for (let i = 1; i < xs.length; i++) if (xs[i] - xs[i - 1] > 1e-3) out.push(xs[i]);  // np.unique + gap filter
@@ -311,12 +506,19 @@ function stationXs(p) {
 
 function buildMesh(p, tScale) {
   const x = stationXs(p), n = x.length, M = p.section_points;
-  const h = halfWidth(p, x);
+  // base curves, then the anchor-point corrections
+  const h0 = halfWidth(p, x), zb0 = rocker(p, x), foil0 = foil(p, x);
+  const dh = curveDelta(p, 'outline', x), dz = curveDelta(p, 'rocker', x), dt = curveDelta(p, 'thickness', x);
+  const h = Float64Array.from(h0, (v, i) => Math.max(v + dh[i], 0.15 * v));
+  const zb = Float64Array.from(zb0, (v, i) => v + dz[i]);
+  const t = Float64Array.from(foil0, (v, i) => {
+    const ti = Math.max(v + dt[i], 0.15 * v) * tScale;
+    return ti * Math.tanh((1.5 * h[i]) / Math.max(ti, 1e-9));   // pinch where the outline gets narrow
+  });
   const notch = notchHalfWidth(p, x);
   const yin = Float64Array.from(notch, (v, i) => Math.min(v, h[i] * 0.95));
-  const zb = rocker(p, x);
-  const t = thickness(p, x, h, tScale);
-  const [Y, Z] = sections(p, x, h, yin, t, zb, M);
+  const sl = sliceTables(p);
+  const [Y, Z] = sections(p, x, h, yin, t, zb, M, sl);
 
   let nv = 0;
   for (let i = 0; i < n; i++) nv += h[i] < 1e-6 ? 1 : yin[i] > 1e-9 ? 2 * M : 2 * M - 2;
@@ -376,7 +578,7 @@ function buildMesh(p, tScale) {
     for (let f = 0; f < faces.length; f += 3) { const tmp = faces[f]; faces[f] = faces[f + 2]; faces[f + 2] = tmp; }
     vol = -vol;
   }
-  return { V, F: faces, vol, prof: { x, h, yin, zb, t, Y, Z, M } };
+  return { V, F: faces, vol, prof: { x, h, yin, zb, t, Y, Z, M, h0, zb0, foil0, sl } };
 }
 
 function meshVolume(V, F) {
@@ -428,7 +630,7 @@ export function buildBoard(input = {}) {
     if (scale === 0.4 || scale === 2.5) warnings.push('target volume out of reach by scaling thickness alone');
   }
   const board = {
-    params: p, warnings, thickness_scale: scale,
+    params: p, warnings, thickness_scale: scale, auto: p._auto,
     vertices: mesh.V, faces: mesh.F, volume_l: mesh.vol * IN3_TO_L, _profiles: mesh.prof,
   };
   board.stats = stats(board);
@@ -489,6 +691,30 @@ export function curves(board) {
     };
   }
   return out;
+}
+
+/**
+ * One user slice in a form the section editor can use: closed-form deck and bottom
+ * heights (relative to the bottom centerline) as functions of eta = 0 (stringer) .. 1 (rail).
+ */
+export function sliceInfo(board, k) {
+  const p = board.params, pr = board._profiles, s = p.slices[k];
+  let i = 0;
+  for (let q = 1; q < pr.x.length; q++) if (Math.abs(pr.x[q] - s.x) < Math.abs(pr.x[i] - s.x)) i = q;
+  const h = pr.h[i], t = pr.t[i], yin = pr.yin[i];
+  const ed = 1.7 + 1.4 * p.rail_fullness, eb = 2 + 6 * railHardness(p, s.x), ar = p.rail_apex;
+  const con = concaveAt(p, s.x), vee = veeAt(p, s.x);
+  const row = (which) => (pr.sl ? pr.sl[which][k + 1] : null);
+  const off = (which, eta) => (row(which) ? t * gridAt(row(which), clip(eta, 0, 1)) : 0);
+  return {
+    x: s.x, id: s.id, h, t, yin, deckPts: s.deck, bottomPts: s.bottom,
+    y: (eta) => yin + eta * (h - yin),
+    deck: (eta, withAnchors = true) =>
+      ar * t + (1 - ar) * t * (1 - eta ** ed) ** (1 / ed) * (1 - 0.7 * p.deck_dome * eta * eta) + (withAnchors ? off('deck', eta) : 0),
+    bottom: (eta, withAnchors = true) =>
+      ar * t - ar * t * (1 - eta ** eb) ** (1 / eb) + con * (1 - eta * eta) ** 2 - vee * (1 - eta) + (withAnchors ? off('bottom', eta) : 0),
+    offset: (which, eta) => (row(which) ? gridAt(row(which), clip(eta, 0, 1)) : 0),
+  };
 }
 
 export function specSheet(board) {
