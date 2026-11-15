@@ -8,7 +8,7 @@ plan/profile/section views) calls the Python server on every change and renders 
 ## Try it
 
 The app runs entirely in the browser, so it is hosted as a plain web page with GitHub Pages:
-**https://emmettrn.github.io/surfboard-designer/** (works on phones too).
+**https://emmettrn.github.io/trey_shaper/** (works on phones too).
 
 Use the **Feedback** button in the app to write notes. It copies them, together with the board
 you have open, so you can paste them into a text or email.
