@@ -23,6 +23,7 @@ export const DEFAULTS = {
   "tail_thickness": 1.2,
   "thickness_point_offset": 0.0,
   "rail_apex": 0.35,
+  "rail_apex_in": null,
   "rail_fullness": 0.5,
   "deck_dome": 0.35,
   "rail_hardness_nose": 0.25,
@@ -38,7 +39,8 @@ export const DEFAULTS = {
     "rocker": [],
     "thickness": []
   },
-  "slices": []
+  "slices": [],
+  "bottom": []
 };
 
 export const NOSE_TYPES = {
@@ -112,7 +114,8 @@ export const PRESETS = {
     "rail_hardness_nose": 0.25,
     "rail_hardness_tail": 0.85,
     "concave_depth": 0.12,
-    "vee_depth": 0.0
+    "vee_depth": 0.0,
+    "rail_apex_in": 0.5
   },
   "Fish 5'6\"": {
     "length": 66,
@@ -140,7 +143,8 @@ export const PRESETS = {
     "rail_hardness_nose": 0.2,
     "rail_hardness_tail": 0.8,
     "concave_depth": 0.08,
-    "vee_depth": 0.05
+    "vee_depth": 0.05,
+    "rail_apex_in": 0.625
   },
   "Groveler 5'8\"": {
     "length": 68,
@@ -166,7 +170,8 @@ export const PRESETS = {
     "rail_hardness_nose": 0.25,
     "rail_hardness_tail": 0.9,
     "concave_depth": 0.15,
-    "vee_depth": 0.0
+    "vee_depth": 0.0,
+    "rail_apex_in": 0.5
   },
   "Mid-length 7'6\"": {
     "length": 90,
@@ -191,7 +196,8 @@ export const PRESETS = {
     "rail_hardness_nose": 0.1,
     "rail_hardness_tail": 0.6,
     "concave_depth": 0.06,
-    "vee_depth": 0.08
+    "vee_depth": 0.08,
+    "rail_apex_in": 0.875
   },
   "Longboard 9'2\"": {
     "length": 110,
@@ -217,7 +223,8 @@ export const PRESETS = {
     "rail_hardness_nose": 0.05,
     "rail_hardness_tail": 0.55,
     "concave_depth": 0.1,
-    "vee_depth": 0.1
+    "vee_depth": 0.1,
+    "rail_apex_in": 1.25
   },
   "Step-up 6'8\"": {
     "length": 80,
@@ -242,7 +249,8 @@ export const PRESETS = {
     "rail_hardness_nose": 0.2,
     "rail_hardness_tail": 0.75,
     "concave_depth": 0.08,
-    "vee_depth": 0.1
+    "vee_depth": 0.1,
+    "rail_apex_in": 0.5
   },
   "Round pin 6'0\" (v3 example)": {
     "length": 72,
@@ -268,7 +276,8 @@ export const PRESETS = {
     "rail_hardness_nose": 0.3,
     "rail_hardness_tail": 0.3,
     "concave_depth": 0.0,
-    "vee_depth": 0.0
+    "vee_depth": 0.0,
+    "rail_apex_in": 1.0
   }
 };
 
@@ -541,13 +550,13 @@ export const GROUPS = [
     "name": "Rails",
     "fields": [
       {
-        "key": "rail_apex",
+        "key": "rail_apex_in",
         "label": "Rail apex height",
-        "min": 0.15,
-        "max": 0.6,
-        "step": 0.01,
-        "unit": "frac",
-        "help": "0.5 = 50/50 rail, lower = down rail"
+        "min": 0.125,
+        "max": 2,
+        "step": 0.0625,
+        "unit": "in",
+        "help": "widest point of the rail, measured up from the flat bottom line; about 1/2\" on a shortboard"
       },
       {
         "key": "rail_fullness",

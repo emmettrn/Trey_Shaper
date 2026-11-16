@@ -255,3 +255,72 @@ input[type=range]:disabled { opacity: .35; }
   .seg button { padding: 5px 7px; }
   .hint { display: none; }
 }
+
+/* ---------- pages, undo / redo ---------- */
+.pages { margin-left: 18px; flex: none; }
+.pages button { padding: 5px 12px; }
+.undo { display: flex; gap: 4px; }
+.undo button { padding: 4px 9px; font-size: 16px; line-height: 1; }
+button:disabled { opacity: .35; cursor: default; }
+.rider { display: none; }
+body[data-page="rider"] .layout, body[data-page="rider"] .designer-only { display: none; }
+body[data-page="rider"] .rider { display: block; height: calc(100% - var(--bar)); overflow-y: auto; -webkit-overflow-scrolling: touch; }
+body[data-page="rider"] .top-actions { margin-left: auto; }
+
+/* ---------- edit / view, section scroller ---------- */
+.tools button[data-act="edit"].on { background: var(--accent-dim); color: var(--text); border-color: var(--accent); }
+.slicebar { align-items: center; }
+.slicebar input[type=range] { flex: 1 1 110px; min-width: 90px; }
+.slicebar input[type=range]::-webkit-slider-runnable-track { background: var(--line); }
+.slicebar .where { font-family: var(--mono); color: var(--text); white-space: nowrap; flex: none; }
+.slicebar .editing { color: #e6dcff; white-space: nowrap; flex: none; }
+.slicebar button { flex: none; }
+.slicebar button[data-edit] { color: #cdb9ff; border-color: #6a55a0; }
+.slicebar button[data-done] { background: var(--accent); color: #062420; border-color: var(--accent); font-weight: 600; }
+
+/* ---------- bottom contour stations ---------- */
+.bottom-box { display: grid; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
+.bottom-head { color: #b9c6ce; }
+.bottom-rows { display: grid; gap: 6px; }
+.brow { display: grid; grid-template-columns: 58px auto 1fr 26px; gap: 5px 6px; align-items: center;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px; }
+.brow .cell { background: var(--panel); }
+.brow span { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.brow select { padding: 4px 6px; min-width: 0; width: 100%; }
+.brow .x { padding: 0; width: 26px; height: 26px; color: var(--muted); background: transparent; }
+.brow .line2 { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 62px 62px; gap: 6px; align-items: center; }
+.brow .line2.one { grid-template-columns: 1fr 62px; }
+.brow .line2.none { grid-template-columns: 1fr; }
+.bottom-actions { display: flex; gap: 6px; }
+.bottom-actions button { padding: 4px 10px; font-size: 12px; }
+
+/* ---------- rider page ---------- */
+.rider-wrap { max-width: 980px; margin: 0 auto; padding: 26px 22px calc(40px + var(--safe-b)); display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 34px; align-items: start; }
+.rider h1 { margin: 0 0 6px; font-size: 22px; font-weight: 600; }
+.rider .lead { margin: 0 0 18px; color: var(--muted); }
+.rf { display: grid; grid-template-columns: 112px 1fr; align-items: center; gap: 6px 12px; margin-bottom: 14px; }
+.rf > label { color: #b9c6ce; }
+.rf .help { grid-column: 2; color: var(--muted); font-size: 11px; }
+.rf .in { display: flex; align-items: center; gap: 6px; }
+.rf .in .cell { width: 70px; flex: none; text-align: left; padding: 6px 8px; }
+.rf .in span { color: var(--muted); }
+.rf select { width: 100%; }
+.rf .seg { width: max-content; }
+.rider-result { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; display: grid; gap: 14px; }
+.r-vol { font-family: var(--mono); display: flex; align-items: baseline; gap: 8px; }
+.r-vol b { font-size: 40px; font-weight: 500; color: var(--accent); }
+.r-vol small { color: var(--muted); font-size: 15px; }
+.r-vol span { margin-left: auto; color: var(--muted); font-size: 12px; }
+#r-board { font-size: 16px; }
+#r-board small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+#r-canvas { width: 100%; height: 190px; display: block; }
+#r-how { margin: 0; padding: 0 0 0 16px; color: #b9c6ce; display: grid; gap: 3px; }
+.rider-result .help { color: var(--muted); font-size: 11px; margin: 0; }
+.rider-result .primary { justify-self: start; padding: 9px 18px; }
+
+@media (max-width: 1320px) { .preset > span { display: none; } .brand span { display: none; } }
+@media (max-width: 820px) {
+  .pages { margin-left: auto; }
+  body[data-page="rider"] .rider { height: auto; overflow: visible; }
+  .rider-wrap { grid-template-columns: 1fr; gap: 20px; padding: 18px 14px calc(40px + var(--safe-b)); }
+}

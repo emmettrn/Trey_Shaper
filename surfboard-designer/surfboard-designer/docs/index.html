@@ -30,16 +30,24 @@
       <svg viewBox="0 0 40 16" class="logo" aria-hidden="true"><path d="M2 8 C 8 1, 30 1, 38 8 C 30 15, 8 15, 2 8 Z" /><line x1="4" y1="8" x2="36" y2="8" /></svg>
       <span>Surfboard Designer</span>
     </div>
-    <div class="readout" id="stats"><b id="s-vol">--</b><small>L</small><span id="s-dims"></span></div>
+    <nav class="seg pages" id="pages" aria-label="Pages">
+      <button data-page="designer" class="on">Designer</button>
+      <button data-page="rider" title="Work out a volume and a starting board from the rider's size and ability">Rider</button>
+    </nav>
+    <div class="readout designer-only" id="stats"><b id="s-vol">--</b><small>L</small><span id="s-dims"></span></div>
     <div class="top-actions">
-      <label class="preset">
+      <span class="undo designer-only">
+        <button id="btn-undo" class="ghost" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>↶</button>
+        <button id="btn-redo" class="ghost" title="Redo (Ctrl+Shift+Z)" aria-label="Redo" disabled>↷</button>
+      </span>
+      <label class="preset designer-only">
         <span>Preset</span>
         <select id="preset"></select>
       </label>
       <button id="btn-feedback" class="ghost accent">Feedback</button>
-      <button id="btn-save" class="ghost">Save design</button>
-      <label class="ghost file-btn">Load<input id="file-load" type="file" accept=".json,application/json" hidden /></label>
-      <div class="menu">
+      <button id="btn-save" class="ghost designer-only">Save</button>
+      <label class="ghost file-btn designer-only">Load<input id="file-load" type="file" accept=".json,application/json" hidden /></label>
+      <div class="menu designer-only">
         <button id="btn-export" class="primary">Export ▾</button>
         <div class="menu-list" id="export-menu" hidden>
           <button data-fmt="stl" data-units="mm">STL (mm)</button>
@@ -60,41 +68,44 @@
         <div class="viewbar">
           <div class="seg" id="views">
             <button data-view="threeq" class="on">3/4</button>
-            <button data-view="deck">Deck</button>
-            <button data-view="bottom">Bottom</button>
+            <button data-view="deck">Top</button>
             <button data-view="side">Side</button>
             <button data-view="tail">Tail</button>
           </div>
           <div class="seg">
-            <button id="t-light" title="Hard side lighting, like a shaping bay, to show the foil and contours">Bay lights</button>
+            <button id="t-flip" title="Turn the board over, so the bottom can be looked at the same way as the deck">Bottom up</button>
+            <button id="t-light" title="Low lights along both sides, like a shaping bay, to show the foil and contours">Bay lights</button>
             <button id="t-wire">Wire</button>
             <button id="t-stringer" class="on">Stringer</button>
             <button id="t-max" data-act="max" title="Expand">⤢</button>
           </div>
         </div>
-        <div class="hint" id="hint">Drag to rotate · scroll to zoom · on the graphs below, click a curve to add an anchor point and drag it</div>
+        <div class="hint" id="hint">Drag to rotate · scroll to zoom · on the graphs below, turn on Edit points to reshape a curve</div>
         <div class="busy" id="busy"></div>
       </div>
 
       <div class="panels">
         <figure class="panel" data-panel="plan">
           <figcaption><b>Plan</b><span>outline</span>
-            <span class="tools"><button data-act="clear" hidden title="Remove the anchor points on the outline">Clear points</button><button data-act="in" title="Zoom in (or scroll)">+</button><button data-act="fit" title="Fit to panel">Fit</button><button data-act="max" title="Expand">⤢</button></span>
+            <span class="tools"><button data-act="edit" title="Switch between looking (zoom and pan only) and editing (drag points, click a line to add one)">Edit points</button><button data-act="clear" hidden title="Remove the anchor points on the outline">Clear points</button><button data-act="in" title="Zoom in (or scroll)">+</button><button data-act="fit" title="Fit to panel">Fit</button><button data-act="max" title="Expand">⤢</button></span>
           </figcaption><canvas id="c-plan"></canvas>
         </figure>
         <figure class="panel" data-panel="profile">
           <figcaption><b>Profile</b><span>rocker &amp; foil</span>
-            <span class="tools"><button data-act="clear" hidden title="Remove the anchor points on the rocker and deck">Clear points</button><button data-act="vex" title="Switch between true scale and exaggerated height"></button><button data-act="in" title="Zoom in (or scroll)">+</button><button data-act="fit" title="Fit to panel">Fit</button><button data-act="max" title="Expand">⤢</button></span>
+            <span class="tools"><button data-act="edit" title="Switch between looking (zoom and pan only) and editing (drag points, click a line to add one)">Edit points</button><button data-act="clear" hidden title="Remove the anchor points on the rocker and deck">Clear points</button><button data-act="vex" title="Switch between true scale and exaggerated height"></button><button data-act="in" title="Zoom in (or scroll)">+</button><button data-act="fit" title="Fit to panel">Fit</button><button data-act="max" title="Expand">⤢</button></span>
           </figcaption><canvas id="c-rocker"></canvas>
         </figure>
         <figure class="panel" data-panel="sections">
-          <figcaption><b>Sections</b><span class="slicebar" id="slicebar"></span>
-            <span class="tools"><button data-act="clear" hidden title="Remove the anchor points on this section">Clear points</button><button data-act="vex" title="Switch between true scale and exaggerated height"></button><button data-act="in" title="Zoom in (or scroll)">+</button><button data-act="fit" title="Fit to panel">Fit</button><button data-act="max" title="Expand">⤢</button></span>
+          <figcaption><b>Sections</b>
+            <span class="slicebar" id="slicebar"></span>
+            <span class="tools"><button data-act="edit" title="Switch between looking (zoom and pan only) and editing (drag points, click a line to add one)">Edit points</button><button data-act="clear" hidden title="Remove the anchor points on this section">Clear points</button><button data-act="vex" title="Switch between true scale and exaggerated height"></button><button data-act="fit" title="Fit to panel">Fit</button><button data-act="max" title="Expand">⤢</button></span>
           </figcaption><canvas id="c-sections"></canvas>
         </figure>
       </div>
     </section>
   </main>
+
+  <section class="rider" id="rider"></section>
 
   <div class="modal" id="feedback" hidden>
     <form class="sheet" id="feedback-form">

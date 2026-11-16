@@ -2,20 +2,24 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { buildBoard, curves, sliceInfo, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE } from './geometry.js';
+import { buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS } from './geometry.js';
+import { initRider } from './rider.js';
 import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES } from './data.js';
 
 const $ = (s) => document.querySelector(s);
 const state = {
   schema: null, params: {}, board: null, fieldEls: {}, cellEls: {}, mirrors: [],
   dirty: false, busy: false, wire: false, stringer: true, fitted: false,
-  sel: null,      // id of the cross-section slice being edited, or null for the overview
+  sel: null,      // id of the cross-section slice being edited, or null while rolling through the board
+  scrub: null,    // where the Sections view is looking, inches from the tail (null = the wide point)
+  pt: null,       // the anchor point whose handle arms are showing
+  flip: false,    // 3D view: board turned bottom up
   focus: null,    // which view is expanded: 'view' | 'plan' | 'profile' | 'sections' | null
 };
 const TAIL_CLOSES = Object.keys(TAIL_TYPES).filter((k) => TAIL_TYPES[k].closes);
 
 // Viewer preferences (not part of the design): kept per browser
-const prefs = { fix: true, vexProfile: 1, vexSections: 1, bay: true };
+const prefs = { fix: true, vexProfile: 1, vexSections: 1, bay: true, edit: false };
 try { Object.assign(prefs, JSON.parse(localStorage.getItem('surfboard.ui') || '{}')); } catch {}
 const savePrefs = () => { try { localStorage.setItem('surfboard.ui', JSON.stringify(prefs)); } catch {} };
 const COARSE = matchMedia('(pointer: coarse)').matches;      // fingers rather than a mouse: bigger targets, share sheet
@@ -24,10 +28,10 @@ const COLORS = { foam: '#f3efe6', accent: '#3cc8b4', warm: '#ff8a5b', sand: '#e8
 /* =========================================================================
    Number formatting: shapers think in feet-inches and sixteenths
    ========================================================================= */
-function fracIn(v) {
+function fracIn(v, den = 16) {
   const neg = v < 0; v = Math.abs(v);
-  let whole = Math.floor(v), n = Math.round((v - whole) * 16), d = 16;
-  if (n === 16) { whole++; n = 0; }
+  let whole = Math.floor(v), n = Math.round((v - whole) * den), d = den;
+  if (n === den) { whole++; n = 0; }
   while (n && n % 2 === 0) { n /= 2; d /= 2; }
   const s = n ? (whole ? `${whole} ${n}/${d}` : `${n}/${d}`) : `${whole}`;
   return (neg && (whole || n) ? '−' : '') + s;
@@ -73,6 +77,7 @@ function buildControls() {
     det.open = gi < 2;
     det.innerHTML = `<summary>${g.name}</summary><div class="fields"></div>`;
     g.fields.forEach((f) => det.querySelector('.fields').appendChild(makeField(f)));
+    if (g.name === 'Bottom') det.querySelector('.fields').appendChild(buildBottomBox());
     root.appendChild(det);
   });
 }
@@ -128,6 +133,100 @@ function buildStationTable() {
   return det;
 }
 
+/* Bottom contours along the board: a short list of stations ("1/16 concave 12 from the nose,
+   1/4 at 36 from the tail, vee 4 from the tail"). The geometry blends between them. */
+const BOTTOM_OPTIONS = [['flat', 'Flat'], ['concave', 'Single concave'], ['double', 'Double concave'], ['concave_double', 'Single with double inside'],
+  ['vee', 'Vee'], ['vee_double', 'Vee with double concave (spiral vee)'], ['roll', 'Roll / convex']];
+const BOTTOM_DEPTHS = { flat: [], concave: ['depth'], roll: ['depth'], double: ['depth'], vee: ['depth'], concave_double: ['single', 'double'], vee_double: ['vee', 'double'] };
+const bottomUI = {};
+
+function buildBottomBox() {
+  const box = document.createElement('div');
+  box.className = 'bottom-box';
+  box.innerHTML = `<div class="bottom-head">Contours along the board</div>
+    <div class="bottom-rows"></div>
+    <div class="bottom-actions"><button class="ghost" data-add>+ Add a station</button><button class="ghost" data-example title="Flat entry, single concave through the middle, double concave off the back foot, vee out the tail">Example</button></div>
+    <div class="help" id="bottom-help"></div>`;
+  bottomUI.rows = box.querySelector('.bottom-rows');
+  bottomUI.help = box.querySelector('#bottom-help');
+  box.querySelector('[data-add]').addEventListener('click', () => {
+    const P = state.params, L = have('length');
+    const xs = [0, ...P.bottom.map((r) => (r.from === 'nose' ? L - r.pos : r.pos)).sort((p, q) => p - q), L];
+    let best = 0;
+    for (let i = 1; i < xs.length - 1; i++) if (xs[i + 1] - xs[i] > xs[best + 1] - xs[best]) best = i;
+    const x = snap((xs[best] + xs[best + 1]) / 2, 1);
+    P.bottom.push({ pos: x > L / 2 ? L - x : x, from: x > L / 2 ? 'nose' : 'tail', type: 'concave', depth: 0.125, depth2: 0.0625 });
+    bottomChanged(true);
+  });
+  box.querySelector('[data-example]').addEventListener('click', () => {
+    const L = have('length');
+    state.params.bottom = [
+      { pos: 12, from: 'nose', type: 'concave', depth: 0.0625, depth2: 0.0625 },
+      { pos: snap(L / 2, 1), from: 'tail', type: 'concave', depth: 0.25, depth2: 0.0625 },
+      { pos: 12, from: 'tail', type: 'double', depth: 0.125, depth2: 0.0625 },
+      { pos: 4, from: 'tail', type: 'vee', depth: 0.0625, depth2: 0.0625 },
+    ];
+    bottomChanged(true);
+  });
+  return box;
+}
+
+function bottomChanged(rebuild) {
+  if (rebuild) renderBottomTable();
+  updateVisibility();
+  saveLocal();
+  schedule();
+}
+
+/** Rebuild the station rows (nose first). Only on structural changes, so typing never loses focus. */
+function renderBottomTable() {
+  const P = state.params, L = P.length, box = bottomUI.rows;
+  if (!box) return;
+  const xn = (r) => (r.from === 'nose' ? r.pos : L - r.pos);
+  P.bottom.sort((p, q) => xn(p) - xn(q));
+  box.innerHTML = '';
+  for (const r of P.bottom) {
+    const el = document.createElement('div');
+    el.className = 'brow';
+    el.innerHTML = `<input class="cell pos" type="text" spellcheck="false" aria-label="Position in inches">
+      <span>″ from the</span>
+      <select class="from" aria-label="Measured from"><option value="nose">nose</option><option value="tail">tail</option></select>
+      <button class="x" title="Remove this station" aria-label="Remove">×</button>
+      <div class="line2"><select class="type" aria-label="Contour">${BOTTOM_OPTIONS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
+        <input class="cell d1" type="text" spellcheck="false"><input class="cell d2" type="text" spellcheck="false"></div>`;
+    const q = (s) => el.querySelector(s);
+    const paint = () => {
+      const names = BOTTOM_DEPTHS[r.type];
+      q('.line2').className = `line2 ${['none', 'one', ''][names.length]}`;
+      q('.d1').hidden = names.length < 1; q('.d2').hidden = names.length < 2;
+      q('.d1').value = fracIn(r.depth, 32); q('.d2').value = fracIn(r.depth2, 32);
+      q('.d1').title = `${names[0] || ''} depth, inches`; q('.d2').title = `${names[1] || ''} depth, inches`;
+      q('.d1').setAttribute('aria-label', q('.d1').title); q('.d2').setAttribute('aria-label', q('.d2').title);
+      q('.pos').value = fracIn(r.pos);
+    };
+    q('.from').value = r.from; q('.type').value = r.type;
+    paint();
+    const numeric = (sel, key, lo, hi) => {
+      const inp = q(sel);
+      inp.addEventListener('focus', () => inp.select());
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
+      inp.addEventListener('change', () => {
+        const v = parseVal(inp.value);
+        if (Number.isFinite(v)) r[key] = clip(v, lo, hi);
+        paint(); bottomChanged(false);
+      });
+    };
+    numeric('.pos', 'pos', 0, 240); numeric('.d1', 'depth', 0, 0.75); numeric('.d2', 'depth2', 0, 0.75);
+    q('.from').addEventListener('change', () => { r.from = q('.from').value; bottomChanged(false); });
+    q('.type').addEventListener('change', () => { r.type = q('.type').value; paint(); bottomChanged(false); });
+    q('.x').addEventListener('click', () => { dropFrom(P.bottom, r); bottomChanged(true); });
+    box.appendChild(el);
+  }
+  bottomUI.help.textContent = P.bottom.length
+    ? 'Blended smoothly from station to station. The nose tip is flat and the station nearest the tail carries out the tail. Depths in inches, fractions OK: 1/16, 3/32, 1/4.'
+    : 'Say what the bottom does at a few spots (for example 1/16″ concave 12″ from the nose, 1/4″ at center, vee 4″ from the tail) and it is blended in between. With no stations, the two sliders above are used.';
+}
+
 /* Sliders for the cross section picked in the Sections graph. They show that section's own
    deck dome, rails and bottom; moving one changes the board there and blends out toward
    the neighbouring sections and the tips. The board-wide Rails and Bottom sliders still
@@ -135,9 +234,10 @@ function buildStationTable() {
 const SECTION_SLIDERS = [
   ['deck_dome', 'Deck dome', 0, 1, 0.01, 'frac', '0 = flat deck, 1 = strongly domed'],
   ['rail_fullness', 'Rail fullness', 0, 1, 0.01, 'frac', 'how much foam the rail carries'],
-  ['rail_apex', 'Rail apex height', 0.15, 0.6, 0.01, 'frac', '0.5 = 50/50 rail, lower = down rail'],
+  ['rail_apex_in', 'Rail apex height', 0.125, 2, 0.0625, 'in', 'up from the flat bottom line'],
   ['rail_hardness', 'Rail edge', 0, 1, 0.01, 'frac', '0 = soft, 1 = hard edge'],
-  ['concave', 'Concave', 0, 0.5, 0.01, 'in', ''],
+  ['concave', 'Single concave', -0.5, 0.5, 0.01, 'in', 'below zero = roll (convex)'],
+  ['double', 'Double concave', 0, 0.5, 0.01, 'in', ''],
   ['vee', 'Vee', 0, 0.5, 0.01, 'in', ''],
 ];
 const sectionUI = { rows: {} };
@@ -166,6 +266,11 @@ function buildSectionGroup() {
   det.open = true;
   det.innerHTML = `<summary>Cross section</summary><div class="fields"><div class="help" id="sec-title"></div></div>`;
   const body = det.querySelector('.fields');
+  const done = document.createElement('button');
+  done.className = 'primary';
+  done.textContent = 'Done with this section';
+  done.addEventListener('click', () => exitSection());
+  body.appendChild(done);
   sectionUI.pos = sliderRow('Position from tail', 2, 70, 0.25, 'in', 'or drag its diamond in the Plan graph', (v) => { const s = rawSlice(); if (s) s.x = v; });
   body.appendChild(sectionUI.pos.el);
   for (const [key, label, min, max, step, unit, help] of SECTION_SLIDERS) {
@@ -281,6 +386,7 @@ const isShown = (f) => !f.show_if || Object.entries(f.show_if).every(([k, cond])
 
 function updateVisibility() {
   for (const { f, el } of Object.values(state.fieldEls)) el.classList.toggle('hidden', !isShown(f));
+  for (const k of ['concave_depth', 'vee_depth']) state.fieldEls[k]?.el.classList.toggle('hidden', !!state.params.bottom?.length);   // contour stations take over
   // table cells whose value is set by the nose / tail type show that type instead of a number
   for (const m of state.mirrors) {
     const editable = !!m.key && isShown(state.fieldEls[m.key].f);
@@ -329,22 +435,74 @@ function setParam(key, v, src) {
   schedule();
 }
 
-function applyParams(p) {
+/** Load a whole design (preset, file, saved copy, undo step). Tidies older files as it goes. */
+function applyParams(p, keepSel = null) {
   state.params = structuredClone({ ...state.schema.defaults, ...p });
   const P = state.params, a = P.anchors && typeof P.anchors === 'object' ? P.anchors : {};
-  const pairs = (l) => (Array.isArray(l) ? l.filter((q) => Array.isArray(q) && q.length >= 2).map((q) => [+q[0], +q[1]]) : []);
-  P.anchors = { outline: pairs(a.outline), rocker: pairs(a.rocker), thickness: pairs(a.thickness) };
-  P.slices = (Array.isArray(P.slices) ? P.slices : []).filter((s) => s && Number.isFinite(s.x))
-    .map((s, i) => ({ id: i + 1, x: s.x, adj: { ...(s.adj && typeof s.adj === 'object' ? s.adj : {}) }, deck: pairs(s.deck), bottom: pairs(s.bottom) }));
-  state.sel = null;
+  const num = (v) => (Number.isFinite(v) ? v : null);
+  // an anchor is [position, offset] plus, once its handle has been moved, [slope, left arm, right arm]
+  const pts = (l) => (Array.isArray(l) ? l : []).filter((q) => Array.isArray(q) && Number.isFinite(+q[0]) && Number.isFinite(+q[1]))
+    .map((q) => (q.slice(2, 5).some(Number.isFinite) ? [+q[0], +q[1], num(q[2]), num(q[3]), num(q[4])] : [+q[0], +q[1]]));
+  P.anchors = { outline: pts(a.outline), rocker: pts(a.rocker), thickness: pts(a.thickness) };
+  const T = Number.isFinite(P.thickness) ? P.thickness : 2.5;
+  if (!Number.isFinite(P.rail_apex_in))        // older designs gave the rail apex as a fraction of thickness
+    P.rail_apex_in = clip(snap((Number.isFinite(P.rail_apex) ? P.rail_apex : 0.35) * T, 0.0625), 0.125, 2);
+  const seen = new Set();
+  P.slices = (Array.isArray(P.slices) ? P.slices : []).filter((s) => s && Number.isFinite(s.x)).map((s) => {
+    let id = Number.isInteger(s.id) && !seen.has(s.id) ? s.id : 1;
+    while (seen.has(id)) id++;
+    seen.add(id);
+    const adj = { ...(s.adj && typeof s.adj === 'object' ? s.adj : {}) };
+    if (Number.isFinite(adj.rail_apex) && adj.rail_apex) { adj.rail_apex_in = (adj.rail_apex_in || 0) + adj.rail_apex * T; }
+    delete adj.rail_apex;
+    return { id, x: s.x, adj, deck: pts(s.deck), bottom: pts(s.bottom) };
+  });
+  P.bottom = (Array.isArray(P.bottom) ? P.bottom : []).filter((r) => r && Number.isFinite(+r.pos)).map((r) => ({
+    pos: +r.pos, from: r.from === 'nose' ? 'nose' : 'tail', type: BOTTOM_LABELS[r.type] ? r.type : 'flat',
+    depth: clip(+r.depth || 0, 0, 0.75), depth2: clip(+r.depth2 || 0, 0, 0.75) }));
+  state.sel = P.slices.some((s) => s.id === keepSel) ? keepSel : null;
+  state.pt = null;
   for (const [k, fe] of Object.entries(state.fieldEls)) fe.set(state.params[k]);
   for (const [k, ce] of Object.entries(state.cellEls)) ce.set(state.params[k]);
+  renderBottomTable();
   updateVisibility();
   saveLocal();
   schedule();
 }
 
-const saveLocal = () => { try { localStorage.setItem('surfboard.params', JSON.stringify(state.params)); } catch {} };
+/* Undo / redo: a stack of whole designs. Every edit ends in saveLocal(), so that is where a
+   step is recorded, a moment after the edit settles (one drag or one slider sweep = one step). */
+const hist = { stack: [], i: -1, timer: 0, restoring: false };
+function histCommit() {
+  clearTimeout(hist.timer); hist.timer = 0;
+  const s = JSON.stringify(state.params);
+  if (s === hist.stack[hist.i]) return;
+  hist.stack.length = hist.i + 1;
+  hist.stack.push(s);
+  if (hist.stack.length > 150) hist.stack.shift();
+  hist.i = hist.stack.length - 1;
+  syncHistory();
+}
+function histGo(dir) {
+  if (hist.timer) histCommit();
+  const j = hist.i + dir;
+  if (j < 0 || j >= hist.stack.length) return;
+  hist.i = j;
+  hist.restoring = true;
+  applyParams(JSON.parse(hist.stack[j]), state.sel);
+  hist.restoring = false;
+  $('#preset').value = '';
+  syncHistory();
+}
+function syncHistory() {
+  $('#btn-undo').disabled = hist.i <= 0;
+  $('#btn-redo').disabled = hist.i >= hist.stack.length - 1;
+}
+
+const saveLocal = () => {
+  try { localStorage.setItem('surfboard.params', JSON.stringify(state.params)); } catch {}
+  if (!hist.restoring) { clearTimeout(hist.timer); hist.timer = setTimeout(histCommit, 350); }
+};
 const loadLocal = () => { try { return JSON.parse(localStorage.getItem('surfboard.params')); } catch { return null; } };
 
 /* =========================================================================
@@ -401,19 +559,26 @@ const fill = new THREE.DirectionalLight(0xcfe6ff, 0.7);
 fill.position.set(-40, -60, -30);
 const studioLights = new THREE.Group().add(sun, fill, new THREE.HemisphereLight(0xdfefff, 0x1a2228, 0.5));
 
-// Shaping-bay lighting: hard light raking almost flat across the board from one side, with
-// a weak fill from the other, above and below the rail line, on a matte blank. Because
-// the light only grazes the surface, a degree or two of slope (deck dome, concave, a bump
-// in the foil) shows up as a clear change in shade.
+// Shaping-bay lighting: a row of light along each side of the board, level with the rails,
+// on a matte blank. The light only grazes the surface, so flat foam stays dim and anything
+// that tilts toward either side (deck dome, a concave, a bump in the foil) picks up light
+// from the side it faces and falls into shadow from the other, the same on both rails.
+// One side is slightly warm and the other slightly cool, so which way a surface tilts
+// (concave or vee) can be told apart. The lamps turn over with the board, so the bottom
+// keeps its own, lower pair: its contours are a degree or two, far subtler than the deck's.
 const bayLights = new THREE.Group();
-for (const up of [1, -1]) {
-  const key = new THREE.DirectionalLight(0xf2f6ff, 6.5), weak = new THREE.DirectionalLight(0xf2f6ff, 1.5);
-  key.position.set(0, 6.3 * up, -60);       // about 6 degrees above / below level
-  weak.position.set(0, 6.3 * up, 60);
-  bayLights.add(key, weak);
+const bayLamp = (color, intensity, x, y, z) => {
+  const lamp = new THREE.DirectionalLight(color, intensity);
+  lamp.position.set(x, y, z);
+  bayLights.add(lamp, lamp.target);                    // target in the same group: the direction turns with the board
+};
+for (const [side, color] of [[1, 0xfff6ec], [-1, 0xeef3ff]]) {
+  bayLamp(color, 4.6, 0, 2.6, 60 * side);              // deck: about 2.5 degrees above level
+  bayLamp(color, 11, 0, -0.75, 60 * side);             // bottom: under 1 degree, and brighter
 }
-bayLights.add(new THREE.HemisphereLight(0xffffff, 0x10151a, 0.06));
-scene.add(studioLights, bayLights);
+for (const end of [1, -1]) for (const up of [1, -1]) bayLamp(0xf2f6ff, 0.3, 60 * end, 14 * up, 0);   // a little down the length, for rocker and foil
+bayLights.add(new THREE.HemisphereLight(0xffffff, 0xffffff, 0.05));
+scene.add(studioLights);
 const envMap = scene.environment;
 
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), new THREE.ShadowMaterial({ opacity: 0.28 }));
@@ -431,7 +596,36 @@ const wireMesh = new THREE.Mesh(new THREE.BufferGeometry(),
 wireMesh.visible = false;
 const stringerMat = new THREE.MeshStandardMaterial({ color: COLORS.wood, roughness: 0.6 });
 const stringerGroup = new THREE.Group();
-scene.add(boardMesh, wireMesh, stringerGroup);
+// outline of the cross section the Sections view is looking at
+const ring = new THREE.LineLoop(new THREE.BufferGeometry(),
+  new THREE.LineBasicMaterial({ color: 0xb48cff, transparent: true, opacity: 0.95, depthTest: false }));
+ring.renderOrder = 5;
+ring.visible = false;
+const boardGroup = new THREE.Group().add(boardMesh, wireMesh, stringerGroup, ring, bayLights);   // turns over as one for "Bottom up"
+scene.add(boardGroup);
+let flipNow = 0;                                        // current turn-over angle, eased toward 0 or pi
+
+function placeBoard() {
+  const bb = wireMesh.geometry.boundingBox, cy = bb ? (bb.min.y + bb.max.y) / 2 : 0;
+  boardGroup.rotation.x = flipNow;                      // turn about the board's own centre line
+  boardGroup.position.set(0, cy * (1 - Math.cos(flipNow)), -cy * Math.sin(flipNow));
+}
+
+let ringTimer = 0;
+/** Show the section outline on the 3D board: while a section is being edited, or briefly while rolling through. */
+function showRing(data = state.board, linger = true) {
+  if (!data) return;
+  const L = data.params.length, pr = data._profiles, k = sliceIndex(data);
+  const x = k >= 0 ? data.params.slices[k].x : scrubX(data);
+  const s = sectionAt(data, x), o = sectionOutline(s, 40), zb = lerpAt(pr.x, pr.zb, x);
+  const P = new Float32Array(o.X.length * 3);
+  for (let i = 0; i < o.X.length; i++) { P[3 * i] = x - L / 2; P[3 * i + 1] = zb + o.Z[i]; P[3 * i + 2] = -o.X[i]; }
+  ring.geometry.dispose();
+  ring.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(P, 3));
+  if (k >= 0) { clearTimeout(ringTimer); ringTimer = 0; ring.visible = true; return; }
+  if (linger) { clearTimeout(ringTimer); ring.visible = true; ringTimer = setTimeout(() => { ringTimer = 0; ring.visible = false; }, 2500); }
+  else if (!ringTimer) ring.visible = false;
+}
 
 function setLighting() {
   const bay = prefs.bay;
@@ -442,7 +636,7 @@ function setLighting() {
     : { roughness: 0.45, clearcoat: 0.9, envMapIntensity: 0.75 });
   boardMat.color.set(bay ? '#f4f1ea' : '#ece6d8');
   boardMat.needsUpdate = true;
-  renderer.toneMappingExposure = bay ? 1.05 : 0.92;
+  renderer.toneMappingExposure = bay ? 1.0 : 0.92;
   viewport.classList.toggle('bay', bay);
   $('#t-light').classList.toggle('on', bay);
 }
@@ -480,6 +674,7 @@ function updateMesh(data) {
     stringerGroup.add(new THREE.Mesh(new THREE.TubeGeometry(curve, Math.min(400, pts.length * 2), 0.07, 6), stringerMat));
   }
   stringerGroup.visible = state.stringer;
+  placeBoard();
 
   if (!state.fitted) { setView('threeq', false); state.fitted = true; }
 }
@@ -494,11 +689,11 @@ function setView(name, animate = true) {
   const views = {
     threeq: [0.30 * d, 0.42 * d, 0.62 * d],
     deck: [0, 0.85 * d, 0.001],
-    bottom: [0, -0.85 * d, 0.001],
     side: [0, 0.04 * d, 0.8 * d],
     tail: [-0.95 * d, 0.07 * d, 0.0],
   };
   const target = new THREE.Vector3(0, cy, 0);
+  if (!views[name]) name = 'threeq';
   const to = new THREE.Vector3(...views[name]).add(target);
   state.view = name;
   document.querySelectorAll('#views button').forEach((b) => b.classList.toggle('on', b.dataset.view === name));
@@ -514,6 +709,12 @@ function animate(now) {
     camera.position.lerpVectors(tween.fromP, tween.toP, e);
     controls.target.lerpVectors(tween.fromT, tween.toT, e);
     if (k === 1) tween = null;
+  }
+  const want = state.flip ? Math.PI : 0;
+  if (flipNow !== want) {
+    flipNow += (want - flipNow) * 0.2;
+    if (Math.abs(want - flipNow) < 0.004) flipNow = want;
+    placeBoard();
   }
   controls.update();
   renderer.render(scene, camera);
@@ -532,15 +733,19 @@ controls.addEventListener('start', () => (state.userMoved = true));
 new ResizeObserver(resize).observe(viewport);
 renderer.domElement.addEventListener('pointerdown', () => $('#hint').classList.add('gone'), { once: true });
 setTimeout(() => $('#hint').classList.add('gone'), 12000);
-if (COARSE) $('#hint').textContent = 'Drag to rotate · pinch to zoom · on the graphs, tap a curve to add a point, drag it, double-tap to remove';
+if (COARSE) $('#hint').textContent = 'Drag to rotate · pinch to zoom · on the graphs, turn on Edit points to reshape a curve';
 
 /* =========================================================================
    2D views: plan, profile, sections. Each is a zoomable canvas you edit on.
+   "Edit points" off: look only. Scroll or pinch to zoom, drag to pan.
+   "Edit points" on:
      round dot  = anchor point: click a curve to add one, drag to shape,
                   double-click (or right-click) to remove
+     small ring = a handle arm of the selected anchor point: drag it to set the
+                  direction the curve passes through the point and how far it
+                  holds that direction (double-click = back to automatic)
      square     = a measurement; draggable when "Fix dimensions" is off
      diamond    = a cross-section slice; drag it along the board
-   Scroll to zoom, drag empty space to pan when zoomed in.
    ========================================================================= */
 const snap = (v, step) => Math.round(v / step) * step;
 const clip = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
@@ -598,25 +803,37 @@ class View2D {
   }
   text(ctx, str, px, py, color = COLORS.muted, align = 'center') { ctx.fillStyle = color; ctx.textAlign = align; ctx.fillText(str, px, py); }
 
-  /** Draw a point and remember it for hit-testing. h = { x, y, kind, color, locked, drag, remove, select, ghost } */
+  /** Draw a point and remember it for hit-testing.
+      h = { x, y, kind, color, locked, drag, remove, select, ghost, on, view (usable with Edit points off), light (drag needs no rebuild) } */
   point(ctx, h) {
     const px = this.X(h.x), py = this.Y(h.y);
     if (!h.ghost) this.handles.push({ ...h, px, py });
     ctx.save();
     ctx.lineWidth = 1.5; ctx.strokeStyle = h.color; ctx.fillStyle = h.ghost ? 'transparent' : h.color;
     if (h.ghost) ctx.globalAlpha = 0.45;
+    else if (!prefs.edit && !h.view) ctx.globalAlpha = 0.5;      // looking, not editing
     ctx.beginPath();
     const big = COARSE ? 1.45 : 1;
-    if (h.kind === 'anchor') { ctx.arc(px, py, 4.5 * big, 0, 7); ctx.fill(); ctx.strokeStyle = '#0e1317'; ctx.stroke(); }
+    if (h.kind === 'arm') {                               // handle arm: a line from its anchor to a small ring
+      ctx.lineWidth = 1; ctx.globalAlpha = 0.9;
+      ctx.moveTo(this.X(h.ax), this.Y(h.ay)); ctx.lineTo(px, py); ctx.stroke();
+      ctx.beginPath(); ctx.arc(px, py, 3.6 * big, 0, 7); ctx.fillStyle = '#0e1317'; ctx.fill(); ctx.lineWidth = 1.5; ctx.stroke();
+    } else if (h.kind === 'scrub') {                      // where the Sections view is looking: a marker under the line
+      ctx.moveTo(px - 6 * big, py + 9 * big); ctx.lineTo(px + 6 * big, py + 9 * big); ctx.lineTo(px, py + 1); ctx.closePath(); ctx.fill();
+    } else if (h.kind === 'anchor') {
+      ctx.arc(px, py, 4.5 * big, 0, 7); ctx.fill(); ctx.strokeStyle = '#0e1317'; ctx.stroke();
+      if (h.on && prefs.edit) { ctx.beginPath(); ctx.arc(px, py, 8 * big, 0, 7); ctx.strokeStyle = h.color; ctx.lineWidth = 1; ctx.stroke(); }
+    }
     else if (h.kind === 'slice') { ctx.moveTo(px, py - 6); ctx.lineTo(px + 6, py); ctx.lineTo(px, py + 6); ctx.lineTo(px - 6, py); ctx.closePath(); ctx.fill(); ctx.strokeStyle = '#0e1317'; ctx.stroke(); }
     else { ctx.rect(px - 3.5 * big, py - 3.5 * big, 7 * big, 7 * big); if (h.locked) { ctx.fillStyle = '#141b21'; } ctx.fill(); ctx.stroke(); }
     ctx.restore();
   }
 
-  hit(px, py) {
+  hit(px, py, all = prefs.edit) {
     let best = null, bd = this.touch ? 24 : 13;
     for (const h of this.handles) {
-      const d = Math.hypot(h.px - px, h.py - py) - (h.kind === 'anchor' ? 2 : 0);   // anchors win ties
+      if (!all && !h.view) continue;
+      const d = Math.hypot(h.px - px, h.py - py) - (h.kind === 'anchor' ? 2 : 0) - (h.kind === 'scrub' ? -6 : 0);   // anchors win ties
       if (d < bd) { bd = d; best = h; }
     }
     return best;
@@ -646,20 +863,36 @@ class View2D {
       return;
     }
     const h = this.hit(px, py);
+    if (!prefs.edit) {                                  // looking only: pan, and the few things that are not edits
+      if (h) { h.select?.(); if (h.drag) this.drag = { fn: h.drag, light: h.light }; }
+      else {
+        if (this.hit(px, py, true)) hintEdit();
+        if (this.zoom > 1) this.drag = { pan: [px, py, this.mx, this.my] };
+      }
+      if (this.drag) { try { this.c.setPointerCapture(e.pointerId); } catch {} e.preventDefault(); }
+      if (h) (h.light ? scrubChanged() : schedule());
+      return;
+    }
     if (h && h.locked) { toast('Measurements are fixed. Untick "Fix dimensions" to drag them.'); return; }
     if (h && h.remove && this.touch) {                  // double-tap a point to remove it
       const now = performance.now(), t = this.lastTap;
       if (t && now - t.t < 420 && Math.hypot(t.px - px, t.py - py) < 30) { this.lastTap = null; h.remove(); saveLocal(); schedule(); return; }
       this.lastTap = { t: now, px, py };
     }
-    if (h) { h.select?.(); if (h.drag) this.drag = { fn: h.drag }; }
+    const had = state.pt;
+    if (h) { h.select?.(); if (h.drag) this.drag = { fn: h.drag, light: h.light }; }
     else {
       const c = this.curveHit(px, py);
       if (c) this.drag = c.add(this.wx(px), this.wy(py));
-      else if (this.zoom > 1) this.drag = { pan: [px, py, this.mx, this.my] };
+      else {
+        state.pt = null;                                // clicked empty space: put the handle arms away
+        if (this.zoom > 1) this.drag = { pan: [px, py, this.mx, this.my] };
+      }
     }
     if (this.drag) { try { this.c.setPointerCapture(e.pointerId); } catch {} e.preventDefault(); }
-    if (this.drag?.fn || h) schedule();
+    if (h?.light) scrubChanged();
+    else if (this.drag?.fn || h) schedule();
+    else if (had !== state.pt) drawPanels();
   }
   move(e) {
     const [px, py] = this.pos(e);
@@ -676,7 +909,7 @@ class View2D {
       if (e.pointerType !== 'mouse') return;
       this.touch = false;
       const h = this.hit(px, py);
-      this.c.style.cursor = h ? (h.locked ? 'not-allowed' : 'grab') : this.curveHit(px, py) ? 'copy' : this.zoom > 1 ? 'move' : 'default';
+      this.c.style.cursor = h ? (h.locked ? 'not-allowed' : 'grab') : prefs.edit && this.curveHit(px, py) ? 'copy' : this.zoom > 1 ? 'move' : 'default';
       return;
     }
     if (this.drag.pan) {
@@ -687,12 +920,12 @@ class View2D {
     }
     this.drag.undo = null;                              // it moved: this really is an edit
     this.drag.fn(this.wx(px), this.wy(py));
-    schedule();
+    if (this.drag.light) scrubChanged(); else schedule();
   }
   up(e) {
     if (e) this.ptrs.delete(e.pointerId); else this.ptrs.clear();
     if (this.ptrs.size < 2) this.pinch = null;
-    if (this.drag) { this.drag = null; saveLocal(); }
+    if (this.drag) { const edit = !this.drag.light && !this.drag.pan; this.drag = null; if (edit) saveLocal(); }
   }
   removeAt(e) {
     const h = this.hit(...this.pos(e));
@@ -714,7 +947,51 @@ class View2D {
 const SLICE_COLOR = '#b48cff';
 const dropFrom = (list, item) => { const i = list.indexOf(item); if (i >= 0) list.splice(i, 1); };
 const sliceIndex = (board) => (state.sel === null ? -1 : board.params.slices.findIndex((s) => s.id === state.sel));
-const tip = (v, ctx, msg) => { if (v.w > 300) v.text(ctx, COARSE ? msg.replace(/click/g, 'tap') : msg, v.w / 2, v.h - 6, 'rgba(132,148,159,.8)', 'center'); };
+const tip = (v, ctx, msg) => {
+  if (!prefs.edit) msg = 'looking · turn on Edit points to reshape';
+  if (v.w > 300) v.text(ctx, COARSE ? msg.replace(/click/g, 'tap') : msg, v.w / 2, v.h - 6, 'rgba(132,148,159,.8)', 'center');
+};
+let hinted = 0;
+function hintEdit() {
+  if (performance.now() - hinted < 15000) return;
+  hinted = performance.now();
+  toast('Turn on "Edit points" (top of the graph) to move points.');
+}
+const rev = (arr) => [...arr].reverse();
+const slopeAt = (xs, ys, xq, e = 0.4) => (lerpAt(xs, ys, xq + e) - lerpAt(xs, ys, xq - e)) / (2 * e);
+const scrubX = (board) => clip(state.scrub ?? board.params.length / 2 + board.params.wide_point_offset, 0.5, board.params.length - 0.5);
+const whereText = (x, L) => (x > L / 2 ? `${fracIn(L - x)}″ from nose` : `${fracIn(x)}″ from tail`);
+
+/** Full outline of a section (from sectionAt): right deck, right bottom, left bottom, left deck. */
+function sectionOutline(s, N = 160, anchors = true) {
+  const eta = Array.from({ length: N + 1 }, (_, i) => 1 - (1 - i / N) ** 2);   // denser toward the rail
+  const ys = eta.map(s.y), d = eta.map((e) => s.deck(e, anchors)), b = eta.map((e) => s.bottom(e, anchors));
+  return { X: [...ys, ...rev(ys), ...ys.map((q) => -q), ...rev(ys).map((q) => -q)], Z: [...d, ...rev(b), ...b, ...rev(d)], d, b };
+}
+
+/**
+ * The two handle arms of the selected anchor point `a` = [position, offset, slope, left arm, right arm].
+ * (x0, y0) is the point on the graph; `res` the handle the geometry is using now; a step of 1 in
+ * position is `kx` graph units across; the drawn curve is base + k * offset with the base sloping S0.
+ */
+function drawArms(v, ctx, a, x0, y0, res, { S0, k, kx = 1, color, mMax = 3, aMin = 0.5, aMax = 60 }) {
+  if (!prefs.edit || state.pt !== a || !res) return;
+  const S = S0 + k * res.m;                             // graph height per unit of position
+  for (const side of [-1, 1]) {
+    const len = side < 0 ? res.aL : res.aR, slot = side < 0 ? 3 : 4;
+    v.point(ctx, {
+      x: x0 + side * len * kx, y: y0 + side * len * S, kind: 'arm', color, ax: x0, ay: y0,
+      drag: (wx, wy) => {
+        const d = Math.max((side * (wx - x0)) / kx, aMin);
+        while (a.length < 5) a.push(null);
+        a[2] = clip(((side * (wy - y0)) / d - S0) / k, -mMax, mMax);
+        a[slot] = clip(d, aMin, aMax);
+      },
+      remove: () => { a.length = 2; },                  // double-click: back to the automatic handle
+    });
+  }
+}
+const armOf = (list, a) => list.find((r) => Math.abs(r.x - a[0]) < 1e-6);
 /** A measurement square. `apply(wx, wy)` receives the pointer in board inches. */
 const station = (v, ctx, x, y, color, apply) =>
   v.point(ctx, { x, y, kind: 'station', color, locked: prefs.fix, drag: prefs.fix ? null : apply });
@@ -753,6 +1030,23 @@ function drawPlan(v, data) {
     v.text(ctx, txt, v.X(mx), v.Y(W / 2 + 0.6) - 3, col);
   }
 
+  // bottom contour stations
+  const SHORT = { flat: 'flat', concave: 'conc', roll: 'roll', double: 'dbl', concave_double: 'conc+dbl', vee: 'vee', vee_double: 'vee+dbl' };
+  ctx.strokeStyle = COLORS.muted; ctx.lineWidth = 1;
+  for (const r of p.bottom) {
+    ctx.beginPath(); ctx.moveTo(v.X(r.x), v.Y(-W / 2 - 0.2)); ctx.lineTo(v.X(r.x), v.Y(-W / 2 - 0.2) + 5); ctx.stroke();
+    if (v.s * 12 > 70) v.text(ctx, SHORT[r.type], v.X(r.x), v.Y(-W / 2 - 0.2) + 15, COLORS.muted);
+  }
+
+  // where the Sections view is looking
+  if (state.sel === null) {
+    const sx = scrubX(data), half = lerpAt(x, h, sx);
+    ctx.strokeStyle = SLICE_COLOR; ctx.globalAlpha = 0.9; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(v.X(sx), v.Y(-half)); ctx.lineTo(v.X(sx), v.Y(half)); ctx.stroke(); ctx.globalAlpha = 1;
+    v.point(ctx, { x: sx, y: -half, kind: 'scrub', color: SLICE_COLOR, view: true, light: true,
+      drag: (wx) => { state.scrub = clip(snap(wx, 0.25), 0.5, state.board.params.length - 0.5); } });
+  }
+
   // cross-section slices
   for (const sl of p.slices) {
     const raw = P.slices.find((q) => q.id === sl.id);
@@ -761,9 +1055,9 @@ function drawPlan(v, data) {
     ctx.beginPath(); ctx.moveTo(v.X(sl.x), v.Y(-half)); ctx.lineTo(v.X(sl.x), v.Y(half)); ctx.stroke();
     ctx.globalAlpha = 1;
     if (raw) v.point(ctx, {
-      x: sl.x, y: 0, kind: 'slice', color: SLICE_COLOR,
-      select: () => { state.sel = sl.id; },
-      drag: (wx) => { raw.x = clip(snap(wx, 0.25), 2, state.board.params.length - 2); },
+      x: sl.x, y: 0, kind: 'slice', color: SLICE_COLOR, view: true,
+      select: () => { state.sel = sl.id; state.pt = null; },
+      drag: prefs.edit ? (wx) => { raw.x = clip(snap(wx, 0.25), 2, state.board.params.length - 2); } : null,
     });
   }
   ctx.setLineDash([]);
@@ -784,23 +1078,26 @@ function drawPlan(v, data) {
     a[0] = clip(wx, 0.8, LL - 0.8);
     a[1] = clip(Math.abs(wy) - lerpAt(q.x, q.h0, a[0]), -6, 6);
   };
+  const pq = data._profiles;
   for (const a of P.anchors.outline) {
     const y = lerpAt(x, h, a[0]);
-    v.point(ctx, { x: a[0], y, kind: 'anchor', color: COLORS.foam, drag: dragFn(a), remove: () => dropFrom(P.anchors.outline, a) });
+    v.point(ctx, { x: a[0], y, kind: 'anchor', color: COLORS.foam, on: state.pt === a, select: () => { state.pt = a; }, drag: dragFn(a), remove: () => dropFrom(P.anchors.outline, a) });
     v.point(ctx, { x: a[0], y: -y, kind: 'anchor', color: COLORS.foam, ghost: true });
+    drawArms(v, ctx, a, a[0], y, armOf(pq.arms.outline, a), { S0: slopeAt(pq.x, pq.h0, a[0]), k: 1, color: COLORS.foam });
   }
   v.curves.push({
     at: (wx, wy) => (wx < 0.8 || wx > L - 0.8 ? null : (wy < 0 ? -1 : 1) * lerpAt(x, h, wx)),
     add: (wx) => {
       const q = data._profiles, a = [wx, lerpAt(q.x, q.h, wx) - lerpAt(q.x, q.h0, wx)];
       P.anchors.outline.push(a);
+      state.pt = a;
       return { fn: dragFn(a), undo: () => dropFrom(P.anchors.outline, a) };
     },
   });
 
   v.text(ctx, 'tail', v.X(0), v.h - 6, COLORS.muted, 'left');
   v.text(ctx, 'nose', v.X(L), v.h - 6, COLORS.muted, 'right');
-  if (!P.anchors.outline.length) tip(v, ctx, 'click the outline to add a point');
+  tip(v, ctx, P.anchors.outline.length ? 'drag a point · drag its arms to blend · double-click removes' : 'click the outline to add a point');
 }
 
 /* ---- profile: rocker (bottom line) and foil (deck line) ------------------ */
@@ -827,6 +1124,13 @@ function drawProfile(v, data) {
   for (const sl of p.slices) {
     ctx.strokeStyle = SLICE_COLOR; ctx.globalAlpha = sl.id === state.sel ? 1 : 0.5;
     ctx.beginPath(); ctx.moveTo(v.X(sl.x), v.Y(zb(sl.x))); ctx.lineTo(v.X(sl.x), v.Y(dk(sl.x))); ctx.stroke(); ctx.globalAlpha = 1;
+  }
+  if (state.sel === null) {                             // where the Sections view is looking
+    const sx = scrubX(data);
+    ctx.strokeStyle = SLICE_COLOR; ctx.globalAlpha = 0.9; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(v.X(sx), v.Y(zb(sx))); ctx.lineTo(v.X(sx), v.Y(dk(sx))); ctx.stroke(); ctx.globalAlpha = 1;
+    v.point(ctx, { x: sx, y: zb(sx), kind: 'scrub', color: SLICE_COLOR, view: true, light: true,
+      drag: (wx) => { state.scrub = clip(snap(wx, 0.25), 0.5, state.board.params.length - 0.5); } });
   }
 
   // measurements: rocker on the bottom line, thickness on the deck line
@@ -855,17 +1159,21 @@ function drawProfile(v, data) {
     a[0] = clip(wx, 0.8, LL - 0.8);
     a[1] = clip((wy - lerpAt(q.x, q.zb, a[0])) / now().thickness_scale - lerpAt(q.x, q.foil0, a[0]), -2, 2);
   };
-  for (const a of P.anchors.rocker)
-    v.point(ctx, { x: a[0], y: zb(a[0]), kind: 'anchor', color: COLORS.accent, drag: rockerDrag(a), remove: () => dropFrom(P.anchors.rocker, a) });
-  for (const a of P.anchors.thickness)
-    v.point(ctx, { x: a[0], y: dk(a[0]), kind: 'anchor', color: COLORS.foam, drag: deckDrag(a), remove: () => dropFrom(P.anchors.thickness, a) });
   const q = data._profiles, inside = (wx) => wx > 0.8 && wx < L - 0.8;
+  for (const a of P.anchors.rocker) {
+    v.point(ctx, { x: a[0], y: zb(a[0]), kind: 'anchor', color: COLORS.accent, on: state.pt === a, select: () => { state.pt = a; }, drag: rockerDrag(a), remove: () => dropFrom(P.anchors.rocker, a) });
+    drawArms(v, ctx, a, a[0], zb(a[0]), armOf(q.arms.rocker, a), { S0: slopeAt(q.x, q.zb0, a[0]), k: 1, color: COLORS.accent });
+  }
+  for (const a of P.anchors.thickness) {
+    v.point(ctx, { x: a[0], y: dk(a[0]), kind: 'anchor', color: COLORS.foam, on: state.pt === a, select: () => { state.pt = a; }, drag: deckDrag(a), remove: () => dropFrom(P.anchors.thickness, a) });
+    drawArms(v, ctx, a, a[0], dk(a[0]), armOf(q.arms.thickness, a), { S0: slopeAt(q.x, q.zb, a[0]) + sc * slopeAt(q.x, q.foil0, a[0]), k: sc, color: COLORS.foam });
+  }
   v.curves.push({
     at: (wx) => (inside(wx) ? zb(wx) : null),
-    add: (wx) => { const a = [wx, lerpAt(q.x, q.zb, wx) - lerpAt(q.x, q.zb0, wx)]; P.anchors.rocker.push(a); return { fn: rockerDrag(a), undo: () => dropFrom(P.anchors.rocker, a) }; },
+    add: (wx) => { const a = [wx, lerpAt(q.x, q.zb, wx) - lerpAt(q.x, q.zb0, wx)]; P.anchors.rocker.push(a); state.pt = a; return { fn: rockerDrag(a), undo: () => dropFrom(P.anchors.rocker, a) }; },
   }, {
     at: (wx) => (inside(wx) ? dk(wx) : null),
-    add: (wx) => { const a = [wx, lerpAt(q.x, q.t, wx) / sc - lerpAt(q.x, q.foil0, wx)]; P.anchors.thickness.push(a); return { fn: deckDrag(a), undo: () => dropFrom(P.anchors.thickness, a) }; },
+    add: (wx) => { const a = [wx, lerpAt(q.x, q.t, wx) / sc - lerpAt(q.x, q.foil0, wx)]; P.anchors.thickness.push(a); state.pt = a; return { fn: deckDrag(a), undo: () => dropFrom(P.anchors.thickness, a) }; },
   });
 
   const wide = v.w > 430;                              // narrow panels only have room for the tip rocker
@@ -873,51 +1181,71 @@ function drawProfile(v, data) {
   v.text(ctx, `nose ${fracIn(bottom[bottom.length - 1])}″${wide ? ` · ${fracIn(n12.rocker_in)}″ at 12″` : ''}`, v.w - 4, 12, COLORS.sand, 'right');
   v.text(ctx, `${fracIn(data.stats.thickness_in)}″ thick`, v.X(xt), v.Y(dk(xt)) - 9, COLORS.foam);
   v.text(ctx, `low pt ${p.rocker_low_point > 0 ? '+' : ''}${fracIn(p.rocker_low_point)}″`, v.X(xl), v.Y(0) + 15, COLORS.accent);
-  if (!P.anchors.rocker.length && !P.anchors.thickness.length) tip(v, ctx, 'click the bottom or deck line to add a point');
+  tip(v, ctx, P.anchors.rocker.length || P.anchors.thickness.length ? 'drag a point · drag its arms to blend · double-click removes' : 'click the bottom or deck line to add a point');
 }
 
-/* ---- sections: overview, or one slice you can shape ----------------------- */
+/* ---- sections: roll through the board, or shape one section ---------------- */
+const fine = (v) => fracIn(v, 32);
+function shapeText(sh) {
+  const parts = [];
+  if (sh.con > 1 / 64) parts.push(`concave ${fine(sh.con)}″`);
+  if (sh.con < -1 / 64) parts.push(`roll ${fine(-sh.con)}″`);
+  if (sh.dbl > 1 / 64) parts.push(`double ${fine(sh.dbl)}″`);
+  if (sh.vee > 1 / 64) parts.push(`vee ${fine(sh.vee)}″`);
+  return parts.length ? parts.join(' + ') : 'flat bottom';
+}
+
+/** The flat bottom line every depth is measured from, and the rail apex height above it. */
+function sectionGuides(v, ctx, s, color) {
+  ctx.save();
+  ctx.setLineDash([2, 4]); ctx.strokeStyle = COLORS.muted; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(v.X(-s.h - 0.4), v.Y(0)); ctx.lineTo(v.X(s.h + 0.4), v.Y(0)); ctx.stroke();
+  ctx.setLineDash([]); ctx.strokeStyle = color;
+  for (const side of [-1, 1]) { ctx.beginPath(); ctx.moveTo(v.X(side * s.h), v.Y(s.apex_in)); ctx.lineTo(v.X(side * s.h) + side * 7, v.Y(s.apex_in)); ctx.stroke(); }
+  ctx.restore();
+}
+
+function sectionCaption(v, ctx, data, s, color) {
+  const L = data.params.length;
+  v.text(ctx, `${whereText(s.x, L)} · ${fracIn(2 * s.h)}″ wide · ${fracIn(s.t)}″ thick`, 4, 12, color, 'left');
+  v.text(ctx, `${shapeText(s.shape)} · rail apex ${fracIn(s.apex_in)}″ up`, 4, 25, COLORS.sand, 'left');
+}
+
 function drawSections(v, data) {
   const k = sliceIndex(data), P = state.params;
-  if (k < 0) {                                         // overview of the three reference sections (+ any slices)
-    const secs = data.curves.sections, W = data.stats.width_in;
-    let zmax = 0, zmin = 0;
-    for (const s of Object.values(secs)) { zmax = Math.max(zmax, ...s.z); zmin = Math.min(zmin, ...s.z); }
-    const ctx = v.begin([-W / 2 - 0.5, W / 2 + 0.5, zmin - 0.15, zmax + 0.15], prefs.vexSections, 16);
-    ctx.strokeStyle = COLORS.line; ctx.beginPath(); ctx.moveTo(v.X(0), v.Y(zmin - 0.1)); ctx.lineTo(v.X(0), v.Y(zmax + 0.1)); ctx.stroke();
-    const cols = { center: COLORS.accent, tail_12: COLORS.warm, nose_12: COLORS.sand };
-    for (const name of ['center', 'tail_12', 'nose_12']) {
-      v.path(ctx, secs[name].y, secs[name].z, true);
-      if (name === 'center') { ctx.fillStyle = 'rgba(60,200,180,0.08)'; ctx.fill(); }
-      ctx.strokeStyle = cols[name]; ctx.lineWidth = 1.6; ctx.stroke();
-    }
-    tip(v, ctx, '+ Add a section to shape it with sliders and points');
+  const W = data.stats.width_in, T = data.stats.thickness_in;
+  if (k < 0) {                                         // rolling through: the section at the scrub position, on fixed axes
+    const s = sectionAt(data, scrubX(data));
+    const ctx = v.begin([-W / 2 - 0.6, W / 2 + 0.6, -0.75, T + 0.45], prefs.vexSections, 16);
+    ctx.strokeStyle = COLORS.line; ctx.beginPath(); ctx.moveTo(v.X(0), v.Y(-0.6)); ctx.lineTo(v.X(0), v.Y(T + 0.3)); ctx.stroke();
+    const ref = sectionOutline(sectionAt(data, data.params.length / 2 + data.params.wide_point_offset), 60);   // the wide point, for scale
+    v.path(ctx, ref.X, ref.Z, true); ctx.setLineDash([3, 4]); ctx.strokeStyle = 'rgba(132,148,159,.45)'; ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
+    sectionGuides(v, ctx, s, COLORS.sand);
+    const o = sectionOutline(s);
+    v.path(ctx, o.X, o.Z, true);
+    ctx.fillStyle = 'rgba(180,140,255,0.08)'; ctx.fill();
+    ctx.strokeStyle = SLICE_COLOR; ctx.lineWidth = 1.8; ctx.stroke();
+    sectionCaption(v, ctx, data, s, SLICE_COLOR);
+    if (v.w > 300) v.text(ctx, 'slide to roll through the board · Edit here to shape this section', v.w / 2, v.h - 6, 'rgba(132,148,159,.8)', 'center');
     return;
   }
 
   const s = sliceInfo(data, k), raw = P.slices.find((q) => q.id === s.id);
-  const N = 160, eta = Array.from({ length: N + 1 }, (_, i) => 1 - (1 - i / N) ** 2);   // denser toward the rail
-  const ys = eta.map(s.y), dz = eta.map((e) => s.deck(e)), bz = eta.map((e) => s.bottom(e));
-  const ctx = v.begin([-s.h - 0.5, s.h + 0.5, Math.min(...bz) - 0.3, Math.max(...dz) + 0.3], prefs.vexSections, 18);
-  ctx.strokeStyle = COLORS.line; ctx.beginPath(); ctx.moveTo(v.X(0), v.Y(Math.min(...bz) - 0.2)); ctx.lineTo(v.X(0), v.Y(Math.max(...dz) + 0.2)); ctx.stroke();
-
-  // right half deck (stringer -> rail), back along the bottom, across the left bottom, back along the left deck
-  const outline = (d, b) => {
-    const X = [...ys, ...[...ys].reverse(), ...ys.map((q) => -q), ...[...ys].reverse().map((q) => -q)];
-    const Z = [...d, ...[...b].reverse(), ...b, ...[...d].reverse()];
-    return [X, Z];
-  };
+  const cur = sectionOutline(s);
+  const ctx = v.begin([-s.h - 0.6, s.h + 0.6, Math.min(...cur.b, 0) - 0.3, Math.max(...cur.d) + 0.4], prefs.vexSections, 18);
+  ctx.strokeStyle = COLORS.line; ctx.beginPath(); ctx.moveTo(v.X(0), v.Y(Math.min(...cur.b) - 0.2)); ctx.lineTo(v.X(0), v.Y(Math.max(...cur.d) + 0.2)); ctx.stroke();
+  sectionGuides(v, ctx, s, COLORS.sand);
   if (raw.deck.length || raw.bottom.length) {          // the shape without this slice's anchor points
-    const [X0, Z0] = outline(eta.map((e) => s.deck(e, false)), eta.map((e) => s.bottom(e, false)));
-    v.path(ctx, X0, Z0, true); ctx.setLineDash([3, 3]); ctx.strokeStyle = COLORS.muted; ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
+    const o0 = sectionOutline(s, 160, false);
+    v.path(ctx, o0.X, o0.Z, true); ctx.setLineDash([3, 3]); ctx.strokeStyle = COLORS.muted; ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
   }
-  const [X1, Z1] = outline(dz, bz);
-  v.path(ctx, X1, Z1, true);
+  v.path(ctx, cur.X, cur.Z, true);
   ctx.fillStyle = 'rgba(180,140,255,0.08)'; ctx.fill();
   ctx.strokeStyle = SLICE_COLOR; ctx.lineWidth = 1.8; ctx.stroke();
 
   const info = () => { const b = state.board, i = sliceIndex(b); return i < 0 ? null : sliceInfo(b, i); };
   const etaOf = (si, wx) => clip((Math.abs(wx) - si.yin) / Math.max(si.h - si.yin, 1e-6), 0.04, 0.96);
+  const span = Math.max(s.h - s.yin, 1e-6);            // one unit of eta, in inches across
   for (const which of ['deck', 'bottom']) {
     const list = raw[which], col = which === 'deck' ? COLORS.foam : COLORS.accent;
     const dragFn = (a) => (wx, wz) => {
@@ -926,17 +1254,19 @@ function drawSections(v, data) {
       a[1] = clip((wz - si[which](a[0], false)) / si.t, -0.6, 0.6);
     };
     for (const a of list) {
-      v.point(ctx, { x: s.y(a[0]), y: s[which](a[0]), kind: 'anchor', color: col, drag: dragFn(a), remove: () => dropFrom(list, a) });
-      v.point(ctx, { x: -s.y(a[0]), y: s[which](a[0]), kind: 'anchor', color: col, ghost: true });
+      const y0 = s.y(a[0]), z0 = s[which](a[0]), de = 0.01;
+      v.point(ctx, { x: y0, y: z0, kind: 'anchor', color: col, on: state.pt === a, select: () => { state.pt = a; }, drag: dragFn(a), remove: () => dropFrom(list, a) });
+      v.point(ctx, { x: -y0, y: z0, kind: 'anchor', color: col, ghost: true });
+      const S0 = (s[which](Math.min(a[0] + de, 1), false) - s[which](Math.max(a[0] - de, 0), false)) / (2 * de);
+      drawArms(v, ctx, a, y0, z0, s.arms[which].find((r) => Math.abs(r.x - a[0]) < 1e-9), { S0, k: s.t, kx: span, color: col, mMax: 6, aMin: 0.03, aMax: 1 });
     }
     v.curves.push({
-      at: (wx) => { const e = (Math.abs(wx) - s.yin) / Math.max(s.h - s.yin, 1e-6); return e < 0.04 || e > 0.96 ? null : s[which](e); },
-      add: (wx) => { const e = etaOf(s, wx), a = [e, s.offset(which, e)]; list.push(a); return { fn: dragFn(a), undo: () => dropFrom(list, a) }; },
+      at: (wx) => { const e = (Math.abs(wx) - s.yin) / span; return e < 0.04 || e > 0.96 ? null : s[which](e); },
+      add: (wx) => { const e = etaOf(s, wx), a = [e, s.offset(which, e)]; list.push(a); state.pt = a; return { fn: dragFn(a), undo: () => dropFrom(list, a) }; },
     });
   }
-  const L = data.params.length;
-  v.text(ctx, `${s.x > L / 2 ? `${fracIn(L - s.x)}″ from nose` : `${fracIn(s.x)}″ from tail`} · ${fracIn(2 * s.h)}″ wide · ${fracIn(s.t)}″ thick`, 4, 12, SLICE_COLOR, 'left');
-  if (!raw.deck.length && !raw.bottom.length) tip(v, ctx, 'sliders on the left · click a line to add a point');
+  sectionCaption(v, ctx, data, s, SLICE_COLOR);
+  tip(v, ctx, raw.deck.length || raw.bottom.length ? 'drag a point · drag its arms to blend · double-click removes' : 'sliders on the left · click a line to add a point');
 }
 
 const views2d = {
@@ -949,24 +1279,52 @@ function drawPanels() { for (const v of Object.values(views2d)) v.redraw(); }
 /* ---- slice bar, panel tools, expand / collapse ---------------------------- */
 function sliceLabel(s, L) { return s.x > L / 2 ? `N ${fracIn(L - s.x)}″` : `T ${fracIn(s.x)}″`; }
 
+/** Under the Sections title: a slider to roll through the board, or the controls of the section being shaped. */
 function renderSliceBar(data) {
-  const bar = $('#slicebar'), L = data.params.length, list = data.params.slices;
-  const sig = JSON.stringify([state.sel, list.map((s) => [s.id, sliceLabel(s, L)])]);
-  if (bar.dataset.sig === sig) return;
-  bar.dataset.sig = sig;
-  bar.innerHTML = `<button data-id="" class="${state.sel === null ? 'on' : ''}">Overview</button>` +
-    list.map((s) => `<button data-id="${s.id}" class="${s.id === state.sel ? 'on' : ''}" title="${s.x > L / 2 ? 'from the nose' : 'from the tail'}">${sliceLabel(s, L)}</button>`).join('') +
-    `<button data-add title="Add a cross section you can shape">+ Add</button>` +
-    (state.sel !== null ? `<button data-del title="Remove this cross section">Remove</button>` : '');
+  const bar = $('#slicebar'), L = data.params.length, list = data.params.slices, x = scrubX(data);
+  const near = state.sel === null ? list.find((s) => Math.abs(s.x - x) < 0.4) : null;
+  const sig = JSON.stringify([state.sel, L, near?.id ?? null, list.map((s) => [s.id, sliceLabel(s, L)])]);
+  if (bar.dataset.sig !== sig) {
+    bar.dataset.sig = sig;
+    const chips = list.filter((s) => s.id !== state.sel)
+      .map((s) => `<button data-id="${s.id}" title="Shaped section ${s.x > L / 2 ? 'from the nose' : 'from the tail'}: open it">${sliceLabel(s, L)}</button>`).join('');
+    if (state.sel === null) {
+      bar.innerHTML = `<input type="range" id="scrub" min="0.5" max="${L - 0.5}" step="0.25" aria-label="Position along the board"><span class="where" id="scrub-where"></span>
+        <button data-edit title="Shape the section at this spot with sliders and points">${near ? 'Edit this one' : 'Edit here'}</button>${chips}`;
+    } else {
+      const s = list.find((q) => q.id === state.sel);
+      bar.innerHTML = `<span class="editing">Shaping ${s ? sliceLabel(s, L) : ''}</span><button data-done title="Finish and go back to rolling through the board (Esc)">Done</button>
+        <button data-del title="Remove this shaped section">Remove</button>${chips}`;
+    }
+  }
+  const r = $('#scrub');
+  if (r) {
+    if (document.activeElement !== r || Math.abs(+r.value - x) > 0.13) r.value = x;
+    r.style.setProperty('--pct', `${((x - 0.5) / (L - 1)) * 100}%`);
+    $('#scrub-where').textContent = x > L / 2 ? `N ${fracIn(L - x)}″` : `T ${fracIn(x)}″`;
+  }
 }
 
-function addSlice() {
-  const P = state.params, L = state.board.params.length;
-  const xs = [0, ...P.slices.map((s) => s.x).filter((q) => q > 0 && q < L).sort((a, b) => a - b), L];
-  let best = 0;
-  for (let i = 1; i < xs.length - 1; i++) if (xs[i + 1] - xs[i] > xs[best + 1] - xs[best]) best = i;
+/** The scrub position moved: nothing about the board changed, so just redraw. */
+function scrubChanged() {
+  if (!state.board) return;
+  drawPanels();
+  renderSliceBar(state.board);
+  showRing(state.board);
+}
+
+function exitSection() {
+  const s = state.params.slices.find((q) => q.id === state.sel);
+  if (s) state.scrub = s.x;
+  state.sel = null; state.pt = null;
+  views2d.sections.zoom = 1;
+  schedule();
+}
+
+function addSlice(x) {
+  const P = state.params;
   const id = 1 + Math.max(0, ...P.slices.map((s) => s.id || 0));
-  P.slices.push({ id, x: snap((xs[best] + xs[best + 1]) / 2, 0.25), adj: {}, deck: [], bottom: [] });
+  P.slices.push({ id, x, adj: {}, deck: [], bottom: [] });
   state.sel = id;
 }
 
@@ -981,11 +1339,22 @@ function setFocus(name) {
 }
 
 function wirePanels() {
+  $('#slicebar').addEventListener('input', (e) => {
+    if (e.target.id !== 'scrub') return;
+    state.scrub = +e.target.value;
+    scrubChanged();
+  });
   $('#slicebar').addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;
-    if ('add' in b.dataset) addSlice();
-    else if ('del' in b.dataset) { state.params.slices = state.params.slices.filter((s) => s.id !== state.sel); state.sel = null; }
-    else state.sel = b.dataset.id === '' ? null : Number(b.dataset.id);
+    const P = state.params;
+    if ('edit' in b.dataset) {                          // shape the section at the scrub position (reuse one that is already there)
+      const x = scrubX(state.board), near = P.slices.find((s) => Math.abs(s.x - x) < 0.4);
+      if (near) state.sel = near.id; else addSlice(clip(snap(x, 0.25), 2, state.board.params.length - 2));
+      if (!prefs.edit) { prefs.edit = true; savePrefs(); syncPanelTools(); }
+    } else if ('done' in b.dataset) { exitSection(); return; }
+    else if ('del' in b.dataset) { const s = P.slices.find((q) => q.id === state.sel); if (s) state.scrub = s.x; P.slices = P.slices.filter((q) => q.id !== state.sel); state.sel = null; }
+    else state.sel = Number(b.dataset.id);
+    state.pt = null;
     views2d.sections.zoom = 1;
     saveLocal(); schedule();
   });
@@ -994,6 +1363,7 @@ function wirePanels() {
     panel.querySelector('.tools').addEventListener('click', (e) => {
       const act = e.target.closest('button')?.dataset.act; if (!act) return;
       if (act === 'max') setFocus(name);
+      if (act === 'edit') { prefs.edit = !prefs.edit; if (!prefs.edit) state.pt = null; savePrefs(); syncPanelTools(); drawPanels(); }
       if (act === 'fit') v.fit();
       if (act === 'in') v.zoomBy(1.6);
       if (act === 'vex') {
@@ -1005,16 +1375,26 @@ function wirePanels() {
         if (name === 'plan') P.anchors.outline = [];
         if (name === 'profile') { P.anchors.rocker = []; P.anchors.thickness = []; }
         if (name === 'sections') { const s = P.slices.find((q) => q.id === state.sel); if (s) { s.deck = []; s.bottom = []; } }
+        state.pt = null;
         saveLocal(); schedule();
       }
     });
   });
   $('#t-max').addEventListener('click', () => setFocus('view'));
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.focus && $('#feedback').hidden) setFocus(state.focus); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !$('#feedback').hidden) return;
+    if (state.sel !== null) exitSection();              // Esc leaves the section being shaped first, then an expanded view
+    else if (state.focus) setFocus(state.focus);
+  });
   syncPanelTools();
 }
 
 function syncPanelTools() {
+  document.querySelectorAll('.tools [data-act="edit"]').forEach((b) => {
+    b.classList.toggle('on', prefs.edit);
+    const short = b.closest('[data-panel]').dataset.panel === 'sections';
+    b.textContent = prefs.edit ? (short ? 'Editing' : 'Editing points') : (short ? 'Edit' : 'Edit points');
+  });
   for (const [name, key] of [['profile', 'vexProfile'], ['sections', 'vexSections']]) {
     const b = document.querySelector(`.panel[data-panel="${name}"] [data-act="vex"]`);
     b.textContent = prefs[key] === 1 ? 'true scale' : 'height ×3';
@@ -1037,6 +1417,7 @@ function render(data) {
   renderSliceBar(data);
   refreshSectionGroup(data);
   syncClearButtons();
+  showRing(data, false);
   const s = data.stats;
   $('#s-vol').textContent = s.volume_l.toFixed(2);
   $('#s-dims').textContent = `${ftin(s.length_in)} × ${fracIn(s.width_in)}″ × ${fracIn(s.thickness_in)}″`;
@@ -1065,6 +1446,18 @@ function wireUI() {
     state.wire = !state.wire; wireMesh.visible = state.wire; e.currentTarget.classList.toggle('on', state.wire);
   });
   $('#t-light').addEventListener('click', () => { prefs.bay = !prefs.bay; savePrefs(); setLighting(); });
+  $('#t-flip').addEventListener('click', (e) => { state.flip = !state.flip; e.currentTarget.classList.toggle('on', state.flip); });
+  $('#btn-undo').addEventListener('click', () => histGo(-1));
+  $('#btn-redo').addEventListener('click', () => histGo(1));
+  document.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || document.body.dataset.page === 'rider') return;
+    const key = e.key.toLowerCase(), el = document.activeElement;
+    if (key !== 'z' && key !== 'y') return;
+    if (el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type === 'text'))) return;   // typing has its own undo
+    e.preventDefault();
+    histGo(key === 'y' || e.shiftKey ? 1 : -1);
+  });
+  document.querySelectorAll('#pages button').forEach((b) => b.addEventListener('click', () => setPage(b.dataset.page)));
   setLighting();
   wirePanels();
   $('#t-stringer').addEventListener('click', (e) => {
@@ -1190,6 +1583,31 @@ function wireFeedback() {
   });
 }
 
+/* =========================================================================
+   Pages: the designer, and the Rider page (rider.js) that suggests a board to start from
+   ========================================================================= */
+let riderUI = null;
+function setPage(name) {
+  name = name === 'rider' ? 'rider' : 'designer';
+  document.body.dataset.page = name;
+  document.querySelectorAll('#pages button').forEach((b) => b.classList.toggle('on', b.dataset.page === name));
+  try { history.replaceState(null, '', name === 'rider' ? '#rider' : location.pathname + location.search); } catch {}
+  if (name === 'rider') {
+    riderUI ??= initRider($('#rider'), {
+      fracIn, ftin,
+      open: (p, res) => {
+        state.fitted = false; state.userMoved = false;
+        applyParams(p);
+        $('#preset').value = '';
+        setPage('designer');
+        toast(`${res.type} for a ${res.target.toFixed(1)} L rider. Shape it from here.`);
+      },
+    });
+    riderUI.refresh();
+    window.scrollTo(0, 0);
+  } else requestAnimationFrame(() => { resize(); drawPanels(); });
+}
+
 /* ========================================================================= */
 function init() {
   state.schema = { groups: GROUPS, station_table: STATION_TABLE, defaults: DEFAULTS, presets: PRESETS };
@@ -1199,7 +1617,9 @@ function init() {
   const first = Object.keys(state.schema.presets)[0];
   if (!saved) $('#preset').value = first;
   applyParams(saved || state.schema.presets[first]);
+  histCommit();                                         // the starting point for undo
   resize();
+  if (location.hash === '#rider') setPage('rider');
 }
 init();
 
@@ -1213,7 +1633,8 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   const installed = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
   let seen = false;
   try { seen = localStorage.getItem('surfboard.installTip') === '1'; } catch {}
-  if (!ios || installed || seen || window.self !== window.top) return;
+  const native = !!window.Capacitor?.isNativePlatform?.();      // already the App Store app
+  if (!ios || installed || native || seen || window.self !== window.top) return;
   $('#install').hidden = false;
   $('#install-x').addEventListener('click', () => { $('#install').hidden = true; try { localStorage.setItem('surfboard.installTip', '1'); } catch {} });
 })();

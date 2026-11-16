@@ -23,7 +23,15 @@ const ANCHOR_LIMIT = { outline: 6, rocker: 4, thickness: 2 };   // max offset an
 const ANCHOR_GAP = 0.75;                                         // min spacing between anchors / pinned points
 const GRID = 257;                                                // samples of a slice's deck / bottom offset curve
 // What a cross-section slice may adjust, and by how much at most (added to the board-wide value there)
-const ADJ = { rail_apex: 0.45, rail_fullness: 1, deck_dome: 1, rail_hardness: 1, concave: 0.5, vee: 0.5 };
+const ADJ = { rail_apex: 0.45, rail_apex_in: 1.5, rail_fullness: 1, deck_dome: 1, rail_hardness: 1, concave: 0.5, double: 0.5, vee: 0.5 };
+// Bottom contour stations: what each type puts into the three channels [single concave, double concave, vee]
+const BOTTOM_TYPES = {
+  flat: () => [0, 0, 0], concave: (a) => [a, 0, 0], roll: (a) => [-a, 0, 0], double: (a) => [0, a, 0],
+  concave_double: (a, b) => [a, b, 0], vee: (a) => [0, 0, a], vee_double: (a, b) => [0, b, a],
+};
+export const BOTTOM_LABELS = { flat: 'flat', concave: 'concave', roll: 'roll', double: 'double concave',
+  concave_double: 'concave with double inside', vee: 'vee', vee_double: 'vee with double concave' };
+const K2 = (3 / 7) ** 1.5 * (4 / 7) ** 2;                         // peak of eta^1.5 (1 - eta)^2, the double-concave shape
 
 const clip = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 const smoothstep = (t) => { t = clip(t, 0, 1); return t * t * (3 - 2 * t); };
@@ -173,9 +181,12 @@ export function validated(src) {
   clamp('target_volume', 10, 120);
   p.stations = Math.trunc(clip(p.stations, 41, 401));
   p.section_points = Math.trunc(clip(p.section_points, 16, 128));
+  if (Number.isFinite(p.rail_apex_in)) clamp('rail_apex_in', 0.1, 2.5); else p.rail_apex_in = null;
   p._auto = auto;
   p.anchors = cleanAnchors(p);
   p.slices = cleanSlices(p);
+  p.bottom = cleanBottom(p);
+  p._bottom = bottomCurves(p);
   return [p, w];
 }
 
@@ -184,11 +195,17 @@ export function validated(src) {
    Each design curve (outline, rocker, thickness) is its closed-form base curve plus a
    smooth correction through the anchor offsets that is zero (and level) at every measured
    station and at the curve's origin (wide / low / thick point), and zero at the tips. So
-   anchors reshape a curve between measurements without changing the measurements. The
-   correction is a shape-preserving cubic: tangent-continuous, and it never overshoots
-   an anchor.
+   anchors reshape a curve between measurements without changing the measurements.
+
+   An anchor is [x, offset, slope, armLeft, armRight]. The last three are its handle, as in
+   a drawing program: the slope the correction passes through the point with, and how far
+   each arm reaches (inches along the board). Left out (null), the slope is the
+   shape-preserving default and each arm is a third of the way to the next point, which
+   is a plain cubic that never overshoots. Longer arms make the curve hold its direction
+   further from the point; that is how two stretches are blended by hand.
    --------------------------------------------------------------------------- */
 const pairOk = (a) => Array.isArray(a) && Number.isFinite(a[0]) && Number.isFinite(a[1]);
+const optNum = (v, lo, hi) => (Number.isFinite(v) ? clip(v, lo, hi) : null);
 
 function pinsFor(p, name) {
   const half = p.length / 2, a = p._auto;
@@ -208,7 +225,8 @@ function cleanAnchors(p) {
     if (pin.tail12) fixed.push(12);
     if (pin.nose12) fixed.push(L - 12);
     const pts = (Array.isArray(src[name]) ? src[name] : []).filter(pairOk)
-      .map((a) => [a[0], clip(a[1], -lim, lim)]).sort((a, b) => a[0] - b[0]);
+      .map((a) => [a[0], clip(a[1], -lim, lim), optNum(a[2], -3, 3), optNum(a[3], 0.05, 60), optNum(a[4], 0.05, 60)])
+      .sort((a, b) => a[0] - b[0]);
     const kept = [];
     for (const a of pts) {
       if (kept.length === 24) break;
@@ -226,7 +244,8 @@ function cleanSlices(p) {
   const L = p.length, kept = [];
   const side = (list) => {
     const pts = (Array.isArray(list) ? list : []).filter(pairOk)
-      .map((a) => [a[0], clip(a[1], -0.6, 0.6)]).sort((a, b) => a[0] - b[0]);
+      .map((a) => [a[0], clip(a[1], -0.6, 0.6), optNum(a[2], -6, 6), optNum(a[3], 0.01, 1), optNum(a[4], 0.01, 1)])
+      .sort((a, b) => a[0] - b[0]);
     const k = [];
     for (const a of pts) {
       if (k.length === 16) break;
@@ -281,12 +300,89 @@ function hermiteAt(xs, ys, m, xq) {
 }
 
 /**
+ * A curve through knots [x, y, slope, armLeft, armRight] (handle values optional), as cubic
+ * Bezier segments. Returns { at(xq), arms } where arms[i] = the handle actually used at knot i.
+ */
+function knotCurve(knots, fixStart, fixEnd) {
+  const n = knots.length, xs = knots.map((k) => k[0]), ys = knots.map((k) => k[1]);
+  const auto = pchipSlopes(xs, ys, fixStart, fixEnd);
+  const m = knots.map((k, i) => (Number.isFinite(k[2]) ? k[2] : auto[i]));
+  const A = new Float64Array(n), B = new Float64Array(n);       // right arm of knot i, left arm of knot i + 1
+  for (let i = 0; i < n - 1; i++) {
+    const h = xs[i + 1] - xs[i];
+    let a = Number.isFinite(knots[i][4]) ? knots[i][4] : h / 3, b = Number.isFinite(knots[i + 1][3]) ? knots[i + 1][3] : h / 3;
+    if (a + b > h) { const f = h / (a + b); a *= f; b *= f; }    // arms may not cross: keeps one height per position
+    A[i] = a; B[i + 1] = b;
+  }
+  const at = (xq) => {
+    let i = 0;
+    while (i < n - 2 && xq > xs[i + 1]) i++;
+    const X0 = xs[i], X3 = xs[i + 1], X1 = X0 + A[i], X2 = X3 - B[i + 1];
+    const Y0 = ys[i], Y3 = ys[i + 1], Y1 = Y0 + A[i] * m[i], Y2 = Y3 - B[i + 1] * m[i + 1];
+    let lo = 0, hi = 1;
+    for (let it = 0; it < 48; it++) {
+      const t = (lo + hi) / 2, u = 1 - t;
+      if (u * u * u * X0 + 3 * u * u * t * X1 + 3 * u * t * t * X2 + t * t * t * X3 < xq) lo = t; else hi = t;
+    }
+    const t = (lo + hi) / 2, u = 1 - t;
+    return u * u * u * Y0 + 3 * u * u * t * Y1 + 3 * u * t * t * Y2 + t * t * t * Y3;
+  };
+  return { at, arms: knots.map((k, i) => ({ x: xs[i], m: m[i], aL: B[i], aR: A[i] })) };
+}
+
+/**
+ * Bottom contours along the board, from the stations the shaper entered (flat here, 1/16"
+ * concave there, double concave further back, vee off the tail). Each station sets the
+ * depth of three channels; between stations each channel is blended with a
+ * shape-preserving cubic. The nose tip is flat and the last station runs out the tail.
+ */
+function cleanBottom(p) {
+  const L = p.length, rows = [];
+  for (const r of Array.isArray(p.bottom) ? p.bottom : []) {
+    if (!r || !Number.isFinite(r.pos)) continue;
+    const from = r.from === 'nose' ? 'nose' : 'tail';
+    const type = Object.prototype.hasOwnProperty.call(BOTTOM_TYPES, r.type) ? r.type : 'flat';
+    const depth = Number.isFinite(r.depth) ? clip(r.depth, 0, 0.75) : 0, depth2 = Number.isFinite(r.depth2) ? clip(r.depth2, 0, 0.75) : 0;
+    const [c, d, v] = BOTTOM_TYPES[type](depth, depth2);
+    rows.push({ pos: r.pos, from, type, depth, depth2, x: clip(from === 'nose' ? L - r.pos : r.pos, 0, L), c, d, v });
+  }
+  rows.sort((a, b) => a.x - b.x);
+  const kept = [];
+  for (const r of rows) {
+    if (kept.length === 24) break;
+    if (kept.length && r.x - kept[kept.length - 1].x < 0.5) continue;
+    kept.push(r);
+  }
+  return kept;
+}
+
+function bottomCurves(p) {
+  const rows = p.bottom;
+  if (!rows.length) return null;
+  const L = p.length, xs = [], C = [], D = [], V = [];
+  const push = (x, c, d, v) => { xs.push(x); C.push(c); D.push(d); V.push(v); };
+  if (rows[0].x > 0.5) push(0, rows[0].c, rows[0].d, rows[0].v);
+  for (const r of rows) push(r.x, r.c, r.d, r.v);
+  if (rows[rows.length - 1].x < L - 0.5) push(L, 0, 0, 0);
+  if (xs.length < 2) push(L, C[0], D[0], V[0]);
+  return { xs, C, D, V, mC: pchipSlopes(xs, C, true, true), mD: pchipSlopes(xs, D, true, true), mV: pchipSlopes(xs, V, true, true) };
+}
+
+/** [single concave (negative = roll), double concave, vee] depths at x, before any slice adjustment. */
+function bottomAt(p, x) {
+  const b = p._bottom;
+  if (!b) return [concaveAt(p, x), 0, veeAt(p, x)];             // the simple Concave / Vee sliders
+  const xq = clip(x, b.xs[0], b.xs[b.xs.length - 1]);
+  return [hermiteAt(b.xs, b.C, b.mC, xq), hermiteAt(b.xs, b.D, b.mD, xq), hermiteAt(b.xs, b.V, b.mV, xq)];
+}
+
+/**
  * Correction for one design curve, evaluated at the stations x.
  * The pinned points split the curve into spans that are solved separately and held level
  * at each pin, so moving an anchor only reshapes its own span (no ripple into the rest of
  * the board). At the tips the slope is left free.
  */
-function curveDelta(p, name, x) {
+function curveDelta(p, name, x, arms) {
   const out = new Float64Array(x.length), pts = p.anchors[name];
   if (!pts.length) return out;
   const L = p.length, pin = pinsFor(p, name);
@@ -299,9 +395,9 @@ function curveDelta(p, name, x) {
     const a = P[s], b = P[s + 1];
     const inside = pts.filter((q) => q[0] > a && q[0] < b);
     if (!inside.length) continue;
-    const xs = [a, ...inside.map((q) => q[0]), b], ys = [0, ...inside.map((q) => q[1]), 0];
-    const m = pchipSlopes(xs, ys, s > 0, s < P.length - 2);
-    for (let i = 0; i < x.length; i++) if (x[i] > a && x[i] < b) out[i] = hermiteAt(xs, ys, m, x[i]);
+    const curve = knotCurve([[a, 0], ...inside, [b, 0]], s > 0, s < P.length - 2);
+    for (let i = 0; i < x.length; i++) if (x[i] > a && x[i] < b) out[i] = curve.at(x[i]);
+    if (arms) arms.push(...curve.arms.slice(1, -1));
   }
   return out;
 }
@@ -319,11 +415,12 @@ function sliceTables(p) {
   if (!pts && !sl.some((s) => Object.values(s.adj).some((v) => v !== 0))) return null;
   const table = (list) => {
     const T = new Float64Array(GRID);
+    T.arms = [];
     if (!list.length) return T;
-    const xs = [0, ...list.map((a) => a[0]), 1], ys = [0, ...list.map((a) => a[1]), 0];
-    const m = pchipSlopes(xs, ys, true, false);          // level across the stringer
-    for (let g = 0; g < GRID; g++) T[g] = hermiteAt(xs, ys, m, g / (GRID - 1));
+    const curve = knotCurve([[0, 0], ...list, [1, 0]], true, false);   // level across the stringer
+    for (let g = 0; g < GRID; g++) T[g] = curve.at(g / (GRID - 1));
     T[GRID - 1] = 0;
+    T.arms = curve.arms.slice(1, -1);
     return T;
   };
   const zero = new Float64Array(GRID), adj = {};
@@ -336,22 +433,45 @@ function sliceTables(p) {
   };
 }
 
-/** Section shape settings at x: the board-wide values plus a slice adjustment d (or none). */
-function sectionShape(p, x, d) {
+/** What the slices change at position x: fills d (setting adjustments) and, if given, the offset rows. */
+function sliceBlend(sl, x, d, rowD, rowB) {
+  let j = 0;
+  while (j < sl.kx.length - 2 && x >= sl.kx[j + 1]) j++;
+  const tt = clip((x - sl.kx[j]) / (sl.kx[j + 1] - sl.kx[j]), 0, 1);
+  const wq = tt * tt * tt * (tt * (6 * tt - 15) + 10);
+  for (const k in sl.adj) d[k] = (1 - wq) * sl.adj[k][j] + wq * sl.adj[k][j + 1];
+  if (sl.pts && rowD) for (let g = 0; g < GRID; g++) {
+    rowD[g] = (1 - wq) * sl.deck[j][g] + wq * sl.deck[j + 1][g];
+    rowB[g] = (1 - wq) * sl.bottom[j][g] + wq * sl.bottom[j + 1][g];
+  }
+}
+
+/**
+ * Section shape settings at x for local thickness t: the board-wide values plus a slice
+ * adjustment d (or none). The rail apex is a height in inches above the flat bottom line
+ * when rail_apex_in is set (older designs give it as a fraction of thickness instead).
+ */
+function sectionShape(p, x, d, t) {
   const g = (k) => (d ? d[k] : 0);
+  const [c0, d0, v0] = bottomAt(p, x);
+  let con = clip(c0 + g('concave'), -0.5, 0.75), dbl = clip(d0 + g('double'), 0, 0.75);
+  const lift = Math.abs(con) + dbl, cap = 0.5 * t;                // never carve more than half the thickness
+  if (lift > cap) { const f = cap / lift; con *= f; dbl *= f; }
   return {
-    ar: clip(p.rail_apex + g('rail_apex'), 0.15, 0.6),
+    ar: p.rail_apex_in !== null
+      ? clip((p.rail_apex_in + g('rail_apex_in')) / Math.max(t, 1e-9), 0.1, 0.6)
+      : clip(p.rail_apex + g('rail_apex'), 0.15, 0.6),
     ed: 1.7 + 1.4 * clip(p.rail_fullness + g('rail_fullness'), 0, 1),
     eb: 2 + 6 * clip(railHardness(p, x) + g('rail_hardness'), 0, 1),
     dome: clip(p.deck_dome + g('deck_dome'), 0, 1),
-    con: clip(concaveAt(p, x) + g('concave'), 0, 0.5),
-    vee: clip(veeAt(p, x) + g('vee'), 0, 0.5),
+    con, dbl, vee: clip(v0 + g('vee'), 0, 0.75),
   };
 }
 /** Board-wide section settings at x, in the same terms a slice adjusts (for the UI). */
 export function sectionBase(p, x) {
-  return { rail_apex: p.rail_apex, rail_fullness: p.rail_fullness, deck_dome: p.deck_dome,
-    rail_hardness: railHardness(p, x), concave: concaveAt(p, x), vee: veeAt(p, x) };
+  const [c0, d0, v0] = bottomAt(p, x);
+  return { rail_apex: p.rail_apex, rail_apex_in: p.rail_apex_in ?? 0, rail_fullness: p.rail_fullness, deck_dome: p.deck_dome,
+    rail_hardness: railHardness(p, x), concave: c0, double: d0, vee: v0 };
 }
 const gridAt = (row, eta) => {
   const f = eta * (GRID - 1), i0 = Math.min(Math.floor(f), GRID - 2);
@@ -455,18 +575,8 @@ function sections(p, x, h, yin, t, zb, M, sl) {
   const rowD = new Float64Array(GRID), rowB = new Float64Array(GRID), d = {};
   for (let i = 0; i < n; i++) {
     const hi = h[i], ti = t[i];
-    if (sl) {                                            // blend what the two neighbouring slices change
-      let j = 0;
-      while (j < sl.kx.length - 2 && x[i] >= sl.kx[j + 1]) j++;
-      const tt = clip((x[i] - sl.kx[j]) / (sl.kx[j + 1] - sl.kx[j]), 0, 1);
-      const wq = tt * tt * tt * (tt * (6 * tt - 15) + 10);
-      for (const k in sl.adj) d[k] = (1 - wq) * sl.adj[k][j] + wq * sl.adj[k][j + 1];
-      if (sl.pts) for (let g = 0; g < GRID; g++) {
-        rowD[g] = (1 - wq) * sl.deck[j][g] + wq * sl.deck[j + 1][g];
-        rowB[g] = (1 - wq) * sl.bottom[j][g] + wq * sl.bottom[j + 1][g];
-      }
-    }
-    const { ar, ed, eb, dome, con, vee } = sectionShape(p, x[i], sl ? d : null);
+    if (sl) sliceBlend(sl, x[i], d, rowD, rowB);         // blend what the two neighbouring slices change
+    const { ar, ed, eb, dome, con, dbl, vee } = sectionShape(p, x[i], sl ? d : null, ti);
     const zApex = zb[i] + ar * ti, td = (1 - ar) * ti, tb = ar * ti;
     const hs = Math.max(hi, 1e-9), yi = yin[i];
     for (let k = 0; k < K; k++) {
@@ -475,7 +585,7 @@ function sections(p, x, h, yin, t, zb, M, sl) {
       const eta = clip(yraw / hs, 0, 1);
       Z[k] = deck
         ? zApex + td * TH_SIN[k] ** (2 / ed) * (1 - 0.7 * dome * eta * eta)
-        : zApex - tb * TH_SIN[k] ** (2 / e) + con * (1 - eta * eta) ** 2 - vee * (1 - eta);
+        : zApex - tb * TH_SIN[k] ** (2 / e) + con * (1 - eta * eta) ** 2 + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 - vee * (1 - eta);
       if (sl && sl.pts) Z[k] += ti * gridAt(deck ? rowD : rowB, eta);
       Y[k] = yi + (yraw * (hi - yi)) / hs;
     }
@@ -534,7 +644,8 @@ function buildMesh(p, tScale) {
   const x = stationXs(p), n = x.length, M = p.section_points;
   // base curves, then the anchor-point corrections
   const h0 = halfWidth(p, x), zb0 = rocker(p, x), foil0 = foil(p, x);
-  const dh = curveDelta(p, 'outline', x), dz = curveDelta(p, 'rocker', x), dt = curveDelta(p, 'thickness', x);
+  const arms = { outline: [], rocker: [], thickness: [] };
+  const dh = curveDelta(p, 'outline', x, arms.outline), dz = curveDelta(p, 'rocker', x, arms.rocker), dt = curveDelta(p, 'thickness', x, arms.thickness);
   const h = Float64Array.from(h0, (v, i) => Math.max(v + dh[i], 0.15 * v));
   const zb = Float64Array.from(zb0, (v, i) => v + dz[i]);
   const t = Float64Array.from(foil0, (v, i) => {
@@ -604,7 +715,7 @@ function buildMesh(p, tScale) {
     for (let f = 0; f < faces.length; f += 3) { const tmp = faces[f]; faces[f] = faces[f + 2]; faces[f + 2] = tmp; }
     vol = -vol;
   }
-  return { V, F: faces, vol, prof: { x, h, yin, zb, t, Y, Z, M, h0, zb0, foil0, sl } };
+  return { V, F: faces, vol, prof: { x, h, yin, zb, t, Y, Z, M, h0, zb0, foil0, sl, arms } };
 }
 
 function meshVolume(V, F) {
@@ -720,26 +831,36 @@ export function curves(board) {
 }
 
 /**
- * One user slice in a form the section editor can use: closed-form deck and bottom
- * heights (relative to the bottom centerline) as functions of eta = 0 (stringer) .. 1 (rail).
+ * The cross section at any position x, in closed form: deck and bottom heights above the
+ * bottom centerline as functions of eta = 0 (stringer) .. 1 (rail). Used to roll through
+ * the board section by section, and by the section editor.
  */
-export function sliceInfo(board, k) {
-  const p = board.params, pr = board._profiles, s = p.slices[k];
-  let i = 0;
-  for (let q = 1; q < pr.x.length; q++) if (Math.abs(pr.x[q] - s.x) < Math.abs(pr.x[i] - s.x)) i = q;
-  const h = pr.h[i], t = pr.t[i], yin = pr.yin[i];
-  const { ar, ed, eb, dome, con, vee } = sectionShape(p, s.x, s.adj);
-  const row = (which) => (pr.sl && pr.sl.pts ? pr.sl[which][k + 1] : null);
-  const off = (which, eta) => (row(which) ? t * gridAt(row(which), clip(eta, 0, 1)) : 0);
+export function sectionAt(board, x) {
+  const p = board.params, pr = board._profiles;
+  const h = interp(x, pr.x, pr.h), t = interp(x, pr.x, pr.t), yin = interp(x, pr.x, pr.yin);
+  const d = {}, rowD = new Float64Array(GRID), rowB = new Float64Array(GRID);
+  if (pr.sl) sliceBlend(pr.sl, x, d, rowD, rowB);
+  const sh = sectionShape(p, x, pr.sl ? d : null, t);
+  const { ar, ed, eb, dome, con, dbl, vee } = sh;
+  const rows = pr.sl && pr.sl.pts ? { deck: rowD, bottom: rowB } : null;
+  const off = (which, eta) => (rows ? gridAt(rows[which], clip(eta, 0, 1)) : 0);
   return {
-    x: s.x, id: s.id, h, t, yin, adj: s.adj, base: sectionBase(p, s.x),
+    x, h, t, yin, apex_in: ar * t, shape: sh,
     y: (eta) => yin + eta * (h - yin),
     deck: (eta, withAnchors = true) =>
-      ar * t + (1 - ar) * t * (1 - eta ** ed) ** (1 / ed) * (1 - 0.7 * dome * eta * eta) + (withAnchors ? off('deck', eta) : 0),
+      ar * t + (1 - ar) * t * (1 - eta ** ed) ** (1 / ed) * (1 - 0.7 * dome * eta * eta) + (withAnchors ? t * off('deck', eta) : 0),
     bottom: (eta, withAnchors = true) =>
-      ar * t - ar * t * (1 - eta ** eb) ** (1 / eb) + con * (1 - eta * eta) ** 2 - vee * (1 - eta) + (withAnchors ? off('bottom', eta) : 0),
-    offset: (which, eta) => (row(which) ? gridAt(row(which), clip(eta, 0, 1)) : 0),
+      ar * t - ar * t * (1 - eta ** eb) ** (1 / eb) + con * (1 - eta * eta) ** 2 + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 - vee * (1 - eta)
+      + (withAnchors ? t * off('bottom', eta) : 0),
+    offset: off,
   };
+}
+
+/** One user slice: its section plus what the editor needs (settings, handles in use). */
+export function sliceInfo(board, k) {
+  const p = board.params, pr = board._profiles, s = p.slices[k];
+  const arms = (which) => (pr.sl && pr.sl.pts ? pr.sl[which][k + 1].arms : []);
+  return { ...sectionAt(board, s.x), id: s.id, adj: s.adj, base: sectionBase(p, s.x), arms: { deck: arms('deck'), bottom: arms('bottom') } };
 }
 
 export function specSheet(board) {
@@ -756,8 +877,11 @@ export function specSheet(board) {
     `wide point   ${fmtIn(p.wide_point_offset)} from center (+ = toward nose)`,
     `rocker low   ${fmtIn(p.rocker_low_point)} from center`,
     `thick point  ${fmtIn(p.thickness_point_offset)} from center`,
-    `rails        apex ${Math.round(p.rail_apex * 100)}% of thickness, fullness ${p.rail_fullness.toFixed(2)}, deck dome ${p.deck_dome.toFixed(2)}`,
-    `bottom       concave ${fmtIn(p.concave_depth)}, tail vee ${fmtIn(p.vee_depth)}`,
+    `rails        apex ${p.rail_apex_in !== null ? `${fmtIn(p.rail_apex_in)} above the bottom` : `${Math.round(p.rail_apex * 100)}% of thickness`}, fullness ${p.rail_fullness.toFixed(2)}, deck dome ${p.deck_dome.toFixed(2)}`,
+    ...(p.bottom.length
+      ? ['bottom       contours, nose to tail:', ...[...p.bottom].reverse().map((r) =>
+        `             ${fmtIn(r.pos)} from ${r.from}: ${BOTTOM_LABELS[r.type]}${r.type === 'flat' ? '' : ` ${fmtIn(r.depth)}`}${r.type.endsWith('_double') ? ` / ${fmtIn(r.depth2)}` : ''}`)]
+      : [`bottom       concave ${fmtIn(p.concave_depth)}, tail vee ${fmtIn(p.vee_depth)}`]),
     `plan area    ${s.plan_area_in2.toFixed(0)} sq in`,
     '',
     'Inches to the nearest 1/16. Rocker is bottom height above a flat table touching the low point.',
