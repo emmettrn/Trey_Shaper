@@ -3,7 +3,6 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS } from './geometry.js';
-import { initRider } from './rider.js';
 import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES } from './data.js';
 
 const $ = (s) => document.querySelector(s);
@@ -1450,14 +1449,13 @@ function wireUI() {
   $('#btn-undo').addEventListener('click', () => histGo(-1));
   $('#btn-redo').addEventListener('click', () => histGo(1));
   document.addEventListener('keydown', (e) => {
-    if (!(e.ctrlKey || e.metaKey) || e.altKey || document.body.dataset.page === 'rider') return;
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
     const key = e.key.toLowerCase(), el = document.activeElement;
     if (key !== 'z' && key !== 'y') return;
     if (el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type === 'text'))) return;   // typing has its own undo
     e.preventDefault();
     histGo(key === 'y' || e.shiftKey ? 1 : -1);
   });
-  document.querySelectorAll('#pages button').forEach((b) => b.addEventListener('click', () => setPage(b.dataset.page)));
   setLighting();
   wirePanels();
   $('#t-stringer').addEventListener('click', (e) => {
@@ -1583,31 +1581,6 @@ function wireFeedback() {
   });
 }
 
-/* =========================================================================
-   Pages: the designer, and the Rider page (rider.js) that suggests a board to start from
-   ========================================================================= */
-let riderUI = null;
-function setPage(name) {
-  name = name === 'rider' ? 'rider' : 'designer';
-  document.body.dataset.page = name;
-  document.querySelectorAll('#pages button').forEach((b) => b.classList.toggle('on', b.dataset.page === name));
-  try { history.replaceState(null, '', name === 'rider' ? '#rider' : location.pathname + location.search); } catch {}
-  if (name === 'rider') {
-    riderUI ??= initRider($('#rider'), {
-      fracIn, ftin,
-      open: (p, res) => {
-        state.fitted = false; state.userMoved = false;
-        applyParams(p);
-        $('#preset').value = '';
-        setPage('designer');
-        toast(`${res.type} for a ${res.target.toFixed(1)} L rider. Shape it from here.`);
-      },
-    });
-    riderUI.refresh();
-    window.scrollTo(0, 0);
-  } else requestAnimationFrame(() => { resize(); drawPanels(); });
-}
-
 /* ========================================================================= */
 function init() {
   state.schema = { groups: GROUPS, station_table: STATION_TABLE, defaults: DEFAULTS, presets: PRESETS };
@@ -1619,7 +1592,6 @@ function init() {
   applyParams(saved || state.schema.presets[first]);
   histCommit();                                         // the starting point for undo
   resize();
-  if (location.hash === '#rider') setPage('rider');
 }
 init();
 

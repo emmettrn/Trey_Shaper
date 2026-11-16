@@ -5,14 +5,14 @@
  *     straight away) and fall back to the saved copy when there isn't
  * Bump CACHE when the list of files changes.
  */
-const CACHE = 'surfboard-designer-v2';
+const CACHE = 'surfboard-designer-v3';
 const FILES = [
-  './', 'index.html', 'style.css', 'app.js', 'rider.js', 'geometry.js', 'data.js', 'manifest.webmanifest',
-  'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
-  'vendor/three/build/three.module.min.js',
-  'vendor/three/examples/jsm/controls/OrbitControls.js',
-  'vendor/three/examples/jsm/environments/RoomEnvironment.js',
-  'vendor/three/examples/jsm/utils/BufferGeometryUtils.js',
+  './', 'index.html', 'style.css', 'app.js', 'geometry.js', 'data.js', 'manifest.webmanifest',
+  'icon-180.png', 'icon-192.png', 'icon-512.png',
+  'three.module.min.js',
+  'OrbitControls.js',
+  'RoomEnvironment.js',
+  'BufferGeometryUtils.js',
 ];
 
 self.addEventListener('install', (e) => {

@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Board Designer" />
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="apple-touch-icon" href="icons/icon-180.png" />
+  <link rel="apple-touch-icon" href="icon-180.png" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 40 16%22%3E%3Cpath d=%22M2 8C8 1 30 1 38 8 30 15 8 15 2 8Z%22 fill=%22%233cc8b4%22/%3E%3C/svg%3E" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -18,8 +18,10 @@
   <script type="importmap">
     {
       "imports": {
-        "three": "./vendor/three/build/three.module.min.js",
-        "three/addons/": "./vendor/three/examples/jsm/"
+        "three": "./three.module.min.js",
+        "three/addons/controls/OrbitControls.js": "./OrbitControls.js",
+        "three/addons/environments/RoomEnvironment.js": "./RoomEnvironment.js",
+        "three/addons/utils/BufferGeometryUtils.js": "./BufferGeometryUtils.js"
       }
     }
   </script>
@@ -30,24 +32,20 @@
       <svg viewBox="0 0 40 16" class="logo" aria-hidden="true"><path d="M2 8 C 8 1, 30 1, 38 8 C 30 15, 8 15, 2 8 Z" /><line x1="4" y1="8" x2="36" y2="8" /></svg>
       <span>Surfboard Designer</span>
     </div>
-    <nav class="seg pages" id="pages" aria-label="Pages">
-      <button data-page="designer" class="on">Designer</button>
-      <button data-page="rider" title="Work out a volume and a starting board from the rider's size and ability">Rider</button>
-    </nav>
-    <div class="readout designer-only" id="stats"><b id="s-vol">--</b><small>L</small><span id="s-dims"></span></div>
+    <div class="readout" id="stats"><b id="s-vol">--</b><small>L</small><span id="s-dims"></span></div>
     <div class="top-actions">
-      <span class="undo designer-only">
+      <span class="undo">
         <button id="btn-undo" class="ghost" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>↶</button>
         <button id="btn-redo" class="ghost" title="Redo (Ctrl+Shift+Z)" aria-label="Redo" disabled>↷</button>
       </span>
-      <label class="preset designer-only">
+      <label class="preset">
         <span>Preset</span>
         <select id="preset"></select>
       </label>
       <button id="btn-feedback" class="ghost accent">Feedback</button>
-      <button id="btn-save" class="ghost designer-only">Save</button>
-      <label class="ghost file-btn designer-only">Load<input id="file-load" type="file" accept=".json,application/json" hidden /></label>
-      <div class="menu designer-only">
+      <button id="btn-save" class="ghost">Save</button>
+      <label class="ghost file-btn">Load<input id="file-load" type="file" accept=".json,application/json" hidden /></label>
+      <div class="menu">
         <button id="btn-export" class="primary">Export ▾</button>
         <div class="menu-list" id="export-menu" hidden>
           <button data-fmt="stl" data-units="mm">STL (mm)</button>
@@ -104,8 +102,6 @@
       </div>
     </section>
   </main>
-
-  <section class="rider" id="rider"></section>
 
   <div class="modal" id="feedback" hidden>
     <form class="sheet" id="feedback-form">
