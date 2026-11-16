@@ -2,8 +2,15 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
   <title>Surfboard Designer</title>
+  <meta name="theme-color" content="#141b21" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Board Designer" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/icon-180.png" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 40 16%22%3E%3Cpath d=%22M2 8C8 1 30 1 38 8 30 15 8 15 2 8Z%22 fill=%22%233cc8b4%22/%3E%3C/svg%3E" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -11,8 +18,8 @@
   <script type="importmap">
     {
       "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+        "three": "./vendor/three/build/three.module.min.js",
+        "three/addons/": "./vendor/three/examples/jsm/"
       }
     }
   </script>
@@ -101,11 +108,15 @@
       <div class="sheet-actions">
         <button type="button" id="fb-cancel" class="ghost">Close</button>
         <button type="button" id="fb-save" class="ghost">Save as file</button>
-        <button type="submit" class="primary">Copy feedback</button>
+        <button type="submit" class="primary" id="fb-send">Copy feedback</button>
       </div>
     </form>
   </div>
   <div class="toast" id="toast" hidden></div>
+  <div class="install" id="install" hidden>
+    <span>Use it like an app: tap <b>Share</b>, then <b>Add to Home Screen</b>.</span>
+    <button id="install-x" aria-label="Dismiss">Got it</button>
+  </div>
 
   <script type="module" src="app.js"></script>
 </body>

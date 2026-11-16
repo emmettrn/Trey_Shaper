@@ -22,6 +22,8 @@ const AUTO = { nose_a: 2.3, tail_a: 1.6, nose_k: 2.4, tail_k: 2.0, foil_p: 2.0 }
 const ANCHOR_LIMIT = { outline: 6, rocker: 4, thickness: 2 };   // max offset an anchor point may carry (inches)
 const ANCHOR_GAP = 0.75;                                         // min spacing between anchors / pinned points
 const GRID = 257;                                                // samples of a slice's deck / bottom offset curve
+// What a cross-section slice may adjust, and by how much at most (added to the board-wide value there)
+const ADJ = { rail_apex: 0.45, rail_fullness: 1, deck_dome: 1, rail_hardness: 1, concave: 0.5, vee: 0.5 };
 
 const clip = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 const smoothstep = (t) => { t = clip(t, 0, 1); return t * t * (3 - 2 * t); };
@@ -239,7 +241,9 @@ function cleanSlices(p) {
     if (kept.length === 16) break;
     if (s.x < 2 || s.x > L - 2) continue;
     if (kept.length && s.x - kept[kept.length - 1].x < 1) continue;
-    kept.push({ x: s.x, id: s.id ?? null, deck: side(s.deck), bottom: side(s.bottom) });
+    const adj = {};
+    for (const [k, lim] of Object.entries(ADJ)) { const v = s.adj ? s.adj[k] : undefined; adj[k] = Number.isFinite(v) ? clip(v, -lim, lim) : 0; }
+    kept.push({ x: s.x, id: s.id ?? null, deck: side(s.deck), bottom: side(s.bottom), adj });
   }
   return kept;
 }
@@ -303,29 +307,51 @@ function curveDelta(p, name, x) {
 }
 
 /**
- * Cross-section slices. Each slice carries anchor points on its deck and bottom lines:
- * [eta, d] with eta = 0 at the stringer and 1 at the rail, d = vertical offset as a
- * fraction of the local thickness. Offsets are zero at the stringer and the rail, and
- * blend smoothly to nothing toward the neighbouring slices and the tips.
+ * Cross-section slices. A slice can adjust the section's shape settings (deck dome, rail
+ * fullness, rail apex, rail edge, concave, vee) and carry anchor points on its deck and
+ * bottom lines: [eta, d] with eta = 0 at the stringer and 1 at the rail, d = vertical
+ * offset as a fraction of the local thickness. Everything a slice changes blends smoothly
+ * to nothing toward the neighbouring slices and the tips.
  */
 function sliceTables(p) {
   const sl = p.slices;
-  if (!sl.some((s) => s.deck.length || s.bottom.length)) return null;
-  const table = (pts) => {
+  const pts = sl.some((s) => s.deck.length || s.bottom.length);
+  if (!pts && !sl.some((s) => Object.values(s.adj).some((v) => v !== 0))) return null;
+  const table = (list) => {
     const T = new Float64Array(GRID);
-    if (!pts.length) return T;
-    const xs = [0, ...pts.map((a) => a[0]), 1], ys = [0, ...pts.map((a) => a[1]), 0];
+    if (!list.length) return T;
+    const xs = [0, ...list.map((a) => a[0]), 1], ys = [0, ...list.map((a) => a[1]), 0];
     const m = pchipSlopes(xs, ys, true, false);          // level across the stringer
     for (let g = 0; g < GRID; g++) T[g] = hermiteAt(xs, ys, m, g / (GRID - 1));
     T[GRID - 1] = 0;
     return T;
   };
-  const zero = new Float64Array(GRID);
+  const zero = new Float64Array(GRID), adj = {};
+  for (const k of Object.keys(ADJ)) adj[k] = [0, ...sl.map((s) => s.adj[k]), 0];
   return {
+    pts, adj,
     kx: [0, ...sl.map((s) => s.x), p.length],
     deck: [zero, ...sl.map((s) => table(s.deck)), zero],
     bottom: [zero, ...sl.map((s) => table(s.bottom)), zero],
   };
+}
+
+/** Section shape settings at x: the board-wide values plus a slice adjustment d (or none). */
+function sectionShape(p, x, d) {
+  const g = (k) => (d ? d[k] : 0);
+  return {
+    ar: clip(p.rail_apex + g('rail_apex'), 0.15, 0.6),
+    ed: 1.7 + 1.4 * clip(p.rail_fullness + g('rail_fullness'), 0, 1),
+    eb: 2 + 6 * clip(railHardness(p, x) + g('rail_hardness'), 0, 1),
+    dome: clip(p.deck_dome + g('deck_dome'), 0, 1),
+    con: clip(concaveAt(p, x) + g('concave'), 0, 0.5),
+    vee: clip(veeAt(p, x) + g('vee'), 0, 0.5),
+  };
+}
+/** Board-wide section settings at x, in the same terms a slice adjusts (for the UI). */
+export function sectionBase(p, x) {
+  return { rail_apex: p.rail_apex, rail_fullness: p.rail_fullness, deck_dome: p.deck_dome,
+    rail_hardness: railHardness(p, x), concave: concaveAt(p, x), vee: veeAt(p, x) };
 }
 const gridAt = (row, eta) => {
   const f = eta * (GRID - 1), i0 = Math.min(Math.floor(f), GRID - 2);
@@ -426,31 +452,31 @@ function sections(p, x, h, yin, t, zb, M, sl) {
   const n = x.length;
   const Yo = new Float64Array(n * M), Zo = new Float64Array(n * M);
   const Y = new Float64Array(K), Z = new Float64Array(K), cum = new Float64Array(K);
-  const ed = 1.7 + 1.4 * p.rail_fullness, ar = p.rail_apex;
-  const rowD = new Float64Array(GRID), rowB = new Float64Array(GRID);
+  const rowD = new Float64Array(GRID), rowB = new Float64Array(GRID), d = {};
   for (let i = 0; i < n; i++) {
-    const hi = h[i], ti = t[i], eb = 2 + 6 * railHardness(p, x[i]);
-    if (sl) {                                            // blend the two neighbouring slices' offset curves
+    const hi = h[i], ti = t[i];
+    if (sl) {                                            // blend what the two neighbouring slices change
       let j = 0;
       while (j < sl.kx.length - 2 && x[i] >= sl.kx[j + 1]) j++;
       const tt = clip((x[i] - sl.kx[j]) / (sl.kx[j + 1] - sl.kx[j]), 0, 1);
       const wq = tt * tt * tt * (tt * (6 * tt - 15) + 10);
-      for (let g = 0; g < GRID; g++) {
+      for (const k in sl.adj) d[k] = (1 - wq) * sl.adj[k][j] + wq * sl.adj[k][j + 1];
+      if (sl.pts) for (let g = 0; g < GRID; g++) {
         rowD[g] = (1 - wq) * sl.deck[j][g] + wq * sl.deck[j + 1][g];
         rowB[g] = (1 - wq) * sl.bottom[j][g] + wq * sl.bottom[j + 1][g];
       }
     }
+    const { ar, ed, eb, dome, con, vee } = sectionShape(p, x[i], sl ? d : null);
     const zApex = zb[i] + ar * ti, td = (1 - ar) * ti, tb = ar * ti;
-    const con = concaveAt(p, x[i]), vee = veeAt(p, x[i]);
     const hs = Math.max(hi, 1e-9), yi = yin[i];
     for (let k = 0; k < K; k++) {
       const deck = TH_DECK[k], e = deck ? ed : eb;
       const yraw = hi * TH_COS[k] ** (2 / e);
       const eta = clip(yraw / hs, 0, 1);
       Z[k] = deck
-        ? zApex + td * TH_SIN[k] ** (2 / ed) * (1 - 0.7 * p.deck_dome * eta * eta)
+        ? zApex + td * TH_SIN[k] ** (2 / ed) * (1 - 0.7 * dome * eta * eta)
         : zApex - tb * TH_SIN[k] ** (2 / e) + con * (1 - eta * eta) ** 2 - vee * (1 - eta);
-      if (sl) Z[k] += ti * gridAt(deck ? rowD : rowB, eta);
+      if (sl && sl.pts) Z[k] += ti * gridAt(deck ? rowD : rowB, eta);
       Y[k] = yi + (yraw * (hi - yi)) / hs;
     }
     // resample by arc length plus turning angle so hard rails stay crisp
@@ -702,15 +728,14 @@ export function sliceInfo(board, k) {
   let i = 0;
   for (let q = 1; q < pr.x.length; q++) if (Math.abs(pr.x[q] - s.x) < Math.abs(pr.x[i] - s.x)) i = q;
   const h = pr.h[i], t = pr.t[i], yin = pr.yin[i];
-  const ed = 1.7 + 1.4 * p.rail_fullness, eb = 2 + 6 * railHardness(p, s.x), ar = p.rail_apex;
-  const con = concaveAt(p, s.x), vee = veeAt(p, s.x);
-  const row = (which) => (pr.sl ? pr.sl[which][k + 1] : null);
+  const { ar, ed, eb, dome, con, vee } = sectionShape(p, s.x, s.adj);
+  const row = (which) => (pr.sl && pr.sl.pts ? pr.sl[which][k + 1] : null);
   const off = (which, eta) => (row(which) ? t * gridAt(row(which), clip(eta, 0, 1)) : 0);
   return {
-    x: s.x, id: s.id, h, t, yin, deckPts: s.deck, bottomPts: s.bottom,
+    x: s.x, id: s.id, h, t, yin, adj: s.adj, base: sectionBase(p, s.x),
     y: (eta) => yin + eta * (h - yin),
     deck: (eta, withAnchors = true) =>
-      ar * t + (1 - ar) * t * (1 - eta ** ed) ** (1 / ed) * (1 - 0.7 * p.deck_dome * eta * eta) + (withAnchors ? off('deck', eta) : 0),
+      ar * t + (1 - ar) * t * (1 - eta ** ed) ** (1 / ed) * (1 - 0.7 * dome * eta * eta) + (withAnchors ? off('deck', eta) : 0),
     bottom: (eta, withAnchors = true) =>
       ar * t - ar * t * (1 - eta ** eb) ** (1 / eb) + con * (1 - eta * eta) ** 2 - vee * (1 - eta) + (withAnchors ? off('bottom', eta) : 0),
     offset: (which, eta) => (row(which) ? gridAt(row(which), clip(eta, 0, 1)) : 0),
