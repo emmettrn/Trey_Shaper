@@ -18,7 +18,7 @@ const state = {
 const TAIL_CLOSES = Object.keys(TAIL_TYPES).filter((k) => TAIL_TYPES[k].closes);
 
 // Viewer preferences (not part of the design): kept per browser
-const prefs = { fix: true, vexProfile: 1, vexSections: 1, bay: true, bayGain: 0.3, edit: false };
+const prefs = { fix: true, vexProfile: 1, vexSections: 1, bay: true, bayGain: 0.3, fixedLight: true, edit: false };
 try { Object.assign(prefs, JSON.parse(localStorage.getItem('surfboard.ui') || '{}')); } catch {}
 const savePrefs = () => { try { localStorage.setItem('surfboard.ui', JSON.stringify(prefs)); } catch {} };
 const COARSE = matchMedia('(pointer: coarse)').matches;      // fingers rather than a mouse: bigger targets, share sheet
@@ -717,7 +717,20 @@ function setBayGain() {
   for (const lamp of bayDeck) lamp.intensity = 0.7 + 3.9 * g;
   for (const lamp of bayBottom) lamp.intensity = 0.7 + 10.3 * g * g;
   bayFill.intensity = 0.78 - 0.73 * g;
+  viewKey.intensity = 1.4 + 3.2 * g;
+  viewFill.intensity = 0.58 - 0.46 * g;
 }
+
+// Fixed light: one raking lamp that stays where it is relative to the viewer (up and to the left,
+// almost side-on), so the board moves through the light as it is turned, and every contour
+// shows as the shading sweeps across it. This is how Shape3D lights a board.
+const viewLights = new THREE.Group();
+const viewKey = new THREE.DirectionalLight(0xffffff, 2);
+viewKey.position.set(-75, 55, 35);                     // in the camera's own frame: left, up, a little toward the viewer
+const viewFill = new THREE.HemisphereLight(0xffffff, 0xffffff, 0.6);
+viewLights.add(viewKey, viewKey.target, viewFill);
+camera.add(viewLights);
+scene.add(camera);
 scene.add(studioLights);
 const envMap = scene.environment;
 
@@ -805,10 +818,11 @@ function showRing(data = state.board, linger = true) {
 
 function setLighting() {
   const bay = prefs.bay;
-  bayLights.visible = bay; studioLights.visible = !bay; ground.visible = !bay;
+  const fixed = prefs.fixedLight !== false;
+  bayLights.visible = bay && !fixed; viewLights.visible = bay && fixed; studioLights.visible = !bay; ground.visible = !bay;
   scene.environment = bay ? null : envMap;
   Object.assign(boardMat, bay
-    ? { roughness: 0.95, clearcoat: 0, envMapIntensity: 0 }
+    ? { roughness: fixed ? 0.7 : 0.95, clearcoat: 0, envMapIntensity: 0 }
     : { roughness: 0.45, clearcoat: 0.9, envMapIntensity: 0.75 });
   boardMat.color.set(bay ? '#f4f1ea' : '#ece6d8');
   boardMat.needsUpdate = true;
@@ -816,6 +830,8 @@ function setLighting() {
   setBayGain();
   $('#bay-gain').hidden = !bay;
   $('#bay-gain').value = prefs.bayGain ?? 0.3;
+  $('#t-fixed').hidden = !bay;
+  $('#t-fixed').classList.toggle('on', fixed);
   viewport.classList.toggle('bay', bay);
   $('#t-light').classList.toggle('on', bay);
 }
@@ -1754,6 +1770,7 @@ function wireUI() {
   });
   $('#bay-gain').addEventListener('input', (e) => { prefs.bayGain = +e.target.value; savePrefs(); setBayGain(); });
   $('#t-light').addEventListener('click', () => { prefs.bay = !prefs.bay; savePrefs(); setLighting(); });
+  $('#t-fixed').addEventListener('click', () => { prefs.fixedLight = prefs.fixedLight === false; savePrefs(); setLighting(); });
   $('#t-flip').addEventListener('click', (e) => { state.flip = !state.flip; e.currentTarget.classList.toggle('on', state.flip); });
   $('#btn-undo').addEventListener('click', () => histGo(-1));
   $('#btn-redo').addEventListener('click', () => histGo(1));

@@ -305,3 +305,4 @@ button:disabled { opacity: .35; cursor: default; }
 #bay-gain { width: 64px; margin: 0 6px 0 2px; align-self: center; }
 #bay-gain[hidden] { display: none; }
 .mrow[hidden] { display: none; }
+#t-fixed[hidden] { display: none; }
