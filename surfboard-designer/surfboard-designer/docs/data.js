@@ -37,7 +37,14 @@ export const DEFAULTS = {
   "anchors": {
     "outline": [],
     "rocker": [],
-    "thickness": []
+    "thickness": [],
+    "swallow": []
+  },
+  "marks": [],
+  "handles": {
+    "outline": {},
+    "rocker": {},
+    "thickness": {}
   },
   "slices": [],
   "bottom": []

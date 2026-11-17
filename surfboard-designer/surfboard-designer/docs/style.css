@@ -289,3 +289,19 @@ button:disabled { opacity: .35; cursor: default; }
 .bottom-actions button { padding: 4px 10px; font-size: 12px; }
 
 @media (max-width: 1320px) { .preset > span { display: none; } .brand span { display: none; } }
+
+/* ---------- added measurements ---------- */
+.marks-box { display: grid; gap: 5px; }
+.mrow { display: grid; grid-template-columns: 44px 58px 1fr 1fr 1fr 22px; gap: 4px; align-items: center; }
+.mrow.mhead span { color: var(--muted); font-size: 11px; text-align: right; padding-right: 6px; }
+.mrow.mhead span:nth-child(-n+2) { text-align: left; padding: 0 0 0 2px; }
+.marks-rows { display: grid; gap: 4px; }
+.mrow select { padding: 3px 2px; min-width: 0; width: 100%; font-size: 12px; }
+.mrow .cell { min-width: 0; width: 100%; }
+.mrow .cell::placeholder { color: var(--muted); opacity: .75; }
+.mrow .x { padding: 0; width: 22px; height: 24px; color: var(--muted); background: transparent; border-color: transparent; }
+.mrow.off { opacity: .45; }
+/* ---------- bay light strength ---------- */
+#bay-gain { width: 64px; margin: 0 6px 0 2px; align-self: center; }
+#bay-gain[hidden] { display: none; }
+.mrow[hidden] { display: none; }

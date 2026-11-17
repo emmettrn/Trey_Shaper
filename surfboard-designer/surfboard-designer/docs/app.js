@@ -18,7 +18,7 @@ const state = {
 const TAIL_CLOSES = Object.keys(TAIL_TYPES).filter((k) => TAIL_TYPES[k].closes);
 
 // Viewer preferences (not part of the design): kept per browser
-const prefs = { fix: true, vexProfile: 1, vexSections: 1, bay: true, edit: false };
+const prefs = { fix: true, vexProfile: 1, vexSections: 1, bay: true, bayGain: 0.3, edit: false };
 try { Object.assign(prefs, JSON.parse(localStorage.getItem('surfboard.ui') || '{}')); } catch {}
 const savePrefs = () => { try { localStorage.setItem('surfboard.ui', JSON.stringify(prefs)); } catch {} };
 const COARSE = matchMedia('(pointer: coarse)').matches;      // fingers rather than a mouse: bigger targets, share sheet
@@ -95,10 +95,16 @@ function buildStationTable() {
         <tbody></tbody>
       </table>
       <div class="wp-row"><span>Wide point</span><input class="cell" id="wp-offset" type="text" spellcheck="false" aria-label="Wide point from center"><span class="unit">from center (+ = nose)</span></div>
+      <div class="marks-box">
+        <div class="mrow mhead"><span>at</span><span>from</span><span>width</span><span>rocker</span><span>thick</span><span></span></div>
+        <div class="marks-rows" id="marks-rows"></div>
+        <div class="bottom-actions"><button class="ghost" id="mark-add" title="Hold the width, rocker and / or thickness at any other spot along the board">+ Add a measurement</button></div>
+      </div>
       <label class="toggle fix"><input type="checkbox" id="fix-dims"><span>Fix dimensions <small>only anchor points can be dragged on the graphs</small></span></label>
       <div class="help">Inches, fractions OK: 19 3/4. Leave a box blank and it is worked out from the rest of the board (shown as ~). Rocker is bottom height above a flat table.</div>
     </div>`;
   bindCell(det.querySelector('#wp-offset'), 'wide_point_offset', 0.25);
+  det.querySelector('#mark-add').addEventListener('click', addMark);
   const fix = det.querySelector('#fix-dims');
   fix.checked = prefs.fix;
   fix.addEventListener('change', () => { prefs.fix = fix.checked; savePrefs(); drawPanels(); });
@@ -130,6 +136,85 @@ function buildStationTable() {
     body.appendChild(tr);
   }
   return det;
+}
+
+/* Added measurements: width, rocker and / or thickness at any other spot along the board,
+   typed like the table above. A blank box is not held there (it shows what the board has). */
+const marksUI = { els: [] };
+const markX = (r, L) => (r.from === 'nose' ? L - r.pos : r.pos);
+
+function marksChanged(rebuild) {
+  if (rebuild) renderMarks();
+  saveLocal();
+  schedule();
+}
+
+function addMark() {
+  const P = state.params, L = have('length');
+  const xs = [0, 12, L / 2, L - 12, L, ...P.marks.map((r) => markX(r, L))].sort((p, q) => p - q);
+  let best = xs.length - 2;                             // the widest gap between the measurements there are, nose side first
+  for (let i = xs.length - 2; i >= 0; i--) if (xs[i + 1] - xs[i] > xs[best + 1] - xs[best] + 1e-9) best = i;
+  const x = clip(snap((xs[best] + xs[best + 1]) / 2, 1), 2, L - 2);
+  P.marks.push({ pos: x > L / 2 ? L - x : x, from: x > L / 2 ? 'nose' : 'tail', width: null, rocker: null, thickness: null });
+  marksChanged(true);
+}
+
+/** Rebuild the rows (nose first). Only on structural changes, so typing never loses focus. */
+function renderMarks() {
+  const P = state.params, L = P.length, box = $('#marks-rows');
+  if (!box) return;
+  P.marks.sort((p, q) => markX(q, L) - markX(p, L));
+  box.innerHTML = '';
+  marksUI.els = [];
+  for (const r of P.marks) {
+    const el = document.createElement('div');
+    el.className = 'mrow';
+    el.innerHTML = `<input class="cell pos" type="text" spellcheck="false" aria-label="Position in inches">
+      <select class="from" aria-label="Measured from"><option value="nose">nose</option><option value="tail">tail</option></select>
+      <input class="cell" data-k="width" type="text" spellcheck="false" aria-label="Width">
+      <input class="cell" data-k="rocker" type="text" spellcheck="false" aria-label="Rocker">
+      <input class="cell" data-k="thickness" type="text" spellcheck="false" aria-label="Thickness">
+      <button class="x" title="Remove this measurement" aria-label="Remove">×</button>`;
+    const pos = el.querySelector('.pos'), from = el.querySelector('.from');
+    from.value = r.from;
+    const cells = {};
+    for (const inp of el.querySelectorAll('input')) {
+      inp.addEventListener('focus', () => inp.select());
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
+    }
+    pos.addEventListener('change', () => { const v = parseVal(pos.value); if (Number.isFinite(v)) r.pos = clip(v, 1, 143); marksChanged(false); });
+    from.addEventListener('change', () => { r.from = from.value; marksChanged(false); });
+    for (const inp of el.querySelectorAll('[data-k]')) {
+      const key = inp.dataset.k;
+      cells[key] = inp;
+      inp.addEventListener('change', () => {
+        const v = inp.value.trim() === '' ? null : parseVal(inp.value);
+        if (v === null || Number.isFinite(v)) { r[key] = v; if (v === null) delete r[{ width: 'hw', rocker: 'hr', thickness: 'ht' }[key]]; }
+        marksChanged(false);
+      });
+    }
+    el.querySelector('.x').addEventListener('click', () => { dropFrom(P.marks, r); state.pt = null; marksChanged(true); });
+    box.appendChild(el);
+    marksUI.els.push({ r, el, pos, cells });
+  }
+  $('.marks-box .mhead').hidden = !P.marks.length;
+}
+
+/** Show each row's numbers, and in the blank boxes what the board measures there. */
+function syncMarks(data) {
+  const pr = data._profiles, L = data.params.length;
+  for (const { r, el, pos, cells } of marksUI.els) {
+    const x = markX(r, L), live = (inp) => document.activeElement === inp;
+    if (!live(pos)) pos.value = fracIn(r.pos);
+    const now = { width: 2 * lerpAt(pr.x, pr.h, x), rocker: lerpAt(pr.x, pr.zb, x), thickness: lerpAt(pr.x, pr.t, x) };
+    for (const [key, inp] of Object.entries(cells)) {
+      if (!live(inp)) inp.value = r[key] === null || r[key] === undefined ? '' : fracIn(r[key]);
+      inp.placeholder = `~${fracIn(now[key])}`;
+    }
+    const used = data.params.marks.some((m) => m.pos === r.pos && m.from === r.from);
+    el.classList.toggle('off', !used);
+    el.title = used ? '' : 'Not used: too close to the tip or to another measurement';
+  }
 }
 
 /* Bottom contours along the board: a short list of stations ("1/16 concave 12 from the nose,
@@ -442,7 +527,19 @@ function applyParams(p, keepSel = null) {
   // an anchor is [position, offset] plus, once its handle has been moved, [slope, left arm, right arm]
   const pts = (l) => (Array.isArray(l) ? l : []).filter((q) => Array.isArray(q) && Number.isFinite(+q[0]) && Number.isFinite(+q[1]))
     .map((q) => (q.slice(2, 5).some(Number.isFinite) ? [+q[0], +q[1], num(q[2]), num(q[3]), num(q[4])] : [+q[0], +q[1]]));
-  P.anchors = { outline: pts(a.outline), rocker: pts(a.rocker), thickness: pts(a.thickness) };
+  P.anchors = { outline: pts(a.outline), rocker: pts(a.rocker), thickness: pts(a.thickness), swallow: pts(a.swallow) };
+  const hd3 = (q) => (Array.isArray(q) && q.slice(0, 3).some(Number.isFinite) ? [num(q[0]), num(q[1]), num(q[2])] : null);
+  const hs = P.handles && typeof P.handles === 'object' ? P.handles : {};
+  P.handles = {};
+  for (const name of ['outline', 'rocker', 'thickness']) {            // handles on the 12" and center markers
+    P.handles[name] = {};
+    for (const key of ['tail12', 'origin', 'nose12']) { const q = hd3(hs[name]?.[key]); if (q) P.handles[name][key] = q; }
+  }
+  P.marks = (Array.isArray(P.marks) ? P.marks : []).filter((r) => r && Number.isFinite(+r.pos)).map((r) => {      // added measurements
+    const m = { pos: +r.pos, from: r.from === 'nose' ? 'nose' : 'tail', width: num(r.width), rocker: num(r.rocker), thickness: num(r.thickness) };
+    for (const f of ['hw', 'hr', 'ht']) { const q = hd3(r[f]); if (q) m[f] = q; }
+    return m;
+  });
   const T = Number.isFinite(P.thickness) ? P.thickness : 2.5;
   if (!Number.isFinite(P.rail_apex_in))        // older designs gave the rail apex as a fraction of thickness
     P.rail_apex_in = clip(snap((Number.isFinite(P.rail_apex) ? P.rail_apex : 0.35) * T, 0.0625), 0.125, 2);
@@ -454,7 +551,7 @@ function applyParams(p, keepSel = null) {
     const adj = { ...(s.adj && typeof s.adj === 'object' ? s.adj : {}) };
     if (Number.isFinite(adj.rail_apex) && adj.rail_apex) { adj.rail_apex_in = (adj.rail_apex_in || 0) + adj.rail_apex * T; }
     delete adj.rail_apex;
-    return { id, x: s.x, adj, deck: pts(s.deck), bottom: pts(s.bottom) };
+    return { id, x: s.x, adj, deck: pts(s.deck), bottom: pts(s.bottom), v: s.v === 2 ? 2 : 1 };
   });
   P.bottom = (Array.isArray(P.bottom) ? P.bottom : []).filter((r) => r && Number.isFinite(+r.pos)).map((r) => ({
     pos: +r.pos, from: r.from === 'nose' ? 'nose' : 'tail', type: BOTTOM_LABELS[r.type] ? r.type : 'flat',
@@ -464,9 +561,37 @@ function applyParams(p, keepSel = null) {
   for (const [k, fe] of Object.entries(state.fieldEls)) fe.set(state.params[k]);
   for (const [k, ce] of Object.entries(state.cellEls)) ce.set(state.params[k]);
   renderBottomTable();
+  renderMarks();
   updateVisibility();
   saveLocal();
   schedule();
+}
+
+/**
+ * Sections saved before anchor points could go around the rail stored a point's position as a
+ * fraction of the half width. They now run by arc length along the line, so move each point
+ * to the same place on the board (its handle, if any, goes back to automatic).
+ */
+function upgradeSlices(data) {
+  let changed = false;
+  for (const s of state.params.slices) {
+    if (s.v === 2) continue;
+    if (s.deck.length || s.bottom.length) {
+      const sec = sectionAt(data, s.x), w = Math.max(sec.h - sec.yin, 1e-6);
+      for (const which of ['deck', 'bottom']) {
+        const ln = sec[which];
+        for (const q of s[which]) {
+          const y = sec.yin + q[0] * w;
+          let i = 0;
+          while (i < ln.y0.length - 1 && ln.y0[i] < y) i++;
+          q[0] = ln.rho[i]; q.length = 2;
+        }
+      }
+      changed = true;
+    }
+    s.v = 2;
+  }
+  return changed;
 }
 
 /* Undo / redo: a stack of whole designs. Every edit ends in saveLocal(), so that is where a
@@ -566,17 +691,33 @@ const studioLights = new THREE.Group().add(sun, fill, new THREE.HemisphereLight(
 // (concave or vee) can be told apart. The lamps turn over with the board, so the bottom
 // keeps its own, lower pair: its contours are a degree or two, far subtler than the deck's.
 const bayLights = new THREE.Group();
-const bayLamp = (color, intensity, x, y, z) => {
-  const lamp = new THREE.DirectionalLight(color, intensity);
+const bayDeck = [], bayBottom = [];
+const bayLamp = (color, x, y, z, set) => {
+  const lamp = new THREE.DirectionalLight(color, 1);
   lamp.position.set(x, y, z);
   bayLights.add(lamp, lamp.target);                    // target in the same group: the direction turns with the board
+  set?.push(lamp);
+  return lamp;
 };
 for (const [side, color] of [[1, 0xfff6ec], [-1, 0xeef3ff]]) {
-  bayLamp(color, 4.6, 0, 2.6, 60 * side);              // deck: about 2.5 degrees above level
-  bayLamp(color, 11, 0, -0.75, 60 * side);             // bottom: under 1 degree, and brighter
+  bayLamp(color, 0, 2.6, 60 * side, bayDeck);          // deck: about 2.5 degrees above level
+  bayLamp(color, 0, -0.75, 60 * side, bayBottom);      // bottom: under 1 degree
 }
-for (const end of [1, -1]) for (const up of [1, -1]) bayLamp(0xf2f6ff, 0.3, 60 * end, 14 * up, 0);   // a little down the length, for rocker and foil
-bayLights.add(new THREE.HemisphereLight(0xffffff, 0xffffff, 0.05));
+for (const end of [1, -1]) for (const up of [1, -1]) bayLamp(0xf2f6ff, 60 * end, 14 * up, 0).intensity = 0.3;   // a little down the length, for rocker and foil
+const bayFill = new THREE.HemisphereLight(0xffffff, 0xffffff, 0.05);
+bayLights.add(bayFill);
+/**
+ * How hard the bay lights work. The side lamps make brightness follow the tilt of the
+ * surface, which is what shows a contour; the even fill light shows nothing. Low strength =
+ * mostly fill, so a mellow contour looks mellow; high = mostly side lamps, which exaggerates
+ * every tilt (and the bottom more than the deck, because its contours are slighter).
+ */
+function setBayGain() {
+  const g = clip(prefs.bayGain ?? 0.3, 0, 1);
+  for (const lamp of bayDeck) lamp.intensity = 0.7 + 3.9 * g;
+  for (const lamp of bayBottom) lamp.intensity = 0.7 + 10.3 * g * g;
+  bayFill.intensity = 0.78 - 0.73 * g;
+}
 scene.add(studioLights);
 const envMap = scene.environment;
 
@@ -590,9 +731,45 @@ const boardMat = new THREE.MeshPhysicalMaterial({
 });
 const boardMesh = new THREE.Mesh(new THREE.BufferGeometry(), boardMat);
 boardMesh.castShadow = true;
-const wireMesh = new THREE.Mesh(new THREE.BufferGeometry(),
-  new THREE.MeshBasicMaterial({ color: 0x1f5f57, wireframe: true, transparent: true, opacity: 0.35 }));
+const wireMesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial());   // only kept for its bounding box
 wireMesh.visible = false;
+// Skeleton view: the board as ribs (a cross section every 6") on its stringer and rail lines, like a boat frame
+const ribs = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x7fe6d6, transparent: true, opacity: 0.95 }));
+ribs.visible = false;
+
+function buildRibs(data) {
+  const { x, h, Y, Z, M } = data._profiles, L = data.params.length, seg = [];
+  const P3 = (i, m, side) => [x[i] - L / 2, Z[i * M + m], -side * Y[i * M + m]];
+  const line = (p, q) => seg.push(...p, ...q);
+  const rows = new Set();
+  for (let s = 0; s <= L + 5.999; s += 6) {             // the station nearest every 6" from the tail, and the nose
+    const want = Math.min(s, L);
+    let b = 0;
+    for (let i = 1; i < x.length; i++) if (Math.abs(x[i] - want) < Math.abs(x[b] - want)) b = i;
+    rows.add(b);
+  }
+  for (const i of rows) for (const side of [1, -1]) for (let m = 0; m < M - 1; m++) line(P3(i, m, side), P3(i, m + 1, side));
+  const rail = [];                                      // the rail line: the widest part of each section
+  for (let i = 0; i < x.length; i++) {
+    let top = -Infinity, n = 0, z = 0;
+    for (let m = 0; m < M; m++) top = Math.max(top, Y[i * M + m]);
+    for (let m = 0; m < M; m++) if (Y[i * M + m] >= top - 0.01) { z += Z[i * M + m]; n++; }
+    rail.push([x[i] - L / 2, z / n, h[i] < 1e-6 ? 0 : top]);
+  }
+  for (let i = 0; i < x.length - 1; i++) for (const side of [1, -1]) {
+    for (const m of [0, M - 1]) line(P3(i, m, side), P3(i + 1, m, side));           // stringer, deck and bottom (the cut's edges on a swallow)
+    line([rail[i][0], rail[i][1], -side * rail[i][2]], [rail[i + 1][0], rail[i + 1][1], -side * rail[i + 1][2]]);
+  }
+  ribs.geometry.dispose();
+  ribs.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(seg), 3));
+}
+
+function setWire() {
+  ribs.visible = state.wire;
+  boardMat.transparent = state.wire; boardMat.opacity = state.wire ? 0.13 : 1; boardMat.depthWrite = !state.wire;
+  boardMat.needsUpdate = true;
+  $('#t-wire').classList.toggle('on', state.wire);
+}
 const stringerMat = new THREE.MeshStandardMaterial({ color: COLORS.wood, roughness: 0.6 });
 const stringerGroup = new THREE.Group();
 // outline of the cross section the Sections view is looking at
@@ -600,7 +777,7 @@ const ring = new THREE.LineLoop(new THREE.BufferGeometry(),
   new THREE.LineBasicMaterial({ color: 0xb48cff, transparent: true, opacity: 0.95, depthTest: false }));
 ring.renderOrder = 5;
 ring.visible = false;
-const boardGroup = new THREE.Group().add(boardMesh, wireMesh, stringerGroup, ring, bayLights);   // turns over as one for "Bottom up"
+const boardGroup = new THREE.Group().add(boardMesh, wireMesh, ribs, stringerGroup, ring, bayLights);   // turns over as one for "Bottom up"
 scene.add(boardGroup);
 let flipNow = 0;                                        // current turn-over angle, eased toward 0 or pi
 
@@ -616,7 +793,7 @@ function showRing(data = state.board, linger = true) {
   if (!data) return;
   const L = data.params.length, pr = data._profiles, k = sliceIndex(data);
   const x = k >= 0 ? data.params.slices[k].x : scrubX(data);
-  const s = sectionAt(data, x), o = sectionOutline(s, 40), zb = lerpAt(pr.x, pr.zb, x);
+  const s = sectionAt(data, x), o = sectionOutline(s, true, 5), zb = lerpAt(pr.x, pr.zb, x);
   const P = new Float32Array(o.X.length * 3);
   for (let i = 0; i < o.X.length; i++) { P[3 * i] = x - L / 2; P[3 * i + 1] = zb + o.Z[i]; P[3 * i + 2] = -o.X[i]; }
   ring.geometry.dispose();
@@ -636,6 +813,9 @@ function setLighting() {
   boardMat.color.set(bay ? '#f4f1ea' : '#ece6d8');
   boardMat.needsUpdate = true;
   renderer.toneMappingExposure = bay ? 1.0 : 0.92;
+  setBayGain();
+  $('#bay-gain').hidden = !bay;
+  $('#bay-gain').value = prefs.bayGain ?? 0.3;
   viewport.classList.toggle('bay', bay);
   $('#t-light').classList.toggle('on', bay);
 }
@@ -660,6 +840,7 @@ function updateMesh(data) {
   boardMesh.geometry = toCreasedNormals(g, THREE.MathUtils.degToRad(40));
   wireMesh.geometry.dispose();
   wireMesh.geometry = g;
+  buildRibs(data);
   ground.position.y = g.boundingBox.min.y - 0.02;
 
   // wood stringer on deck and bottom
@@ -824,7 +1005,10 @@ class View2D {
       if (h.on && prefs.edit) { ctx.beginPath(); ctx.arc(px, py, 8 * big, 0, 7); ctx.strokeStyle = h.color; ctx.lineWidth = 1; ctx.stroke(); }
     }
     else if (h.kind === 'slice') { ctx.moveTo(px, py - 6); ctx.lineTo(px + 6, py); ctx.lineTo(px, py + 6); ctx.lineTo(px - 6, py); ctx.closePath(); ctx.fill(); ctx.strokeStyle = '#0e1317'; ctx.stroke(); }
-    else { ctx.rect(px - 3.5 * big, py - 3.5 * big, 7 * big, 7 * big); if (h.locked) { ctx.fillStyle = '#141b21'; } ctx.fill(); ctx.stroke(); }
+    else {
+      ctx.rect(px - 3.5 * big, py - 3.5 * big, 7 * big, 7 * big); if (h.locked) { ctx.fillStyle = '#141b21'; } ctx.fill(); ctx.stroke();
+      if (h.on && prefs.edit) { ctx.beginPath(); ctx.arc(px, py, 8.5 * big, 0, 7); ctx.lineWidth = 1; ctx.stroke(); }
+    }
     ctx.restore();
   }
 
@@ -841,9 +1025,13 @@ class View2D {
     let best = null, bd = this.touch ? 18 : 9;
     const wx = this.wx(px), wy = this.wy(py);
     for (const c of this.curves) {
-      const y = c.at(wx, wy);
-      if (y === null || !Number.isFinite(y)) continue;
-      const d = Math.abs(this.Y(y) - py);
+      let d;
+      if (c.dist) d = c.dist(wx, wy);                     // a line that is not a function of x (a cross section): its own distance, in pixels
+      else {
+        const y = c.at(wx, wy);
+        if (y === null || !Number.isFinite(y)) continue;
+        d = Math.abs(this.Y(y) - py);
+      }
       if (d < bd) { bd = d; best = c; }
     }
     return best;
@@ -872,7 +1060,11 @@ class View2D {
       if (h) (h.light ? scrubChanged() : schedule());
       return;
     }
-    if (h && h.locked) { toast('Measurements are fixed. Untick "Fix dimensions" to drag them.'); return; }
+    if (h && h.locked) {                                // a fixed measurement: it cannot move, but its handle arms can
+      if (h.select) { const was = state.pt; h.select(); if (was !== state.pt) drawPanels(); }
+      else toast('Measurements are fixed. Untick "Fix dimensions" to drag them.');
+      return;
+    }
     if (h && h.remove && this.touch) {                  // double-tap a point to remove it
       const now = performance.now(), t = this.lastTap;
       if (t && now - t.t < 420 && Math.hypot(t.px - px, t.py - py) < 30) { this.lastTap = null; h.remove(); saveLocal(); schedule(); return; }
@@ -961,39 +1153,63 @@ const slopeAt = (xs, ys, xq, e = 0.4) => (lerpAt(xs, ys, xq + e) - lerpAt(xs, ys
 const scrubX = (board) => clip(state.scrub ?? board.params.length / 2 + board.params.wide_point_offset, 0.5, board.params.length - 0.5);
 const whereText = (x, L) => (x > L / 2 ? `${fracIn(L - x)}″ from nose` : `${fracIn(x)}″ from tail`);
 
-/** Full outline of a section (from sectionAt): right deck, right bottom, left bottom, left deck. */
-function sectionOutline(s, N = 160, anchors = true) {
-  const eta = Array.from({ length: N + 1 }, (_, i) => 1 - (1 - i / N) ** 2);   // denser toward the rail
-  const ys = eta.map(s.y), d = eta.map((e) => s.deck(e, anchors)), b = eta.map((e) => s.bottom(e, anchors));
-  return { X: [...ys, ...rev(ys), ...ys.map((q) => -q), ...rev(ys).map((q) => -q)], Z: [...d, ...rev(b), ...b, ...rev(d)], d, b };
+/** Full outline of a section (from sectionAt): right deck, right bottom, then the left half. `step` thins the points. */
+function sectionOutline(s, anchors = true, step = 1) {
+  const pick = (arr) => arr.filter((_, i) => i % step === 0 || i === arr.length - 1);
+  const dy = pick(anchors ? s.deck.y : s.deck.y0), dz = pick(anchors ? s.deck.z : s.deck.z0);
+  const by = pick(anchors ? s.bottom.y : s.bottom.y0), bz = pick(anchors ? s.bottom.z : s.bottom.z0);
+  const X = [...dy, ...rev(by)], Z = [...dz, ...rev(bz)];     // stringer on the deck -> rail apex -> stringer on the bottom
+  return { X: [...X, ...rev(X).map((q) => -q)], Z: [...Z, ...rev(Z)], d: dz, b: bz };
 }
 
+/* A handle = slope + two arm lengths, wherever it is kept: on an anchor point [x, offset, slope, left, right],
+   on an added measurement (hw / hr / ht = [slope, left, right]) or on a 12" / center marker (params.handles). */
+const anchorHandle = (a) => ({
+  id: a,
+  set: (m, side, d) => { while (a.length < 5) a.push(null); if (m !== null) a[2] = m; a[side < 0 ? 3 : 4] = d; },
+  reset: () => { a.length = 2; },
+});
+const tripleHandle = (id, get, put) => ({
+  id,
+  set: (m, side, d) => { let hd = get(); if (!hd) put(hd = [null, null, null]); if (m !== null) hd[0] = m; hd[side < 0 ? 1 : 2] = d; },
+  reset: () => put(null),
+});
+const pinHandle = (name, key) => tripleHandle(`p|${name}|${key}`, () => state.params.handles[name][key],
+  (hd) => { if (hd) state.params.handles[name][key] = hd; else delete state.params.handles[name][key]; });
+const MARK_HANDLE = { outline: 'hw', rocker: 'hr', thickness: 'ht' };
+const markHandle = (raw, name) => tripleHandle(`m|${state.params.marks.indexOf(raw)}|${name}`, () => raw[MARK_HANDLE[name]],
+  (hd) => { if (hd) raw[MARK_HANDLE[name]] = hd; else delete raw[MARK_HANDLE[name]]; });
+
 /**
- * The two handle arms of the selected anchor point `a` = [position, offset, slope, left arm, right arm].
- * (x0, y0) is the point on the graph; `res` the handle the geometry is using now; a step of 1 in
- * position is `kx` graph units across; the drawn curve is base + k * offset with the base sloping S0.
+ * The two handle arms of the selected point. (x0, y0) is the point on the graph; `res` the handle the
+ * geometry is using now; H where a change is kept. Along the unit direction T a step of 1 in position
+ * is `kx` graph units; across it (N) the drawn curve is base + k * offset, the base sloping S0.
+ * `level` = the point must stay level (a wide / low / thick point), so only the arm lengths change.
  */
-function drawArms(v, ctx, a, x0, y0, res, { S0, k, kx = 1, color, mMax = 3, aMin = 0.5, aMax = 60 }) {
-  if (!prefs.edit || state.pt !== a || !res) return;
+function drawArms(v, ctx, H, x0, y0, res, { S0, k, kx = 1, color, mMax = 3, aMin = 0.5, aMax = 60, level = false, T = [1, 0], N = [0, 1] }) {
+  if (!prefs.edit || state.pt !== H.id || !res) return;
   const S = S0 + k * res.m;                             // graph height per unit of position
   for (const side of [-1, 1]) {
-    const len = side < 0 ? res.aL : res.aR, slot = side < 0 ? 3 : 4;
+    const len = side < 0 ? res.aL : res.aR;
+    if (!Number.isFinite(len)) continue;
     v.point(ctx, {
-      x: x0 + side * len * kx, y: y0 + side * len * S, kind: 'arm', color, ax: x0, ay: y0,
+      x: x0 + side * len * (kx * T[0] + S * N[0]), y: y0 + side * len * (kx * T[1] + S * N[1]), kind: 'arm', color, ax: x0, ay: y0,
       drag: (wx, wy) => {
-        const d = Math.max((side * (wx - x0)) / kx, aMin);
-        while (a.length < 5) a.push(null);
-        a[2] = clip(((side * (wy - y0)) / d - S0) / k, -mMax, mMax);
-        a[slot] = clip(d, aMin, aMax);
+        const along = (wx - x0) * T[0] + (wy - y0) * T[1], across = (wx - x0) * N[0] + (wy - y0) * N[1];
+        const d = Math.max((side * along) / kx, aMin);
+        H.set(level ? null : clip(((side * across) / d - S0) / k, -mMax, mMax), side, clip(d, aMin, aMax));
       },
-      remove: () => { a.length = 2; },                  // double-click: back to the automatic handle
+      remove: () => H.reset(),                          // double-click: back to the automatic handle
     });
   }
 }
 const armOf = (list, a) => list.find((r) => Math.abs(r.x - a[0]) < 1e-6);
 /** A measurement square. `apply(wx, wy)` receives the pointer in board inches. */
-const station = (v, ctx, x, y, color, apply) =>
-  v.point(ctx, { x, y, kind: 'station', color, locked: prefs.fix, drag: prefs.fix ? null : apply });
+const station = (v, ctx, x, y, color, apply, id = null) =>
+  v.point(ctx, { x, y, kind: 'station', color, locked: prefs.fix, drag: prefs.fix ? null : apply,
+    on: id !== null && state.pt === id, select: id === null ? null : () => { state.pt = id; } });
+const rawMark = (r) => state.params.marks.find((q) => q.pos === r.pos && q.from === r.from);
+const markPos = (raw, wx) => { const L = state.board.params.length, x = clip(snap(wx, 0.25), 1.25, L - 1.25); raw.pos = raw.from === 'nose' ? L - x : x; };
 
 /* ---- plan: the outline --------------------------------------------------- */
 function drawPlan(v, data) {
@@ -1062,12 +1278,26 @@ function drawPlan(v, data) {
   ctx.setLineDash([]);
 
   // measurements
-  station(v, ctx, 12, lerpAt(x, h, 12), COLORS.warm, (wx, wy) => setParam('tail_width_12', snap(2 * Math.abs(wy), 0.0625), 'graph'));
-  station(v, ctx, L - 12, lerpAt(x, h, L - 12), COLORS.sand, (wx, wy) => setParam('nose_width_12', snap(2 * Math.abs(wy), 0.0625), 'graph'));
+  const pq = data._profiles;
+  const pinArms = (key, px, py, color) => drawArms(v, ctx, pinHandle('outline', key), px, py, pq.arms.outline.pins[key],
+    { S0: slopeAt(pq.x, pq.h0, px), k: 1, color, level: key === 'origin' });
+  station(v, ctx, 12, lerpAt(x, h, 12), COLORS.warm, (wx, wy) => setParam('tail_width_12', snap(2 * Math.abs(wy), 0.0625), 'graph'), 'p|outline|tail12');
+  pinArms('tail12', 12, lerpAt(x, h, 12), COLORS.warm);
+  station(v, ctx, L - 12, lerpAt(x, h, L - 12), COLORS.sand, (wx, wy) => setParam('nose_width_12', snap(2 * Math.abs(wy), 0.0625), 'graph'), 'p|outline|nose12');
+  pinArms('nose12', L - 12, lerpAt(x, h, L - 12), COLORS.sand);
   station(v, ctx, xw, W / 2, COLORS.accent, (wx, wy) => {
     setParam('wide_point_offset', snap(wx - state.board.params.length / 2, 0.25), 'graph');
     setParam('width', snap(2 * Math.abs(wy), 0.125), 'graph');
-  });
+  }, 'p|outline|origin');
+  pinArms('origin', xw, W / 2, COLORS.accent);
+  for (const r of p.marks) {                            // added width measurements
+    const raw = rawMark(r);
+    if (!raw || r.width === null || !armOf(pq.arms.outline, [r.x])) continue;
+    const y = lerpAt(x, h, r.x), H = markHandle(raw, 'outline');
+    station(v, ctx, r.x, y, COLORS.sand, (wx, wy) => { markPos(raw, wx); raw.width = snap(clip(2 * Math.abs(wy), 0.5, 30), 0.0625); }, H.id);
+    v.text(ctx, `${fracIn(2 * y)}″`, v.X(r.x), v.Y(y) - 9, COLORS.sand);
+    drawArms(v, ctx, H, r.x, y, armOf(pq.arms.outline, [r.x]), { S0: slopeAt(pq.x, pq.h0, r.x), k: 1, color: COLORS.sand });
+  }
   if (!TAIL_CLOSES.includes(p.tail_type))
     station(v, ctx, 0, p.tail_block_width / 2, COLORS.warm, (wx, wy) => setParam('tail_block_width', snap(2 * Math.abs(wy), 0.125), 'graph'));
 
@@ -1077,12 +1307,36 @@ function drawPlan(v, data) {
     a[0] = clip(wx, 0.8, LL - 0.8);
     a[1] = clip(Math.abs(wy) - lerpAt(q.x, q.h0, a[0]), -6, 6);
   };
-  const pq = data._profiles;
   for (const a of P.anchors.outline) {
     const y = lerpAt(x, h, a[0]);
     v.point(ctx, { x: a[0], y, kind: 'anchor', color: COLORS.foam, on: state.pt === a, select: () => { state.pt = a; }, drag: dragFn(a), remove: () => dropFrom(P.anchors.outline, a) });
     v.point(ctx, { x: a[0], y: -y, kind: 'anchor', color: COLORS.foam, ghost: true });
-    drawArms(v, ctx, a, a[0], y, armOf(pq.arms.outline, a), { S0: slopeAt(pq.x, pq.h0, a[0]), k: 1, color: COLORS.foam });
+    drawArms(v, ctx, anchorHandle(a), a[0], y, armOf(pq.arms.outline, a), { S0: slopeAt(pq.x, pq.h0, a[0]), k: 1, color: COLORS.foam });
+  }
+
+  // the cut of a swallow tail: its own anchor points, so it can be curved
+  if (p.tail_type === 'swallow') {
+    const D = p.swallow_depth, yn = (xq) => lerpAt(x, yin, xq), S0 = -p.swallow_width / 2 / D;
+    const cutDrag = (a) => (wx, wy) => {
+      const b = state.board.params;
+      a[0] = clip(wx, 0.35, b.swallow_depth - 0.35);
+      a[1] = clip(Math.abs(wy) - (b.swallow_width / 2) * (1 - a[0] / b.swallow_depth), -3, 3);
+    };
+    for (const a of P.anchors.swallow) {
+      const y = yn(a[0]);
+      v.point(ctx, { x: a[0], y, kind: 'anchor', color: COLORS.warm, on: state.pt === a, select: () => { state.pt = a; }, drag: cutDrag(a), remove: () => dropFrom(P.anchors.swallow, a) });
+      v.point(ctx, { x: a[0], y: -y, kind: 'anchor', color: COLORS.warm, ghost: true });
+      drawArms(v, ctx, anchorHandle(a), a[0], y, armOf(pq.arms.swallow, a), { S0, k: 1, color: COLORS.warm, aMin: 0.2 });
+    }
+    v.curves.push({
+      at: (wx, wy) => (wx < 0.35 || wx > D - 0.35 ? null : (wy < 0 ? -1 : 1) * yn(wx)),
+      add: (wx) => {
+        const a = [wx, yn(wx) - (p.swallow_width / 2) * (1 - wx / D)];
+        P.anchors.swallow.push(a);
+        state.pt = a;
+        return { fn: cutDrag(a), undo: () => dropFrom(P.anchors.swallow, a) };
+      },
+    });
   }
   v.curves.push({
     at: (wx, wy) => (wx < 0.8 || wx > L - 0.8 ? null : (wy < 0 ? -1 : 1) * lerpAt(x, h, wx)),
@@ -1096,7 +1350,8 @@ function drawPlan(v, data) {
 
   v.text(ctx, 'tail', v.X(0), v.h - 6, COLORS.muted, 'left');
   v.text(ctx, 'nose', v.X(L), v.h - 6, COLORS.muted, 'right');
-  tip(v, ctx, P.anchors.outline.length ? 'drag a point · drag its arms to blend · double-click removes' : 'click the outline to add a point');
+  tip(v, ctx, P.anchors.outline.length + P.anchors.swallow.length ? 'drag a point · drag its arms to blend · double-click removes'
+    : p.tail_type === 'swallow' ? 'click the outline or the swallow cut to add a point · click a square for its arms' : 'click the outline to add a point · click a square for its arms');
 }
 
 /* ---- profile: rocker (bottom line) and foil (deck line) ------------------ */
@@ -1135,17 +1390,43 @@ function drawProfile(v, data) {
   // measurements: rocker on the bottom line, thickness on the deck line
   const now = () => state.board, bz = (xq) => lerpAt(now()._profiles.x, now()._profiles.zb, xq);
   station(v, ctx, 0, bottom[0], COLORS.warm, (wx, wy) => setParam('tail_rocker', snap(Math.max(wy, 0), 0.0625), 'graph'));
-  station(v, ctx, 12, zb(12), COLORS.warm, (wx, wy) => setParam('tail_rocker_12', snap(Math.max(wy, 0), 0.0625), 'graph'));
-  station(v, ctx, L - 12, zb(L - 12), COLORS.sand, (wx, wy) => setParam('nose_rocker_12', snap(Math.max(wy, 0), 0.0625), 'graph'));
+  const q = data._profiles, inside = (wx) => wx > 0.8 && wx < L - 0.8;
+  const deckS0 = (xq) => slopeAt(q.x, q.zb, xq) + sc * slopeAt(q.x, q.foil0, xq);
+  const pinArms = (name, key, px, py, color) => drawArms(v, ctx, pinHandle(name, key), px, py, q.arms[name].pins[key],
+    name === 'rocker' ? { S0: slopeAt(q.x, q.zb0, px), k: 1, color, level: key === 'origin' } : { S0: deckS0(px), k: sc, color, level: key === 'origin' });
+  station(v, ctx, 12, zb(12), COLORS.warm, (wx, wy) => setParam('tail_rocker_12', snap(Math.max(wy, 0), 0.0625), 'graph'), 'p|rocker|tail12');
+  pinArms('rocker', 'tail12', 12, zb(12), COLORS.warm);
+  station(v, ctx, L - 12, zb(L - 12), COLORS.sand, (wx, wy) => setParam('nose_rocker_12', snap(Math.max(wy, 0), 0.0625), 'graph'), 'p|rocker|nose12');
+  pinArms('rocker', 'nose12', L - 12, zb(L - 12), COLORS.sand);
   station(v, ctx, L, bottom[bottom.length - 1], COLORS.sand, (wx, wy) => setParam('nose_rocker', snap(Math.max(wy, 0), 0.0625), 'graph'));
-  station(v, ctx, xl, 0, COLORS.accent, (wx) => setParam('rocker_low_point', snap(wx - now().params.length / 2, 0.25), 'graph'));
-  station(v, ctx, 12, dk(12), COLORS.warm, (wx, wy) => setParam('tail_thickness_12', snap(Math.max(wy - bz(12), 0.3) / now().thickness_scale, 0.0625), 'graph'));
-  station(v, ctx, L - 12, dk(L - 12), COLORS.sand, (wx, wy) => setParam('nose_thickness_12', snap(Math.max(wy - bz(now().params.length - 12), 0.3) / now().thickness_scale, 0.0625), 'graph'));
+  station(v, ctx, xl, 0, COLORS.accent, (wx) => setParam('rocker_low_point', snap(wx - now().params.length / 2, 0.25), 'graph'), 'p|rocker|origin');
+  pinArms('rocker', 'origin', xl, zb(xl), COLORS.accent);
+  station(v, ctx, 12, dk(12), COLORS.warm, (wx, wy) => setParam('tail_thickness_12', snap(Math.max(wy - bz(12), 0.3) / now().thickness_scale, 0.0625), 'graph'), 'p|thickness|tail12');
+  pinArms('thickness', 'tail12', 12, dk(12), COLORS.warm);
+  station(v, ctx, L - 12, dk(L - 12), COLORS.sand, (wx, wy) => setParam('nose_thickness_12', snap(Math.max(wy - bz(now().params.length - 12), 0.3) / now().thickness_scale, 0.0625), 'graph'), 'p|thickness|nose12');
+  pinArms('thickness', 'nose12', L - 12, dk(L - 12), COLORS.sand);
   station(v, ctx, xt, dk(xt), COLORS.foam, (wx, wy) => {
     const LL = now().params.length;
     setParam('thickness_point_offset', snap(wx - LL / 2, 0.25), 'graph');
     setParam('thickness', snap(Math.max(wy - bz(clip(wx, 0, LL)), 1.5) / now().thickness_scale, 0.0625), 'graph');
-  });
+  }, 'p|thickness|origin');
+  pinArms('thickness', 'origin', xt, dk(xt), COLORS.foam);
+  for (const r of p.marks) {                            // added rocker and thickness measurements
+    const raw = rawMark(r);
+    if (!raw) continue;
+    if (r.rocker !== null && armOf(q.arms.rocker, [r.x])) {
+      const H = markHandle(raw, 'rocker'), y = zb(r.x);
+      station(v, ctx, r.x, y, COLORS.accent, (wx, wy) => { markPos(raw, wx); raw.rocker = snap(clip(wy, -2, 16), 0.0625); }, H.id);
+      v.text(ctx, `${fracIn(y)}″`, v.X(r.x), v.Y(y) + 15, COLORS.accent);
+      drawArms(v, ctx, H, r.x, y, armOf(q.arms.rocker, [r.x]), { S0: slopeAt(q.x, q.zb0, r.x), k: 1, color: COLORS.accent });
+    }
+    if (r.thickness !== null && armOf(q.arms.thickness, [r.x])) {
+      const H = markHandle(raw, 'thickness'), y = dk(r.x);
+      station(v, ctx, r.x, y, COLORS.foam, (wx, wy) => { markPos(raw, wx); raw.thickness = snap(clip((wy - bz(markX(raw, now().params.length))) / now().thickness_scale, 0.2, 6), 0.0625); }, H.id);
+      v.text(ctx, `${fracIn(y - zb(r.x))}″`, v.X(r.x), v.Y(y) - 9, COLORS.foam);
+      drawArms(v, ctx, H, r.x, y, armOf(q.arms.thickness, [r.x]), { S0: deckS0(r.x), k: sc, color: COLORS.foam });
+    }
+  }
 
   // anchor points
   const rockerDrag = (a) => (wx, wy) => {
@@ -1158,14 +1439,13 @@ function drawProfile(v, data) {
     a[0] = clip(wx, 0.8, LL - 0.8);
     a[1] = clip((wy - lerpAt(q.x, q.zb, a[0])) / now().thickness_scale - lerpAt(q.x, q.foil0, a[0]), -2, 2);
   };
-  const q = data._profiles, inside = (wx) => wx > 0.8 && wx < L - 0.8;
   for (const a of P.anchors.rocker) {
     v.point(ctx, { x: a[0], y: zb(a[0]), kind: 'anchor', color: COLORS.accent, on: state.pt === a, select: () => { state.pt = a; }, drag: rockerDrag(a), remove: () => dropFrom(P.anchors.rocker, a) });
-    drawArms(v, ctx, a, a[0], zb(a[0]), armOf(q.arms.rocker, a), { S0: slopeAt(q.x, q.zb0, a[0]), k: 1, color: COLORS.accent });
+    drawArms(v, ctx, anchorHandle(a), a[0], zb(a[0]), armOf(q.arms.rocker, a), { S0: slopeAt(q.x, q.zb0, a[0]), k: 1, color: COLORS.accent });
   }
   for (const a of P.anchors.thickness) {
     v.point(ctx, { x: a[0], y: dk(a[0]), kind: 'anchor', color: COLORS.foam, on: state.pt === a, select: () => { state.pt = a; }, drag: deckDrag(a), remove: () => dropFrom(P.anchors.thickness, a) });
-    drawArms(v, ctx, a, a[0], dk(a[0]), armOf(q.arms.thickness, a), { S0: slopeAt(q.x, q.zb, a[0]) + sc * slopeAt(q.x, q.foil0, a[0]), k: sc, color: COLORS.foam });
+    drawArms(v, ctx, anchorHandle(a), a[0], dk(a[0]), armOf(q.arms.thickness, a), { S0: deckS0(a[0]), k: sc, color: COLORS.foam });
   }
   v.curves.push({
     at: (wx) => (inside(wx) ? zb(wx) : null),
@@ -1210,6 +1490,21 @@ function sectionCaption(v, ctx, data, s, color) {
   v.text(ctx, `${shapeText(s.shape)} · rail apex ${fracIn(s.apex_in)}″ up`, 4, 25, COLORS.sand, 'left');
 }
 
+/** A point of a section line at arc-length position rho: where it is, where it was before anchor points, and the frame there. */
+function lineAt(ln, rho) {
+  let lo = 0, hi = ln.rho.length - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (ln.rho[mid] <= rho) lo = mid; else hi = mid; }
+  const span = ln.rho[hi] - ln.rho[lo], f = span > 0 ? clip((rho - ln.rho[lo]) / span, 0, 1) : 0;
+  const mix = (arr) => arr[lo] + f * (arr[hi] - arr[lo]);
+  return { y: mix(ln.y), z: mix(ln.z), y0: mix(ln.y0), z0: mix(ln.z0), ny: mix(ln.ny), nz: mix(ln.nz) };
+}
+/** The spot on a section line (before anchor points) nearest to (wy, wz): its rho, and how far along the normal the pointer is. */
+function nearestOnLine(ln, wy, wz) {
+  let bi = 0, bd = Infinity;
+  for (let i = 0; i < ln.y0.length; i++) { const d = (ln.y0[i] - wy) ** 2 + (ln.z0[i] - wz) ** 2; if (d < bd) { bd = d; bi = i; } }
+  return { rho: ln.rho[bi], off: (wy - ln.y0[bi]) * ln.ny[bi] + (wz - ln.z0[bi]) * ln.nz[bi] };
+}
+
 function drawSections(v, data) {
   const k = sliceIndex(data), P = state.params;
   const W = data.stats.width_in, T = data.stats.thickness_in;
@@ -1217,7 +1512,7 @@ function drawSections(v, data) {
     const s = sectionAt(data, scrubX(data));
     const ctx = v.begin([-W / 2 - 0.6, W / 2 + 0.6, -0.75, T + 0.45], prefs.vexSections, 16);
     ctx.strokeStyle = COLORS.line; ctx.beginPath(); ctx.moveTo(v.X(0), v.Y(-0.6)); ctx.lineTo(v.X(0), v.Y(T + 0.3)); ctx.stroke();
-    const ref = sectionOutline(sectionAt(data, data.params.length / 2 + data.params.wide_point_offset), 60);   // the wide point, for scale
+    const ref = sectionOutline(sectionAt(data, data.params.length / 2 + data.params.wide_point_offset), true, 4);   // the wide point, for scale
     v.path(ctx, ref.X, ref.Z, true); ctx.setLineDash([3, 4]); ctx.strokeStyle = 'rgba(132,148,159,.45)'; ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
     sectionGuides(v, ctx, s, COLORS.sand);
     const o = sectionOutline(s);
@@ -1231,41 +1526,52 @@ function drawSections(v, data) {
 
   const s = sliceInfo(data, k), raw = P.slices.find((q) => q.id === s.id);
   const cur = sectionOutline(s);
-  const ctx = v.begin([-s.h - 0.6, s.h + 0.6, Math.min(...cur.b, 0) - 0.3, Math.max(...cur.d) + 0.4], prefs.vexSections, 18);
-  ctx.strokeStyle = COLORS.line; ctx.beginPath(); ctx.moveTo(v.X(0), v.Y(Math.min(...cur.b) - 0.2)); ctx.lineTo(v.X(0), v.Y(Math.max(...cur.d) + 0.2)); ctx.stroke();
+  const lowest = Math.min(...cur.b, 0), highest = Math.max(...cur.d);
+  const ctx = v.begin([-s.h - 0.6, s.h + 0.6, lowest - 0.3, highest + 0.4], prefs.vexSections, 18);
+  ctx.strokeStyle = COLORS.line; ctx.beginPath(); ctx.moveTo(v.X(0), v.Y(lowest - 0.2)); ctx.lineTo(v.X(0), v.Y(highest + 0.2)); ctx.stroke();
   sectionGuides(v, ctx, s, COLORS.sand);
   if (raw.deck.length || raw.bottom.length) {          // the shape without this slice's anchor points
-    const o0 = sectionOutline(s, 160, false);
+    const o0 = sectionOutline(s, false);
     v.path(ctx, o0.X, o0.Z, true); ctx.setLineDash([3, 3]); ctx.strokeStyle = COLORS.muted; ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
   }
   v.path(ctx, cur.X, cur.Z, true);
   ctx.fillStyle = 'rgba(180,140,255,0.08)'; ctx.fill();
   ctx.strokeStyle = SLICE_COLOR; ctx.lineWidth = 1.8; ctx.stroke();
 
+  // Anchor points sit anywhere along the deck or bottom line, right around the rail. A point is kept as
+  // [how far along the line, how far the surface is moved along its normal there (fraction of thickness)].
   const info = () => { const b = state.board, i = sliceIndex(b); return i < 0 ? null : sliceInfo(b, i); };
-  const etaOf = (si, wx) => clip((Math.abs(wx) - si.yin) / Math.max(si.h - si.yin, 1e-6), 0.04, 0.96);
-  const span = Math.max(s.h - s.yin, 1e-6);            // one unit of eta, in inches across
   for (const which of ['deck', 'bottom']) {
-    const list = raw[which], col = which === 'deck' ? COLORS.foam : COLORS.accent;
+    const list = raw[which], col = which === 'deck' ? COLORS.foam : COLORS.accent, ln = s[which], G = Math.max(s.girth[which], 1e-6);
     const dragFn = (a) => (wx, wz) => {
       const si = info(); if (!si) return;
-      a[0] = etaOf(si, wx);
-      a[1] = clip((wz - si[which](a[0], false)) / si.t, -0.6, 0.6);
+      const hit = nearestOnLine(si[which], Math.abs(wx), wz);
+      a[0] = clip(hit.rho, 0.02, 0.995);
+      a[1] = clip(hit.off / si.t, -0.6, 0.6);
     };
     for (const a of list) {
-      const y0 = s.y(a[0]), z0 = s[which](a[0]), de = 0.01;
-      v.point(ctx, { x: y0, y: z0, kind: 'anchor', color: col, on: state.pt === a, select: () => { state.pt = a; }, drag: dragFn(a), remove: () => dropFrom(list, a) });
-      v.point(ctx, { x: -y0, y: z0, kind: 'anchor', color: col, ghost: true });
-      const S0 = (s[which](Math.min(a[0] + de, 1), false) - s[which](Math.max(a[0] - de, 0), false)) / (2 * de);
-      drawArms(v, ctx, a, y0, z0, s.arms[which].find((r) => Math.abs(r.x - a[0]) < 1e-9), { S0, k: s.t, kx: span, color: col, mMax: 6, aMin: 0.03, aMax: 1 });
+      const q = lineAt(ln, a[0]);
+      v.point(ctx, { x: q.y, y: q.z, kind: 'anchor', color: col, on: state.pt === a, select: () => { state.pt = a; }, drag: dragFn(a), remove: () => dropFrom(list, a) });
+      v.point(ctx, { x: -q.y, y: q.z, kind: 'anchor', color: col, ghost: true });
+      drawArms(v, ctx, anchorHandle(a), q.y, q.z, s.arms[which].find((r) => Math.abs(r.x - a[0]) < 1e-9),
+        { S0: 0, k: s.t, kx: G, color: col, mMax: 12, aMin: 0.008, aMax: 1, T: [q.nz, -q.ny], N: [q.ny, q.nz] });
     }
     v.curves.push({
-      at: (wx) => { const e = (Math.abs(wx) - s.yin) / span; return e < 0.04 || e > 0.96 ? null : s[which](e); },
-      add: (wx) => { const e = etaOf(s, wx), a = [e, s.offset(which, e)]; list.push(a); state.pt = a; return { fn: dragFn(a), undo: () => dropFrom(list, a) }; },
+      dist: (wx, wz) => {                               // pixels from the pointer to this line, on either half of the board
+        let best = Infinity;
+        for (let i = 0; i < ln.y.length; i += 2) best = Math.min(best, Math.hypot(v.X(ln.y[i]) - v.X(Math.abs(wx)), v.Y(ln.z[i]) - v.Y(wz)));
+        return best;
+      },
+      add: (wx, wz) => {
+        const base = nearestOnLine(ln, Math.abs(wx), wz), rho = clip(base.rho, 0.02, 0.995), q = lineAt(ln, rho);
+        const a = [rho, ((q.y - q.y0) * q.ny + (q.z - q.z0) * q.nz) / s.t];        // starts on the line as it is now
+        list.push(a); state.pt = a;
+        return { fn: dragFn(a), undo: () => dropFrom(list, a) };
+      },
     });
   }
   sectionCaption(v, ctx, data, s, SLICE_COLOR);
-  tip(v, ctx, raw.deck.length || raw.bottom.length ? 'drag a point · drag its arms to blend · double-click removes' : 'sliders on the left · click a line to add a point');
+  tip(v, ctx, raw.deck.length || raw.bottom.length ? 'drag a point · drag its arms to blend · double-click removes' : 'sliders on the left · click the deck, rail or bottom line to add a point');
 }
 
 const views2d = {
@@ -1323,7 +1629,7 @@ function exitSection() {
 function addSlice(x) {
   const P = state.params;
   const id = 1 + Math.max(0, ...P.slices.map((s) => s.id || 0));
-  P.slices.push({ id, x, adj: {}, deck: [], bottom: [] });
+  P.slices.push({ id, x, adj: {}, deck: [], bottom: [], v: 2 });
   state.sel = id;
 }
 
@@ -1371,7 +1677,7 @@ function wirePanels() {
       }
       if (act === 'clear') {
         const P = state.params;
-        if (name === 'plan') P.anchors.outline = [];
+        if (name === 'plan') { P.anchors.outline = []; P.anchors.swallow = []; }
         if (name === 'profile') { P.anchors.rocker = []; P.anchors.thickness = []; }
         if (name === 'sections') { const s = P.slices.find((q) => q.id === state.sel); if (s) { s.deck = []; s.bottom = []; } }
         state.pt = null;
@@ -1403,7 +1709,7 @@ function syncPanelTools() {
 
 function syncClearButtons() {
   const P = state.params, sl = P.slices.find((q) => q.id === state.sel);
-  const has = { plan: P.anchors.outline.length, profile: P.anchors.rocker.length + P.anchors.thickness.length, sections: sl ? sl.deck.length + sl.bottom.length : 0 };
+  const has = { plan: P.anchors.outline.length + P.anchors.swallow.length, profile: P.anchors.rocker.length + P.anchors.thickness.length, sections: sl ? sl.deck.length + sl.bottom.length : 0 };
   for (const [name, n] of Object.entries(has)) document.querySelector(`.panel[data-panel="${name}"] [data-act="clear"]`).hidden = !n;
 }
 
@@ -1414,7 +1720,9 @@ function render(data) {
   updateMesh(data);
   drawPanels();
   renderSliceBar(data);
+  if (upgradeSlices(data)) { saveLocal(); schedule(); }
   refreshSectionGroup(data);
+  syncMarks(data);
   syncClearButtons();
   showRing(data, false);
   const s = data.stats;
@@ -1442,8 +1750,9 @@ function render(data) {
 function wireUI() {
   document.querySelectorAll('#views button').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
   $('#t-wire').addEventListener('click', (e) => {
-    state.wire = !state.wire; wireMesh.visible = state.wire; e.currentTarget.classList.toggle('on', state.wire);
+    state.wire = !state.wire; setWire();
   });
+  $('#bay-gain').addEventListener('input', (e) => { prefs.bayGain = +e.target.value; savePrefs(); setBayGain(); });
   $('#t-light').addEventListener('click', () => { prefs.bay = !prefs.bay; savePrefs(); setLighting(); });
   $('#t-flip').addEventListener('click', (e) => { state.flip = !state.flip; e.currentTarget.classList.toggle('on', state.flip); });
   $('#btn-undo').addEventListener('click', () => histGo(-1));

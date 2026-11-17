@@ -19,9 +19,9 @@ const P_MIN = 1.2, P_MAX = 8.0;
 export const NULLABLE = ['nose_width_12', 'tail_width_12', 'tail_block_width', 'nose_rocker', 'nose_rocker_12',
   'tail_rocker_12', 'tail_rocker', 'nose_thickness', 'nose_thickness_12', 'tail_thickness_12', 'tail_thickness'];
 const AUTO = { nose_a: 2.3, tail_a: 1.6, nose_k: 2.4, tail_k: 2.0, foil_p: 2.0 };
-const ANCHOR_LIMIT = { outline: 6, rocker: 4, thickness: 2 };   // max offset an anchor point may carry (inches)
+const ANCHOR_LIMIT = { outline: 6, rocker: 4, thickness: 2, swallow: 3 };   // max offset an anchor point may carry (inches)
 const ANCHOR_GAP = 0.75;                                         // min spacing between anchors / pinned points
-const GRID = 257;                                                // samples of a slice's deck / bottom offset curve
+const GRID = 513;                                                // samples of a slice's deck / bottom offset curve
 // What a cross-section slice may adjust, and by how much at most (added to the board-wide value there)
 const ADJ = { rail_apex: 0.45, rail_apex_in: 1.5, rail_fullness: 1, deck_dome: 1, rail_hardness: 1, concave: 0.5, double: 0.5, vee: 0.5 };
 // Bottom contour stations: what each type puts into the three channels [single concave, double concave, vee]
@@ -183,6 +183,9 @@ export function validated(src) {
   p.section_points = Math.trunc(clip(p.section_points, 16, 128));
   if (Number.isFinite(p.rail_apex_in)) clamp('rail_apex_in', 0.1, 2.5); else p.rail_apex_in = null;
   p._auto = auto;
+  p.marks = cleanMarks(p);
+  p._marks = markKnots(p);
+  p.handles = cleanHandles(p);
   p.anchors = cleanAnchors(p);
   p.slices = cleanSlices(p);
   p.bottom = cleanBottom(p);
@@ -217,26 +220,102 @@ function pinsFor(p, name) {
   return { origin, tail12: !a.includes(t12), nose12: !a.includes(n12) };   // a blank 12" station is not pinned
 }
 
+/**
+ * Added measurements: width, rocker and / or thickness at any position along the board,
+ * entered like the five standard stations ("rocker 2 3/4 at 8 from the nose"). Each one is
+ * held exactly: it becomes a knot of the curve's correction whose offset is the typed value
+ * minus the closed-form curve there. Like an anchor point it can carry a handle
+ * [slope, left arm, right arm] per curve (hw, hr, ht).
+ */
+const MARK_FIELDS = { outline: ['width', 'hw'], rocker: ['rocker', 'hr'], thickness: ['thickness', 'ht'] };
+const handleOf = (hd, mLim) => {
+  if (!Array.isArray(hd)) return null;
+  const v = [optNum(hd[0], -mLim, mLim), optNum(hd[1], 0.05, 60), optNum(hd[2], 0.05, 60)];
+  return v.some((q) => q !== null) ? v : null;
+};
+
+function cleanMarks(p) {
+  const L = p.length, rows = [];
+  for (const r of Array.isArray(p.marks) ? p.marks : []) {
+    if (!r || !Number.isFinite(r.pos)) continue;
+    const from = r.from === 'nose' ? 'nose' : 'tail', x = from === 'nose' ? L - r.pos : r.pos;
+    if (x < 1 || x > L - 1) continue;
+    rows.push({ pos: r.pos, from, x, width: optNum(r.width, 0.5, p.width), rocker: optNum(r.rocker, -2, 16),
+      thickness: optNum(r.thickness, 0.2, p.thickness), hw: handleOf(r.hw, 3), hr: handleOf(r.hr, 3), ht: handleOf(r.ht, 3) });
+  }
+  rows.sort((a, b) => a.x - b.x);
+  const kept = [];
+  for (const r of rows) {
+    if (kept.length === 16) break;
+    if (kept.length && r.x - kept[kept.length - 1].x < ANCHOR_GAP) continue;
+    kept.push(r);
+  }
+  return kept;
+}
+
+/** The points of a curve that are held by a standard measurement: the ends, its origin, the 12" stations. */
+function fixedPoints(p, name) {
+  const pin = pinsFor(p, name), fixed = [0, p.length, pin.origin];
+  if (pin.tail12) fixed.push(12);
+  if (pin.nose12) fixed.push(p.length - 12);
+  return fixed;
+}
+
+/** Added measurements as knots [x, offset, slope, left arm, right arm] of each curve's correction. */
+function markKnots(p) {
+  const out = {};
+  for (const name of ['outline', 'rocker', 'thickness']) {
+    const [field, hf] = MARK_FIELDS[name], fixed = fixedPoints(p, name), list = [];
+    for (const r of p.marks) {
+      if (r[field] === null || fixed.some((f) => Math.abs(r.x - f) < ANCHOR_GAP)) continue;
+      const at = [r.x];
+      const base = name === 'outline' ? halfWidth(p, at)[0] : name === 'rocker' ? rocker(p, at)[0] : foil(p, at)[0];
+      const hd = r[hf] || [null, null, null];
+      list.push([r.x, (name === 'outline' ? r.width / 2 : r[field]) - base, hd[0], hd[1], hd[2]]);
+    }
+    out[name] = list;
+  }
+  return out;
+}
+
+/** Handles [slope, left arm, right arm] on the standard measurement points: the 12" stations and each curve's origin. */
+function cleanHandles(p) {
+  const src = p.handles && typeof p.handles === 'object' ? p.handles : {}, out = {};
+  for (const name of ['outline', 'rocker', 'thickness']) {
+    const pin = pinsFor(p, name), s = src[name] && typeof src[name] === 'object' ? src[name] : {}, o = {};
+    for (const key of ['tail12', 'origin', 'nose12']) {
+      if (key !== 'origin' && !pin[key]) continue;
+      const hd = handleOf(s[key], 3);
+      if (!hd) continue;
+      if (key === 'origin') hd[0] = null;                 // the wide / low / thick point stays level
+      if (hd.some((q) => q !== null)) o[key] = hd;
+    }
+    out[name] = o;
+  }
+  return out;
+}
+
+function keepAnchors(list, lim, fixed, lo, hi, gap, mLim) {
+  const pts = (Array.isArray(list) ? list : []).filter(pairOk)
+    .map((a) => [a[0], clip(a[1], -lim, lim), optNum(a[2], -mLim, mLim), optNum(a[3], 0.05, 60), optNum(a[4], 0.05, 60)])
+    .sort((a, b) => a[0] - b[0]);
+  const kept = [];
+  for (const a of pts) {
+    if (kept.length === 24) break;
+    if (fixed.some((f) => Math.abs(a[0] - f) < gap)) continue;
+    if (a[0] <= lo || a[0] >= hi) continue;
+    if (kept.length && a[0] - kept[kept.length - 1][0] < gap) continue;
+    kept.push(a);
+  }
+  return kept;
+}
+
 function cleanAnchors(p) {
   const src = p.anchors || {}, L = p.length, out = {};
-  for (const name of ['outline', 'rocker', 'thickness']) {
-    const pin = pinsFor(p, name), lim = ANCHOR_LIMIT[name];
-    const fixed = [0, L, pin.origin];
-    if (pin.tail12) fixed.push(12);
-    if (pin.nose12) fixed.push(L - 12);
-    const pts = (Array.isArray(src[name]) ? src[name] : []).filter(pairOk)
-      .map((a) => [a[0], clip(a[1], -lim, lim), optNum(a[2], -3, 3), optNum(a[3], 0.05, 60), optNum(a[4], 0.05, 60)])
-      .sort((a, b) => a[0] - b[0]);
-    const kept = [];
-    for (const a of pts) {
-      if (kept.length === 24) break;
-      if (fixed.some((f) => Math.abs(a[0] - f) < ANCHOR_GAP)) continue;
-      if (a[0] <= 0 || a[0] >= L) continue;
-      if (kept.length && a[0] - kept[kept.length - 1][0] < ANCHOR_GAP) continue;
-      kept.push(a);
-    }
-    out[name] = kept;
-  }
+  for (const name of ['outline', 'rocker', 'thickness'])
+    out[name] = keepAnchors(src[name], ANCHOR_LIMIT[name], [...fixedPoints(p, name), ...p._marks[name].map((k) => k[0])], 0, L, ANCHOR_GAP, 3);
+  // the cut of a swallow tail: offsets to the notch's half width, between the tail end and the top of the cut
+  out.swallow = TAIL_TYPES[p.tail_type].notch ? keepAnchors(src.swallow, ANCHOR_LIMIT.swallow, [], 0.3, p.swallow_depth - 0.3, 0.3, 3) : [];
   return out;
 }
 
@@ -244,13 +323,13 @@ function cleanSlices(p) {
   const L = p.length, kept = [];
   const side = (list) => {
     const pts = (Array.isArray(list) ? list : []).filter(pairOk)
-      .map((a) => [a[0], clip(a[1], -0.6, 0.6), optNum(a[2], -6, 6), optNum(a[3], 0.01, 1), optNum(a[4], 0.01, 1)])
+      .map((a) => [a[0], clip(a[1], -0.6, 0.6), optNum(a[2], -12, 12), optNum(a[3], 0.004, 1), optNum(a[4], 0.004, 1)])
       .sort((a, b) => a[0] - b[0]);
     const k = [];
     for (const a of pts) {
-      if (k.length === 16) break;
-      if (a[0] < 0.03 || a[0] > 0.97) continue;
-      if (k.length && a[0] - k[k.length - 1][0] < 0.03) continue;
+      if (k.length === 20) break;
+      if (a[0] < 0.02 || a[0] > 0.995) continue;
+      if (k.length && a[0] - k[k.length - 1][0] < 0.012) continue;
       k.push(a);
     }
     return k;
@@ -383,21 +462,31 @@ function bottomAt(p, x) {
  * the board). At the tips the slope is left free.
  */
 function curveDelta(p, name, x, arms) {
-  const out = new Float64Array(x.length), pts = p.anchors[name];
-  if (!pts.length) return out;
-  const L = p.length, pin = pinsFor(p, name);
-  const P = [0];
-  if (pin.tail12) P.push(12);
-  P.push(pin.origin);
-  if (pin.nose12) P.push(L - 12);
-  P.push(L);
+  const out = new Float64Array(x.length);
+  const pts = [...p.anchors[name], ...p._marks[name]].sort((a, b) => a[0] - b[0]);
+  const L = p.length, pin = pinsFor(p, name), H = p.handles[name];
+  const P = [[0, null]];
+  if (pin.tail12) P.push([12, 'tail12']);
+  P.push([pin.origin, 'origin']);
+  if (pin.nose12) P.push([L - 12, 'nose12']);
+  P.push([L, null]);
+  // a pinned point as a knot: offset 0, and the slope and arms of its handle if it has been given one
+  const pinKnot = (q) => { const hd = q[1] ? H[q[1]] : null; return hd ? [q[0], 0, hd[0], hd[1], hd[2]] : [q[0], 0, null, null, null]; };
+  if (arms) arms.pins = {};
   for (let s = 0; s < P.length - 1; s++) {
-    const a = P[s], b = P[s + 1];
+    const a = P[s][0], b = P[s + 1][0];
     const inside = pts.filter((q) => q[0] > a && q[0] < b);
-    if (!inside.length) continue;
-    const curve = knotCurve([[a, 0], ...inside, [b, 0]], s > 0, s < P.length - 2);
-    for (let i = 0; i < x.length; i++) if (x[i] > a && x[i] < b) out[i] = curve.at(x[i]);
-    if (arms) arms.push(...curve.arms.slice(1, -1));
+    const ka = pinKnot(P[s]), kb = pinKnot(P[s + 1]);
+    const live = inside.length > 0 || (ka[2] !== null && ka[2] !== 0) || (kb[2] !== null && kb[2] !== 0);
+    if (!live && !arms) continue;
+    const curve = knotCurve([ka, ...inside, kb], s > 0, s < P.length - 2);
+    if (live) for (let i = 0; i < x.length; i++) if (x[i] > a && x[i] < b) out[i] = curve.at(x[i]);
+    if (arms) {
+      arms.push(...curve.arms.slice(1, -1));
+      const first = curve.arms[0], last = curve.arms[curve.arms.length - 1];
+      if (P[s][1]) (arms.pins[P[s][1]] ??= { x: a, m: first.m }).aR = first.aR;
+      if (P[s + 1][1]) (arms.pins[P[s + 1][1]] ??= { x: b, m: last.m }).aL = last.aL;
+    }
   }
   return out;
 }
@@ -405,9 +494,12 @@ function curveDelta(p, name, x, arms) {
 /**
  * Cross-section slices. A slice can adjust the section's shape settings (deck dome, rail
  * fullness, rail apex, rail edge, concave, vee) and carry anchor points on its deck and
- * bottom lines: [eta, d] with eta = 0 at the stringer and 1 at the rail, d = vertical
- * offset as a fraction of the local thickness. Everything a slice changes blends smoothly
- * to nothing toward the neighbouring slices and the tips.
+ * bottom lines: [rho, d] with rho the position along the line by arc length (0 at the
+ * stringer, 1 at the rail apex, so the turn of the rail gets its fair share) and d how far
+ * the surface moves along its own normal there, as a fraction of the local thickness
+ * (deck: outward; bottom: up, which is inward at the rail). On the flat of the deck and
+ * bottom that is straight up and down; on the rail it is in and out. Everything a slice
+ * changes blends smoothly to nothing toward the neighbouring slices and the tips.
  */
 function sliceTables(p) {
   const sl = p.slices;
@@ -458,14 +550,21 @@ function sectionShape(p, x, d, t) {
   const lift = Math.abs(con) + dbl, cap = 0.5 * t;                // never carve more than half the thickness
   if (lift > cap) { const f = cap / lift; con *= f; dbl *= f; }
   return {
-    ar: p.rail_apex_in !== null
-      ? clip((p.rail_apex_in + g('rail_apex_in')) / Math.max(t, 1e-9), 0.1, 0.6)
-      : clip(p.rail_apex + g('rail_apex'), 0.15, 0.6),
+    ar: p.rail_apex_in !== null ? apexRatio(p.rail_apex_in + g('rail_apex_in'), t) : clip(p.rail_apex + g('rail_apex'), 0.15, 0.6),
     ed: 1.7 + 1.4 * clip(p.rail_fullness + g('rail_fullness'), 0, 1),
     eb: 2 + 6 * clip(railHardness(p, x) + g('rail_hardness'), 0, 1),
     dome: clip(p.deck_dome + g('deck_dome'), 0, 1),
     con, dbl, vee: clip(v0 + g('vee'), 0, 0.75),
   };
+}
+/**
+ * Rail apex height a (inches above the bottom line) as a fraction of the thickness t. It can
+ * never pass 60% of the thickness; where the board thins out it eases into that limit
+ * instead of hitting it, so the rail line has no corner along the board.
+ */
+function apexRatio(a, t) {
+  const ts = Math.max(t, 1e-9), hi = 0.6 * ts, av = Math.max(a, 1e-3);
+  return clip((av ** -6 + hi ** -6) ** (-1 / 6) / ts, 0.1, 0.6);
 }
 /** Board-wide section settings at x, in the same terms a slice adjusts (for the UI). */
 export function sectionBase(p, x) {
@@ -506,10 +605,16 @@ function halfWidth(p, x) {
   return h;
 }
 
-function notchHalfWidth(p, x) {
+function notchHalfWidth(p, x, arms) {
   const out = new Float64Array(x.length);
   if (!TAIL_TYPES[p.tail_type].notch) return out;
-  for (let i = 0; i < x.length; i++) out[i] = Math.max((p.swallow_width / 2) * (1 - x[i] / p.swallow_depth), 0);
+  const D = p.swallow_depth, pts = p.anchors.swallow;
+  const curve = pts.length ? knotCurve([[0, 0, null, null, null], ...pts, [D, 0, null, null, null]], false, false) : null;
+  for (let i = 0; i < x.length; i++) {
+    const base = Math.max((p.swallow_width / 2) * (1 - x[i] / D), 0);
+    out[i] = curve && x[i] > 0 && x[i] < D ? Math.max(base + curve.at(x[i]), 0.1 * base) : base;   // the cut never closes early
+  }
+  if (arms && curve) arms.push(...curve.arms.slice(1, -1));
   return out;
 }
 
@@ -568,27 +673,66 @@ for (let k = 0; k < K; k++) {
   TH_COS[k] = Math.abs(Math.cos(th)); TH_SIN[k] = Math.abs(Math.sin(th)); TH_DECK[k] = th >= 0 ? 1 : 0;
 }
 
+const KA = K / 2;                                        // deck = samples 0 .. KA-1 (stringer -> rail apex), bottom = KA .. K-1 (apex -> stringer)
+const S_RHO = new Float64Array(K), S_NY = new Float64Array(K), S_NZ = new Float64Array(K);
+const ZERO_ROW = new Float64Array(GRID);
+
+/**
+ * One cross section, densely sampled, into Y / Z. With offset rows (a slice's anchor
+ * points, blended to this position) every point is moved along the normal of the section
+ * there by thickness x row(rho), rho = its arc-length position between the stringer (0)
+ * and the rail apex (1). aux, if given, also receives the section before the anchor
+ * points (Y0, Z0), rho, the normals and the two arc lengths.
+ */
+function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
+  const sh = sectionShape(p, xi, d, ti);
+  const { ar, ed, eb, dome, con, dbl, vee } = sh;
+  const zApex = zbi + ar * ti, td = (1 - ar) * ti, tb = ar * ti;
+  const hs = Math.max(hi, 1e-9);
+  for (let k = 0; k < K; k++) {
+    const deck = TH_DECK[k], e = deck ? ed : eb;
+    const yraw = hi * TH_COS[k] ** (2 / e);
+    const eta = clip(yraw / hs, 0, 1);
+    Z[k] = deck
+      ? zApex + td * TH_SIN[k] ** (2 / ed) * (1 - 0.7 * dome * eta * eta)
+      : zApex - tb * TH_SIN[k] ** (2 / e) + con * (1 - eta * eta) ** 2 + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 - vee * (1 - eta);
+    Y[k] = yi + (yraw * (hi - yi)) / hs;
+  }
+  if (!rowD) return sh;
+  const RHO = aux ? aux.rho : S_RHO, NY = aux ? aux.ny : S_NY, NZ = aux ? aux.nz : S_NZ;
+  RHO[0] = 0;
+  for (let k = 1; k < KA; k++) RHO[k] = RHO[k - 1] + Math.hypot(Y[k] - Y[k - 1], Z[k] - Z[k - 1]);
+  RHO[K - 1] = 0;
+  for (let k = K - 2; k >= KA; k--) RHO[k] = RHO[k + 1] + Math.hypot(Y[k] - Y[k + 1], Z[k] - Z[k + 1]);
+  const aD = RHO[KA - 1], aB = RHO[KA];
+  for (let k = 0; k < K; k++) {
+    const a = Math.max(k - 1, 0), b = Math.min(k + 1, K - 1);
+    const ty = Y[b] - Y[a], tz = Z[b] - Z[a], len = Math.hypot(ty, tz), tot = k < KA ? aD : aB;
+    RHO[k] = tot > 1e-12 ? RHO[k] / tot : 0;
+    if (len < 1e-12 || k === 0 || k === K - 1) { NY[k] = 0; NZ[k] = 1; }
+    else if (k < KA) { NY[k] = -tz / len; NZ[k] = ty / len; }
+    else { NY[k] = tz / len; NZ[k] = -ty / len; }
+  }
+  if (aux) { aux.Y0.set(Y); aux.Z0.set(Z); aux.aD = aD; aux.aB = aB; }
+  for (let k = 0; k < K; k++) {
+    const D = ti * gridAt(k < KA ? rowD : rowB, RHO[k]);
+    if (D === 0) continue;
+    Y[k] = clip(Y[k] + D * NY[k], yi, hi);                // never wider than the outline, never across the stringer
+    Z[k] += D * NZ[k];
+  }
+  return sh;
+}
+
 function sections(p, x, h, yin, t, zb, M, sl) {
   const n = x.length;
   const Yo = new Float64Array(n * M), Zo = new Float64Array(n * M);
   const Y = new Float64Array(K), Z = new Float64Array(K), cum = new Float64Array(K);
   const rowD = new Float64Array(GRID), rowB = new Float64Array(GRID), d = {};
+  const pts = sl && sl.pts;
   for (let i = 0; i < n; i++) {
-    const hi = h[i], ti = t[i];
+    const ti = t[i];
     if (sl) sliceBlend(sl, x[i], d, rowD, rowB);         // blend what the two neighbouring slices change
-    const { ar, ed, eb, dome, con, dbl, vee } = sectionShape(p, x[i], sl ? d : null, ti);
-    const zApex = zb[i] + ar * ti, td = (1 - ar) * ti, tb = ar * ti;
-    const hs = Math.max(hi, 1e-9), yi = yin[i];
-    for (let k = 0; k < K; k++) {
-      const deck = TH_DECK[k], e = deck ? ed : eb;
-      const yraw = hi * TH_COS[k] ** (2 / e);
-      const eta = clip(yraw / hs, 0, 1);
-      Z[k] = deck
-        ? zApex + td * TH_SIN[k] ** (2 / ed) * (1 - 0.7 * dome * eta * eta)
-        : zApex - tb * TH_SIN[k] ** (2 / e) + con * (1 - eta * eta) ** 2 + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 - vee * (1 - eta);
-      if (sl && sl.pts) Z[k] += ti * gridAt(deck ? rowD : rowB, eta);
-      Y[k] = yi + (yraw * (hi - yi)) / hs;
-    }
+    sectionDense(p, x[i], h[i], yin[i], ti, zb[i], sl ? d : null, pts ? rowD : null, rowB, Y, Z, null);
     // resample by arc length plus turning angle so hard rails stay crisp
     cum[0] = 0;
     let prevRaw = 0, unwrapped = 0, prevAng = 0;
@@ -632,8 +776,11 @@ function stationXs(p) {
     xs.push(L * (0.55 * 0.5 * (1 - Math.cos(Math.PI * s)) + 0.45 * s));
   }
   xs.push(12, L - 12, half + p.wide_point_offset, half + p.rocker_low_point, half + p.thickness_point_offset);
-  if (TAIL_TYPES[p.tail_type].notch) xs.push(p.swallow_depth);
+  const tail = TAIL_TYPES[p.tail_type];
+  if (tail.notch) for (let j = 1; j <= 8; j++) xs.push((p.swallow_depth * j) / 8);     // the cut can be curved
+  if (tail.corner > 0) for (const f of [0.04, 0.15, 0.35, 0.6, 1]) xs.push(tail.corner * f);   // round the tail corners properly
   for (const s of p.slices) xs.push(s.x);
+  for (const r of p.marks) xs.push(r.x);
   xs.sort((a, b) => a - b);
   const out = [xs[0]];
   for (let i = 1; i < xs.length; i++) if (xs[i] - xs[i - 1] > 1e-3) out.push(xs[i]);  // np.unique + gap filter
@@ -644,7 +791,7 @@ function buildMesh(p, tScale) {
   const x = stationXs(p), n = x.length, M = p.section_points;
   // base curves, then the anchor-point corrections
   const h0 = halfWidth(p, x), zb0 = rocker(p, x), foil0 = foil(p, x);
-  const arms = { outline: [], rocker: [], thickness: [] };
+  const arms = { outline: [], rocker: [], thickness: [], swallow: [] };
   const dh = curveDelta(p, 'outline', x, arms.outline), dz = curveDelta(p, 'rocker', x, arms.rocker), dt = curveDelta(p, 'thickness', x, arms.thickness);
   const h = Float64Array.from(h0, (v, i) => Math.max(v + dh[i], 0.15 * v));
   const zb = Float64Array.from(zb0, (v, i) => v + dz[i]);
@@ -652,7 +799,7 @@ function buildMesh(p, tScale) {
     const ti = Math.max(v + dt[i], 0.15 * v) * tScale;
     return ti * Math.tanh((1.5 * h[i]) / Math.max(ti, 1e-9));   // pinch where the outline gets narrow
   });
-  const notch = notchHalfWidth(p, x);
+  const notch = notchHalfWidth(p, x, arms.swallow);
   const yin = Float64Array.from(notch, (v, i) => Math.min(v, h[i] * 0.95));
   const sl = sliceTables(p);
   const [Y, Z] = sections(p, x, h, yin, t, zb, M, sl);
@@ -778,12 +925,15 @@ export function buildBoard(input = {}) {
 export function stationTable(board) {
   const p = board.params, { x, h, zb, t } = board._profiles, L = p.length;
   const tail = TAIL_TYPES[p.tail_type];
-  return [['Nose tip', L], ['12" from nose', L - 12], ['Wide point', L / 2 + p.wide_point_offset], ['12" from tail', 12], ['Tail end', 0]]
-    .map(([label, xs]) => ({
-      label, from_nose_in: L - xs,
-      width_in: xs === 0 && !tail.closes ? p.tail_block_width : 2 * interp(xs, x, h),
-      rocker_in: interp(xs, x, zb), thickness_in: interp(xs, x, t),
-    }));
+  const row = (label, xs, mark) => ({
+    label, from_nose_in: L - xs,
+    width_in: xs === 0 && !tail.closes ? p.tail_block_width : 2 * interp(xs, x, h),
+    rocker_in: interp(xs, x, zb), thickness_in: interp(xs, x, t), mark,
+  });
+  return [
+    ...[['Nose tip', L], ['12" from nose', L - 12], ['Wide point', L / 2 + p.wide_point_offset], ['12" from tail', 12], ['Tail end', 0]].map(([label, xs]) => row(label, xs, false)),
+    ...p.marks.map((r) => row(`${fmtIn(r.pos)} from ${r.from}`, r.x, true)),      // added measurements, after the five standard ones
+  ];
 }
 
 function stats(board) {
@@ -831,29 +981,26 @@ export function curves(board) {
 }
 
 /**
- * The cross section at any position x, in closed form: deck and bottom heights above the
- * bottom centerline as functions of eta = 0 (stringer) .. 1 (rail). Used to roll through
- * the board section by section, and by the section editor.
+ * The cross section at any position x, as two lines from the stringer to the rail apex
+ * (deck and bottom), heights measured from the flat bottom line. Each line has its points
+ * (y, z), the same before any slice anchor points (y0, z0), the arc-length position rho of
+ * every point and the normal (ny, nz) anchor points move along. Used to roll through the
+ * board section by section, and by the section editor.
  */
 export function sectionAt(board, x) {
   const p = board.params, pr = board._profiles;
   const h = interp(x, pr.x, pr.h), t = interp(x, pr.x, pr.t), yin = interp(x, pr.x, pr.yin);
   const d = {}, rowD = new Float64Array(GRID), rowB = new Float64Array(GRID);
   if (pr.sl) sliceBlend(pr.sl, x, d, rowD, rowB);
-  const sh = sectionShape(p, x, pr.sl ? d : null, t);
-  const { ar, ed, eb, dome, con, dbl, vee } = sh;
-  const rows = pr.sl && pr.sl.pts ? { deck: rowD, bottom: rowB } : null;
-  const off = (which, eta) => (rows ? gridAt(rows[which], clip(eta, 0, 1)) : 0);
-  return {
-    x, h, t, yin, apex_in: ar * t, shape: sh,
-    y: (eta) => yin + eta * (h - yin),
-    deck: (eta, withAnchors = true) =>
-      ar * t + (1 - ar) * t * (1 - eta ** ed) ** (1 / ed) * (1 - 0.7 * dome * eta * eta) + (withAnchors ? t * off('deck', eta) : 0),
-    bottom: (eta, withAnchors = true) =>
-      ar * t - ar * t * (1 - eta ** eb) ** (1 / eb) + con * (1 - eta * eta) ** 2 + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 - vee * (1 - eta)
-      + (withAnchors ? t * off('bottom', eta) : 0),
-    offset: off,
+  const Y = new Float64Array(K), Z = new Float64Array(K);
+  const aux = { Y0: new Float64Array(K), Z0: new Float64Array(K), rho: new Float64Array(K), ny: new Float64Array(K), nz: new Float64Array(K) };
+  const pts = pr.sl && pr.sl.pts;
+  const sh = sectionDense(p, x, h, yin, t, 0, pr.sl ? d : null, pts ? rowD : ZERO_ROW, pts ? rowB : ZERO_ROW, Y, Z, aux);
+  const line = (a, b, back) => {
+    const cut = (arr) => { const v = Array.from(arr.subarray(a, b)); return back ? v.reverse() : v; };
+    return { y: cut(Y), z: cut(Z), y0: cut(aux.Y0), z0: cut(aux.Z0), rho: cut(aux.rho), ny: cut(aux.ny), nz: cut(aux.nz) };
   };
+  return { x, h, t, yin, apex_in: sh.ar * t, shape: sh, deck: line(0, KA, false), bottom: line(KA, K, true), girth: { deck: aux.aD, bottom: aux.aB } };
 }
 
 /** One user slice: its section plus what the editor needs (settings, handles in use). */
@@ -871,8 +1018,8 @@ export function specSheet(board) {
     `${fmtFtin(s.length_in)} x ${fmtIn(s.width_in)} x ${fmtIn(s.thickness_in)}   ${s.volume_l.toFixed(1)} L`,
     `nose: ${name(p.nose_type)}    tail: ${name(p.tail_type)}`,
     '',
-    `${L('Station', 16)}${R('From nose', 11)}${R('Width', 10)}${R('Rocker', 10)}${R('Thickness', 11)}`,
-    ...s.stations.map((r) => `${L(r.label, 16)}${R(fmtFtin(r.from_nose_in), 11)}${R(fmtIn(r.width_in), 10)}${R(fmtIn(r.rocker_in), 10)}${R(fmtIn(r.thickness_in), 11)}`),
+    `${L('Station', 20)}${R('From nose', 11)}${R('Width', 10)}${R('Rocker', 10)}${R('Thickness', 11)}`,
+    ...[...s.stations].sort((a, b) => a.from_nose_in - b.from_nose_in).map((r) => `${L(r.label, 20)}${R(fmtFtin(r.from_nose_in), 11)}${R(fmtIn(r.width_in), 10)}${R(fmtIn(r.rocker_in), 10)}${R(fmtIn(r.thickness_in), 11)}`),
     '',
     `wide point   ${fmtIn(p.wide_point_offset)} from center (+ = toward nose)`,
     `rocker low   ${fmtIn(p.rocker_low_point)} from center`,
