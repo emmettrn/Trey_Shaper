@@ -284,9 +284,12 @@ button:disabled { opacity: .35; cursor: default; }
 .brow span { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .brow select { padding: 4px 6px; min-width: 0; width: 100%; }
 .brow .x { padding: 0; width: 26px; height: 26px; color: var(--muted); background: transparent; }
-.brow .line2 { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 62px 62px; gap: 6px; align-items: center; }
-.brow .line2.one { grid-template-columns: 1fr 62px; }
-.brow .line2.none { grid-template-columns: 1fr; }
+.brow .line2 { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 62px 62px auto; gap: 6px; align-items: center; }
+.brow .line2.one { grid-template-columns: 1fr 62px auto; }
+.brow .line2.none { grid-template-columns: 1fr auto; }
+.brow .line2 .until { padding: 3px 7px; font-size: 11px; color: var(--muted); }
+.brow .line2 .until[hidden], .brow .line3[hidden] { display: none; }
+.brow .line3 { grid-column: 1 / -1; display: grid; grid-template-columns: auto 58px auto 1fr 26px; gap: 6px; align-items: center; }
 .bottom-actions { display: flex; gap: 6px; }
 .bottom-actions button { padding: 4px 10px; font-size: 12px; }
 
@@ -294,7 +297,7 @@ button:disabled { opacity: .35; cursor: default; }
 
 /* ---------- added measurements ---------- */
 .marks-box { display: grid; gap: 5px; }
-.mrow { display: grid; grid-template-columns: 44px 58px 1fr 1fr 1fr 22px; gap: 4px; align-items: center; }
+.mrow { display: grid; grid-template-columns: 44px 64px 1fr 1fr 1fr 22px; gap: 4px; align-items: center; }
 .mrow.mhead span { color: var(--muted); font-size: 11px; text-align: right; padding-right: 6px; }
 .mrow.mhead span:nth-child(-n+2) { text-align: left; padding: 0 0 0 2px; }
 .marks-rows { display: grid; gap: 4px; }

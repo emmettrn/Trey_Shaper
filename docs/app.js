@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS } from './geometry.js';
+import { buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM } from './geometry.js';
 import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js';
 import { traceFrame, traceHalf, tracePoints, fitOutline, pchip } from './trace.js';
 
@@ -143,7 +143,19 @@ function buildStationTable() {
 /* Added measurements: width, rocker and / or thickness at any other spot along the board,
    typed like the table above. A blank box is not held there (it shows what the board has). */
 const marksUI = { els: [] };
-const markX = (r, L) => (r.from === 'nose' ? L - r.pos : r.pos);
+const markX = (r, L) => posToX(r, L);
+/* "From" boxes: the nose, the tail, or the center. From the center the number is kept signed
+   (+ toward the nose, - toward the tail) but shown as two choices, ahead of / behind center. */
+const fromKey = (r) => (r.from === 'center' ? (r.pos < 0 ? 'back' : 'fwd') : r.from);
+const showPos = (r) => Math.abs(r.pos);
+/** Set from a "from" box: keep the spot's number, flip its sign for behind center. */
+function setFrom(r, key) {
+  const v = Math.abs(r.pos);
+  if (key === 'fwd' || key === 'back') { r.from = 'center'; r.pos = key === 'back' ? -v : v; } else { r.from = key; r.pos = v; }
+}
+function setPos(r, v) { r.pos = r.from === 'center' && fromKey(r) === 'back' ? -Math.abs(v) : Math.abs(v); }
+const FROM_SHORT = '<option value="nose">nose</option><option value="tail">tail</option><option value="fwd" title="ahead of center (toward the nose)">ctr ▲</option><option value="back" title="behind center (toward the tail)">ctr ▼</option>';
+const FROM_LONG = '<option value="nose">from the nose</option><option value="tail">from the tail</option><option value="fwd">ahead of center</option><option value="back">behind center</option>';
 
 function marksChanged(rebuild) {
   if (rebuild) renderMarks();
@@ -172,20 +184,20 @@ function renderMarks() {
     const el = document.createElement('div');
     el.className = 'mrow';
     el.innerHTML = `<input class="cell pos" type="text" spellcheck="false" aria-label="Position in inches">
-      <select class="from" aria-label="Measured from"><option value="nose">nose</option><option value="tail">tail</option></select>
+      <select class="from" aria-label="Measured from" title="from the nose, the tail, or ahead of (▲) / behind (▼) center">${FROM_SHORT}</select>
       <input class="cell" data-k="width" type="text" spellcheck="false" aria-label="Width">
       <input class="cell" data-k="rocker" type="text" spellcheck="false" aria-label="Rocker">
       <input class="cell" data-k="thickness" type="text" spellcheck="false" aria-label="Thickness">
       <button class="x" title="Remove this measurement" aria-label="Remove">×</button>`;
     const pos = el.querySelector('.pos'), from = el.querySelector('.from');
-    from.value = r.from;
+    from.value = fromKey(r);
     const cells = {};
     for (const inp of el.querySelectorAll('input')) {
       inp.addEventListener('focus', () => inp.select());
       inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
     }
-    pos.addEventListener('change', () => { const v = parseVal(pos.value); if (Number.isFinite(v)) r.pos = clip(v, 1, 143); marksChanged(false); });
-    from.addEventListener('change', () => { r.from = from.value; marksChanged(false); });
+    pos.addEventListener('change', () => { const v = parseVal(pos.value); if (Number.isFinite(v)) setPos(r, clip(Math.abs(v), 0, 143)); marksChanged(false); });
+    from.addEventListener('change', () => { setFrom(r, from.value); marksChanged(false); });
     for (const inp of el.querySelectorAll('[data-k]')) {
       const key = inp.dataset.k;
       cells[key] = inp;
@@ -207,7 +219,7 @@ function syncMarks(data) {
   const pr = data._profiles, L = data.params.length;
   for (const { r, el, pos, cells } of marksUI.els) {
     const x = markX(r, L), live = (inp) => document.activeElement === inp;
-    if (!live(pos)) pos.value = fracIn(r.pos);
+    if (!live(pos)) pos.value = fracIn(showPos(r));
     const now = { width: 2 * lerpAt(pr.x, pr.h, x), rocker: lerpAt(pr.x, pr.zb, x), thickness: lerpAt(pr.x, pr.t, x) };
     for (const [key, inp] of Object.entries(cells)) {
       if (!live(inp)) inp.value = r[key] === null || r[key] === undefined ? '' : fracIn(r[key]);
@@ -237,7 +249,7 @@ function buildBottomBox() {
   bottomUI.help = box.querySelector('#bottom-help');
   box.querySelector('[data-add]').addEventListener('click', () => {
     const P = state.params, L = have('length');
-    const xs = [0, ...P.bottom.map((r) => (r.from === 'nose' ? L - r.pos : r.pos)).sort((p, q) => p - q), L];
+    const xs = [0, ...P.bottom.flatMap((r) => [posToX(r, L), ...(r.to ? [posToX(r.to, L)] : [])]).sort((p, q) => p - q), L];
     let best = 0;
     for (let i = 1; i < xs.length - 1; i++) if (xs[i + 1] - xs[i] > xs[best + 1] - xs[best]) best = i;
     const x = snap((xs[best] + xs[best + 1]) / 2, 1);
@@ -268,18 +280,21 @@ function bottomChanged(rebuild) {
 function renderBottomTable() {
   const P = state.params, L = P.length, box = bottomUI.rows;
   if (!box) return;
-  const xn = (r) => (r.from === 'nose' ? r.pos : L - r.pos);
+  const xn = (r) => L - posToX(r, L);
   P.bottom.sort((p, q) => xn(p) - xn(q));
   box.innerHTML = '';
   for (const r of P.bottom) {
     const el = document.createElement('div');
     el.className = 'brow';
     el.innerHTML = `<input class="cell pos" type="text" spellcheck="false" aria-label="Position in inches">
-      <span>″ from the</span>
-      <select class="from" aria-label="Measured from"><option value="nose">nose</option><option value="tail">tail</option></select>
+      <span>″</span>
+      <select class="from" aria-label="Measured from">${FROM_LONG}</select>
       <button class="x" title="Remove this station" aria-label="Remove">×</button>
+      <div class="line3"><span>until</span><input class="cell pos2" type="text" spellcheck="false" aria-label="Until, inches"><span>″</span>
+        <select class="from2" aria-label="Until, measured from">${FROM_LONG}</select><button class="x x2" title="Just this spot, not a stretch" aria-label="Remove until">×</button></div>
       <div class="line2"><select class="type" aria-label="Contour">${BOTTOM_OPTIONS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
-        <input class="cell d1" type="text" spellcheck="false"><input class="cell d2" type="text" spellcheck="false"></div>`;
+        <input class="cell d1" type="text" spellcheck="false"><input class="cell d2" type="text" spellcheck="false">
+        <button class="ghost until" title="Make this a stretch: the same contour from here until another spot">until…</button></div>`;
     const q = (s) => el.querySelector(s);
     const paint = () => {
       const names = BOTTOM_DEPTHS[r.type];
@@ -288,9 +303,11 @@ function renderBottomTable() {
       q('.d1').value = fracIn(r.depth, 32); q('.d2').value = fracIn(r.depth2, 32);
       q('.d1').title = `${names[0] || ''} depth, inches`; q('.d2').title = `${names[1] || ''} depth, inches`;
       q('.d1').setAttribute('aria-label', q('.d1').title); q('.d2').setAttribute('aria-label', q('.d2').title);
-      q('.pos').value = fracIn(r.pos);
+      q('.pos').value = fracIn(showPos(r));
+      q('.line3').hidden = !r.to; q('.until').hidden = !!r.to;
+      if (r.to) { q('.pos2').value = fracIn(showPos(r.to)); q('.from2').value = fromKey(r.to); }
     };
-    q('.from').value = r.from; q('.type').value = r.type;
+    q('.from').value = fromKey(r); q('.type').value = r.type;
     paint();
     const numeric = (sel, key, lo, hi) => {
       const inp = q(sel);
@@ -302,15 +319,28 @@ function renderBottomTable() {
         paint(); bottomChanged(false);
       });
     };
-    numeric('.pos', 'pos', 0, 240); numeric('.d1', 'depth', 0, 0.75); numeric('.d2', 'depth2', 0, 0.75);
-    q('.from').addEventListener('change', () => { r.from = q('.from').value; bottomChanged(false); });
+    numeric('.d1', 'depth', 0, 0.75); numeric('.d2', 'depth2', 0, 0.75);
+    for (const [sel, get] of [['.pos', () => r], ['.pos2', () => r.to]]) {
+      const inp = q(sel);
+      inp.addEventListener('focus', () => inp.select());
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
+      inp.addEventListener('change', () => { const v = parseVal(inp.value), t = get(); if (t && Number.isFinite(v)) setPos(t, clip(Math.abs(v), 0, 240)); paint(); bottomChanged(false); });
+    }
+    q('.from').addEventListener('change', () => { setFrom(r, q('.from').value); bottomChanged(false); });
+    q('.from2').addEventListener('change', () => { if (r.to) setFrom(r.to, q('.from2').value); bottomChanged(false); });
+    q('.until').addEventListener('click', () => {      // start the stretch a foot toward the tail (or the nose, near the tail)
+      const x = posToX(r, L), x2 = x - 12 >= 2 ? x - 12 : Math.min(L - 2, x + 12);
+      r.to = x2 > L / 2 ? { pos: snap(L - x2, 1), from: 'nose' } : { pos: snap(x2, 1), from: 'tail' };
+      paint(); bottomChanged(false);
+    });
+    q('.x2').addEventListener('click', () => { delete r.to; paint(); bottomChanged(false); });
     q('.type').addEventListener('change', () => { r.type = q('.type').value; paint(); bottomChanged(false); });
     q('.x').addEventListener('click', () => { dropFrom(P.bottom, r); bottomChanged(true); });
     box.appendChild(el);
   }
   bottomUI.help.textContent = P.bottom.length
-    ? 'Blended smoothly from station to station. The nose tip is flat and the station nearest the tail carries out the tail. Depths in inches, fractions OK: 1/16, 3/32, 1/4.'
-    : 'Say what the bottom does at a few spots (for example 1/16″ concave 12″ from the nose, 1/4″ at center, vee 4″ from the tail) and it is blended in between. With no stations, the two sliders above are used.';
+    ? 'Blended smoothly from station to station; a stretch (until…) holds its contour all the way through. The nose tip is flat and the station nearest the tail carries out the tail. Depths in inches, fractions OK: 1/16, 3/32, 1/4.'
+    : 'Say what the bottom does at a few spots (for example 1/16″ concave 12″ from the nose, 1/4″ at center, vee 4″ from the tail) and it is blended in between. A station can be a stretch: until… holds the same contour from one spot to another. With no stations, the two sliders above are used.';
 }
 
 /* Sliders for the cross section picked in the Sections graph. They show that section's own
@@ -538,7 +568,7 @@ function applyParams(p, keepSel = null) {
     for (const key of ['tail12', 'origin', 'nose12']) { const q = hd3(hs[name]?.[key]); if (q) P.handles[name][key] = q; }
   }
   P.marks = (Array.isArray(P.marks) ? P.marks : []).filter((r) => r && Number.isFinite(+r.pos)).map((r) => {      // added measurements
-    const m = { pos: +r.pos, from: r.from === 'nose' ? 'nose' : 'tail', width: num(r.width), rocker: num(r.rocker), thickness: num(r.thickness) };
+    const m = { pos: +r.pos, from: FROM.includes(r.from) ? r.from : 'tail', width: num(r.width), rocker: num(r.rocker), thickness: num(r.thickness) };
     for (const f of ['hw', 'hr', 'ht']) { const q = hd3(r[f]); if (q) m[f] = q; }
     return m;
   });
@@ -556,7 +586,8 @@ function applyParams(p, keepSel = null) {
     return { id, x: s.x, adj, deck: pts(s.deck), bottom: pts(s.bottom), v: s.v === 2 ? 2 : 1 };
   });
   P.bottom = (Array.isArray(P.bottom) ? P.bottom : []).filter((r) => r && Number.isFinite(+r.pos)).map((r) => ({
-    pos: +r.pos, from: r.from === 'nose' ? 'nose' : 'tail', type: BOTTOM_LABELS[r.type] ? r.type : 'flat',
+    pos: +r.pos, from: FROM.includes(r.from) ? r.from : 'tail', type: BOTTOM_LABELS[r.type] ? r.type : 'flat',
+    ...(r.to && Number.isFinite(+r.to.pos) ? { to: { pos: +r.to.pos, from: FROM.includes(r.to.from) ? r.to.from : 'tail' } } : {}),
     depth: clip(+r.depth || 0, 0, 0.75), depth2: clip(+r.depth2 || 0, 0, 0.75) }));
   state.sel = P.slices.some((s) => s.id === keepSel) ? keepSel : null;
   state.pt = null;
@@ -1274,7 +1305,7 @@ const station = (v, ctx, x, y, color, apply, id = null) =>
   v.point(ctx, { x, y, kind: 'station', color, locked: prefs.fix, drag: prefs.fix ? null : apply,
     on: id !== null && state.pt === id, select: id === null ? null : () => { state.pt = id; } });
 const rawMark = (r) => state.params.marks.find((q) => q.pos === r.pos && q.from === r.from);
-const markPos = (raw, wx) => { const L = state.board.params.length, x = clip(snap(wx, 0.25), 1.25, L - 1.25); raw.pos = raw.from === 'nose' ? L - x : x; };
+const markPos = (raw, wx) => { const L = state.board.params.length, x = clip(snap(wx, 0.25), 1.25, L - 1.25); raw.pos = raw.from === 'nose' ? L - x : raw.from === 'center' ? x - L / 2 : x; };
 
 /* ---- plan: the outline --------------------------------------------------- */
 function drawPlan(v, data) {

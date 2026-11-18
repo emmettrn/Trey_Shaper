@@ -237,11 +237,21 @@ const handleOf = (hd, mLim) => {
   return v.some((q) => q !== null) ? v : null;
 };
 
+/**
+ * Where a position the shaper typed sits on the board: "pos inches from the nose / tail", or
+ * from the center (pos > 0 toward the nose, < 0 toward the tail). Returns x from the tail.
+ */
+export const FROM = ['nose', 'tail', 'center'];
+export const posToX = (r, L) => (r.from === 'nose' ? L - r.pos : r.from === 'center' ? L / 2 + r.pos : r.pos);
+const fromOf = (f) => (FROM.includes(f) ? f : 'tail');
+/** "3 from nose", "1 behind center": a typed position in words, for the spec sheet. */
+const whereIs = (r) => (r.from === 'center' ? `${fmtIn(Math.abs(r.pos))} ${r.pos < 0 ? 'behind' : 'ahead of'} center` : `${fmtIn(r.pos)} from ${r.from}`);
+
 function cleanMarks(p) {
   const L = p.length, rows = [];
   for (const r of Array.isArray(p.marks) ? p.marks : []) {
     if (!r || !Number.isFinite(r.pos)) continue;
-    const from = r.from === 'nose' ? 'nose' : 'tail', x = from === 'nose' ? L - r.pos : r.pos;
+    const from = fromOf(r.from), x = posToX({ pos: r.pos, from }, L);
     if (x < 1 || x > L - 1) continue;
     rows.push({ pos: r.pos, from, x, width: optNum(r.width, 0.5, p.width), rocker: optNum(r.rocker, -2, 16),
       thickness: optNum(r.thickness, 0.2, p.thickness), hw: handleOf(r.hw, 3), hr: handleOf(r.hr, 3), ht: handleOf(r.ht, 3) });
@@ -422,11 +432,18 @@ function cleanBottom(p) {
   const L = p.length, rows = [];
   for (const r of Array.isArray(p.bottom) ? p.bottom : []) {
     if (!r || !Number.isFinite(r.pos)) continue;
-    const from = r.from === 'nose' ? 'nose' : 'tail';
+    const from = fromOf(r.from);
     const type = Object.prototype.hasOwnProperty.call(BOTTOM_TYPES, r.type) ? r.type : 'flat';
     const depth = Number.isFinite(r.depth) ? clip(r.depth, 0, 0.75) : 0, depth2 = Number.isFinite(r.depth2) ? clip(r.depth2, 0, 0.75) : 0;
     const [c, d, v] = BOTTOM_TYPES[type](depth, depth2);
-    rows.push({ pos: r.pos, from, type, depth, depth2, x: clip(from === 'nose' ? L - r.pos : r.pos, 0, L), c, d, v });
+    const x = clip(posToX({ pos: r.pos, from }, L), 0, L);
+    rows.push({ pos: r.pos, from, type, depth, depth2, x, c, d, v });
+    // a stretch ("single concave from 3 off the nose until 1 behind center"): held at the same
+    // contour from one end to the other, then blended toward the stations either side as usual
+    if (r.to && Number.isFinite(r.to.pos)) {
+      const x2 = clip(posToX({ pos: r.to.pos, from: fromOf(r.to.from) }, L), 0, L);
+      if (Math.abs(x2 - x) >= 0.5) rows.push({ pos: r.to.pos, from: fromOf(r.to.from), type, depth, depth2, x: x2, c, d, v, end: true });
+    }
   }
   rows.sort((a, b) => a.x - b.x);
   const kept = [];
@@ -986,7 +1003,7 @@ export function stationTable(board) {
   });
   return [
     ...[['Nose tip', L], ['12" from nose', L - 12], ['Wide point', L / 2 + p.wide_point_offset], ['12" from tail', 12], ['Tail end', 0]].map(([label, xs]) => row(label, xs, false)),
-    ...p.marks.map((r) => row(`${fmtIn(r.pos)} from ${r.from}`, r.x, true)),      // added measurements, after the five standard ones
+    ...p.marks.map((r) => row(whereIs(r), r.x, true)),      // added measurements, after the five standard ones
   ];
 }
 
@@ -1081,7 +1098,7 @@ export function specSheet(board) {
     `rails        apex ${p.rail_apex_in !== null ? `${fmtIn(p.rail_apex_in)} above the bottom` : `${Math.round(p.rail_apex * 100)}% of thickness`}, fullness ${p.rail_fullness.toFixed(2)}, deck dome ${p.deck_dome.toFixed(2)}`,
     ...(p.bottom.length
       ? ['bottom       contours, nose to tail:', ...[...p.bottom].reverse().map((r) =>
-        `             ${fmtIn(r.pos)} from ${r.from}: ${BOTTOM_LABELS[r.type]}${r.type === 'flat' ? '' : ` ${fmtIn(r.depth)}`}${r.type.endsWith('_double') ? ` / ${fmtIn(r.depth2)}` : ''}`)]
+        `             ${whereIs(r)}: ${BOTTOM_LABELS[r.type]}${r.type === 'flat' ? '' : ` ${fmtIn(r.depth)}`}${r.type.endsWith('_double') ? ` / ${fmtIn(r.depth2)}` : ''}${r.end ? ' (end of stretch)' : ''}`)]
       : [`bottom       concave ${fmtIn(p.concave_depth)}, tail vee ${fmtIn(p.vee_depth)}`]),
     `plan area    ${s.plan_area_in2.toFixed(0)} sq in`,
     '',
