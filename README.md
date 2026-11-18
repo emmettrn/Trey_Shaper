@@ -3,7 +3,7 @@
 [![Tests](https://github.com/emmettrn/trey_shaper/actions/workflows/tests.yml/badge.svg)](https://github.com/emmettrn/trey_shaper/actions/workflows/tests.yml)
 [![Deploy site](https://github.com/emmettrn/trey_shaper/actions/workflows/pages.yml/badge.svg)](https://github.com/emmettrn/trey_shaper/actions/workflows/pages.yml)
 
-**Live app: https://emmettrn.github.io/trey_shaper/**
+**Live app: https://emmettrn.github.io/Trey_Shaper/**
 
 Design a surfboard from the measurements a shaper takes (width, rocker and thickness at five
 stations) plus nose type, tail type, rails and bottom contours, then refine the curves with
