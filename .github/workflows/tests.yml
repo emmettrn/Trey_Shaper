@@ -1,0 +1,27 @@
+name: Tests
+
+# Runs the Python tests and the Python/JS parity check on every push and pull request,
+# so a change that makes the two copies of the geometry disagree shows up before merging.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: pip install -r requirements.txt
+      - name: Geometry tests
+        run: python tests/test_geometry.py
+      - name: Python / JS parity
+        run: python tests/test_js_parity.py

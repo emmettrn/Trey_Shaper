@@ -1,0 +1,27 @@
+{
+  "name": "surfboard-designer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Parametric surfboard designer that runs in the browser",
+  "homepage": "https://emmettrn.github.io/trey_shaper/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/emmettrn/trey_shaper.git"
+  },
+  "author": "emmettrn",
+  "license": "UNLICENSED",
+  "type": "module",
+  "scripts": {
+    "test": "python tests/test_geometry.py && python tests/test_js_parity.py"
+  },
+  "keywords": [
+    "surfboard",
+    "shaping",
+    "parametric",
+    "threejs",
+    "cad"
+  ],
+  "dependencies": {
+    "three": "^0.170.0"
+  }
+}
