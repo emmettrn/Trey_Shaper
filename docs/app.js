@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM } from './geometry.js';
@@ -701,9 +701,11 @@ scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
 const camera = new THREE.PerspectiveCamera(32, 1, 0.5, 2000);
 camera.position.set(50, 45, 70);
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
+// Trackball: the board turns freely all the way around in every direction (right side up,
+// bottom up, end over end), not stopping at straight above / below as an orbit would.
+const controls = new TrackballControls(camera, renderer.domElement);
+Object.assign(controls, { rotateSpeed: 2.6, zoomSpeed: 1.1, panSpeed: 0.7, dynamicDampingFactor: 0.14, minDistance: 8, maxDistance: 900 });
+const UP = new THREE.Vector3(0, 1, 0);
 
 // Studio lighting: soft key + fill, glossy glassed board.
 const sun = new THREE.DirectionalLight(0xffffff, 1.6);
@@ -961,8 +963,8 @@ function setView(name, animate = true) {
   const to = new THREE.Vector3(...views[name]).add(target);
   state.view = name;
   document.querySelectorAll('#views button[data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === name));
-  if (!animate) { camera.position.copy(to); controls.target.copy(target); controls.update(); return; }
-  tween = { t0: performance.now(), dur: 550, fromP: camera.position.clone(), toP: to, fromT: controls.target.clone(), toT: target };
+  if (!animate) { camera.position.copy(to); camera.up.copy(UP); controls.target.copy(target); controls.update(); return; }
+  tween = { t0: performance.now(), dur: 550, fromP: camera.position.clone(), toP: to, fromT: controls.target.clone(), toT: target, fromU: camera.up.clone() };
 }
 
 function animate(now) {
@@ -972,6 +974,7 @@ function animate(now) {
     const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
     camera.position.lerpVectors(tween.fromP, tween.toP, e);
     controls.target.lerpVectors(tween.fromT, tween.toT, e);
+    camera.up.lerpVectors(tween.fromU, UP, e).normalize();          // a view puts the board upright again
     if (k === 1) tween = null;
   }
   const want = state.flip ? Math.PI : 0;
@@ -991,6 +994,7 @@ function resize() {
   renderer.setSize(r.width, r.height);
   camera.aspect = r.width / Math.max(r.height, 1);
   camera.updateProjectionMatrix();
+  controls.handleResize();
   if (state.board && !state.userMoved && !tween) setView(state.view || 'threeq', false);   // keep the board framed until they grab it
 }
 controls.addEventListener('start', () => (state.userMoved = true));
