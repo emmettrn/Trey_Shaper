@@ -7,7 +7,7 @@
  */
 const CACHE = 'surfboard-designer-v7';
 const FILES = [
-  './', 'index.html', 'style.css', 'app.js', 'geometry.js', 'data.js', 'manifest.webmanifest',
+  './', 'index.html', 'style.css', 'app.js', 'geometry.js', 'trace.js', 'data.js', 'manifest.webmanifest',
   'icon-180.png', 'icon-192.png', 'icon-512.png',
   'three.module.min.js',
   'OrbitControls.js',

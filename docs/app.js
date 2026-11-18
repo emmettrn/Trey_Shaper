@@ -3,7 +3,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS } from './geometry.js';
-import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES } from './data.js';
+import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js';
+import { traceFrame, traceHalf, tracePoints, fitOutline, pchip } from './trace.js';
 
 const $ = (s) => document.querySelector(s);
 const state = {
@@ -1004,6 +1005,10 @@ class View2D {
     new ResizeObserver(() => this.redraw()).observe(canvas);
   }
   redraw() { if (state.board && this.c.clientWidth > 4) this.drawFn(this, state.board); }
+  /** Points can be edited: Edit points is on, or this view is always for editing (the photo trace). */
+  get editing() { return this.alwaysEdit || prefs.edit; }
+  /** After a change: a view of its own (self) just redraws; the panels rebuild the board. */
+  changed(light) { if (this.self) this.redraw(); else if (light) scrubChanged(); else schedule(); }
 
   /** Size the canvas, set the world -> pixel transform for extent [x0, x1, y0, y1], return the context. */
   begin([x0, x1, y0, y1], vex = 1, pad = 22) {
@@ -1043,7 +1048,7 @@ class View2D {
     ctx.save();
     ctx.lineWidth = 1.5; ctx.strokeStyle = h.color; ctx.fillStyle = h.ghost ? 'transparent' : h.color;
     if (h.ghost) ctx.globalAlpha = 0.45;
-    else if (!prefs.edit && !h.view) ctx.globalAlpha = 0.5;      // looking, not editing
+    else if (!this.editing && !h.view) ctx.globalAlpha = 0.5;      // looking, not editing
     ctx.beginPath();
     const big = COARSE ? 1.45 : 1;
     if (h.kind === 'arm') {                               // handle arm: a line from its anchor to a small ring
@@ -1054,7 +1059,7 @@ class View2D {
       ctx.moveTo(px - 6 * big, py + 9 * big); ctx.lineTo(px + 6 * big, py + 9 * big); ctx.lineTo(px, py + 1); ctx.closePath(); ctx.fill();
     } else if (h.kind === 'anchor') {
       ctx.arc(px, py, 4.5 * big, 0, 7); ctx.fill(); ctx.strokeStyle = '#0e1317'; ctx.stroke();
-      if (h.on && prefs.edit) { ctx.beginPath(); ctx.arc(px, py, 8 * big, 0, 7); ctx.strokeStyle = h.color; ctx.lineWidth = 1; ctx.stroke(); }
+      if (h.on && this.editing) { ctx.beginPath(); ctx.arc(px, py, 8 * big, 0, 7); ctx.strokeStyle = h.color; ctx.lineWidth = 1; ctx.stroke(); }
     }
     else if (h.kind === 'apex') {                         // rail apex: a ring with up / down ticks, it only moves up and down
       ctx.arc(px, py, 5.5 * big, 0, 7); ctx.fillStyle = '#0e1317'; ctx.fill(); ctx.lineWidth = 2; ctx.stroke();
@@ -1066,12 +1071,12 @@ class View2D {
     else if (h.kind === 'slice') { ctx.moveTo(px, py - 6); ctx.lineTo(px + 6, py); ctx.lineTo(px, py + 6); ctx.lineTo(px - 6, py); ctx.closePath(); ctx.fill(); ctx.strokeStyle = '#0e1317'; ctx.stroke(); }
     else {
       ctx.rect(px - 3.5 * big, py - 3.5 * big, 7 * big, 7 * big); if (h.locked) { ctx.fillStyle = '#141b21'; } ctx.fill(); ctx.stroke();
-      if (h.on && prefs.edit) { ctx.beginPath(); ctx.arc(px, py, 8.5 * big, 0, 7); ctx.lineWidth = 1; ctx.stroke(); }
+      if (h.on && this.editing) { ctx.beginPath(); ctx.arc(px, py, 8.5 * big, 0, 7); ctx.lineWidth = 1; ctx.stroke(); }
     }
     ctx.restore();
   }
 
-  hit(px, py, all = prefs.edit) {
+  hit(px, py, all = this.editing) {
     let best = null, bd = this.touch ? 24 : 13;
     for (const h of this.handles) {
       if (!all && !h.view) continue;
@@ -1102,21 +1107,21 @@ class View2D {
     this.touch = e.pointerType !== 'mouse';
     this.ptrs.set(e.pointerId, [px, py]);
     if (this.ptrs.size === 2) {                         // second finger: pinch to zoom, drag to pan
-      if (this.drag?.undo) { this.drag.undo(); schedule(); }   // the first finger was not adding a point after all
+      if (this.drag?.undo) { this.drag.undo(); this.changed(); }   // the first finger was not adding a point after all
       this.drag = null;
       const [a, b] = [...this.ptrs.values()], mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
       this.pinch = { d: Math.max(Math.hypot(a[0] - b[0], a[1] - b[1]), 1), zoom: this.zoom, wx: this.wx(mx), wy: this.wy(my) };
       return;
     }
     const h = this.hit(px, py);
-    if (!prefs.edit) {                                  // looking only: pan, and the few things that are not edits
+    if (!this.editing) {                                // looking only: pan, and the few things that are not edits
       if (h) { h.select?.(); if (h.drag) this.drag = { fn: h.drag, light: h.light }; }
       else {
         if (this.hit(px, py, true)) hintEdit();
         if (this.zoom > 1) this.drag = { pan: [px, py, this.mx, this.my] };
       }
       if (this.drag) { try { this.c.setPointerCapture(e.pointerId); } catch {} e.preventDefault(); }
-      if (h) (h.light ? scrubChanged() : schedule());
+      if (h) this.changed(h.light);
       return;
     }
     if (h && h.locked) {                                // a fixed measurement: it cannot move, but its handle arms can
@@ -1126,7 +1131,7 @@ class View2D {
     }
     if (h && h.remove && this.touch) {                  // double-tap a point to remove it
       const now = performance.now(), t = this.lastTap;
-      if (t && now - t.t < 420 && Math.hypot(t.px - px, t.py - py) < 30) { this.lastTap = null; h.remove(); saveLocal(); schedule(); return; }
+      if (t && now - t.t < 420 && Math.hypot(t.px - px, t.py - py) < 30) { this.lastTap = null; h.remove(); if (!this.self) saveLocal(); this.changed(); return; }
       this.lastTap = { t: now, px, py };
     }
     const had = state.pt;
@@ -1140,7 +1145,8 @@ class View2D {
       }
     }
     if (this.drag) { try { this.c.setPointerCapture(e.pointerId); } catch {} e.preventDefault(); }
-    if (h?.light) scrubChanged();
+    if (this.self) this.redraw();
+    else if (h?.light) scrubChanged();
     else if (this.drag?.fn || h) schedule();
     else if (had !== state.pt) drawPanels();
   }
@@ -1159,7 +1165,7 @@ class View2D {
       if (e.pointerType !== 'mouse') return;
       this.touch = false;
       const h = this.hit(px, py);
-      this.c.style.cursor = h ? (h.locked ? 'not-allowed' : h.kind === 'apex' ? 'ns-resize' : 'grab') : prefs.edit && this.curveHit(px, py) ? 'copy' : this.zoom > 1 ? 'move' : 'default';
+      this.c.style.cursor = h ? (h.locked ? 'not-allowed' : h.kind === 'apex' ? 'ns-resize' : 'grab') : this.editing && this.curveHit(px, py) ? (this.addCursor || 'copy') : this.zoom > 1 ? 'move' : 'default';
       return;
     }
     if (this.drag.pan) {
@@ -1170,16 +1176,16 @@ class View2D {
     }
     this.drag.undo = null;                              // it moved: this really is an edit
     this.drag.fn(this.wx(px), this.wy(py));
-    if (this.drag.light) scrubChanged(); else schedule();
+    this.changed(this.drag.light);
   }
   up(e) {
     if (e) this.ptrs.delete(e.pointerId); else this.ptrs.clear();
     if (this.ptrs.size < 2) this.pinch = null;
-    if (this.drag) { const edit = !this.drag.light && !this.drag.pan; this.drag = null; if (edit) saveLocal(); }
+    if (this.drag) { const edit = !this.drag.light && !this.drag.pan && !this.self; this.drag = null; if (edit) saveLocal(); }
   }
   removeAt(e) {
     const h = this.hit(...this.pos(e));
-    if (h?.remove) { h.remove(); saveLocal(); schedule(); }
+    if (h?.remove) { h.remove(); if (!this.self) saveLocal(); this.changed(); }
   }
   wheel(e) {
     e.preventDefault();
@@ -1275,6 +1281,7 @@ function drawPlan(v, data) {
   const { x, h, yin } = data.curves.outline, p = data.params, P = state.params;
   const L = p.length, W = data.stats.width_in;
   const ctx = v.begin([0, L, -W / 2 - 1.5, W / 2 + 1.5]);
+  if (state.photo && state.photoOn) drawPhoto(v, ctx, state.photo, 0.32);
 
   ctx.strokeStyle = COLORS.line; ctx.lineWidth = 1;
   for (let gx = 0; gx <= L; gx += 12) { ctx.beginPath(); ctx.moveTo(v.X(gx), v.Y(-W / 2)); ctx.lineTo(v.X(gx), v.Y(W / 2)); ctx.stroke(); }
@@ -1765,6 +1772,8 @@ function wirePanels() {
     panel.querySelector('.tools').addEventListener('click', (e) => {
       const act = e.target.closest('button')?.dataset.act; if (!act) return;
       if (act === 'max') setFocus(name);
+      if (act === 'trace') openTrace();
+      if (act === 'photo') { state.photoOn = !state.photoOn; syncPhotoButton(); v.redraw(); }
       if (act === 'edit') { prefs.edit = !prefs.edit; if (!prefs.edit) state.pt = null; savePrefs(); syncPanelTools(); drawPanels(); }
       if (act === 'fit') v.fit();
       if (act === 'in') v.zoomBy(1.6);
@@ -1784,7 +1793,7 @@ function wirePanels() {
   });
   $('#t-max').addEventListener('click', () => setFocus('view'));
   document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || !$('#feedback').hidden) return;
+    if (e.key !== 'Escape' || !$('#feedback').hidden || !$('#trace').hidden) return;
     if (state.sel !== null) exitSection();              // Esc leaves the section being shaped first, then an expanded view
     else if (state.focus) setFocus(state.focus);
   });
@@ -1844,6 +1853,207 @@ function render(data) {
 /* =========================================================================
    Toolbar, presets, save/load, export
    ========================================================================= */
+
+/* =========================================================================
+   Photo trace: a photo of a board -> the outline.
+   1. choose a photo   2. tap the nose tip and the tail end, type the length
+   3. the edge is found on one side (the board is symmetric, so the other side is its mirror)
+   4. "Does this look good?"  yes -> use it, no -> fix the line with points, then use it
+   The straightened photo stays behind the Plan graph (Photo button) until the page is reloaded.
+   ========================================================================= */
+const TR = { step: 'pick', img: null, mark: { nose: null, tail: null }, L: 72, side: 1, frame: null, rect: null, traces: {}, pts: null, auto: null };
+const traceView = new View2D($('#c-trace'), (v) => drawTrace(v));
+Object.assign(traceView, { alwaysEdit: true, self: true });
+const TRACE_COL = '#e8c872';
+
+function openTrace() {
+  TR.step = TR.img ? 'mark' : 'pick';
+  TR.L = state.board?.params.length ?? 72;
+  $('#trace').hidden = false;
+  traceStep(TR.step);
+}
+function closeTrace() { $('#trace').hidden = true; }
+
+function traceStep(step) {
+  TR.step = step;
+  traceView.zoom = 1;
+  $('#tr-pick').hidden = step !== 'pick';
+  const msg = $('#tr-msg'), act = $('#tr-actions');
+  const btn = (label, fn, cls = 'ghost', title = '') => { const b = document.createElement('button'); b.type = 'button'; b.className = cls; b.textContent = label; if (title) b.title = title; b.addEventListener('click', fn); return b; };
+  act.replaceChildren();
+  if (step === 'pick') {
+    msg.textContent = 'Pick a photo of the board. It stays on this device.';
+    act.append(btn('Cancel', closeTrace));
+  } else if (step === 'mark') {
+    const next = !TR.mark.nose ? 'the <b>nose tip</b>' : !TR.mark.tail ? 'the <b>tail end</b> (middle of the tail)' : null;
+    msg.innerHTML = next ? `Tap ${next} on the photo.` : 'Drag the marks to fine-tune, check the length, then trace.';
+    const lab = document.createElement('label');
+    lab.innerHTML = 'Board length <input class="cell" id="tr-len" spellcheck="false">';
+    const len = lab.querySelector('input');
+    len.value = ftin(TR.L);
+    len.addEventListener('change', () => { const v = parseVal(len.value); if (Number.isFinite(v) && v >= 40 && v <= 144) TR.L = v; len.value = ftin(TR.L); });
+    const go = btn('Trace', () => runTrace(), 'primary');
+    go.disabled = !(TR.mark.nose && TR.mark.tail);
+    act.append(btn('Another photo', () => $('#tr-file').click()), btn('Clear marks', () => { TR.mark = { nose: null, tail: null }; traceStep('mark'); }),
+      document.createElement('span'), lab, btn('Cancel', closeTrace), go);
+    act.children[2].className = 'spacer';
+  } else if (step === 'review') {
+    msg.innerHTML = 'Does this look good? The <b>yellow line</b> is the edge it found; the dashed line is its mirror on the other side.';
+    act.append(btn('Back', () => traceStep('mark')), btn('Trace the other side', () => { TR.side = -TR.side; useTrace(); traceStep('review'); }, 'ghost', 'Use the other edge of the board in the photo'),
+      Object.assign(document.createElement('span'), { className: 'spacer' }), btn('No, fix it', () => traceStep('fix')), btn('Yes, use it', applyTrace, 'primary'));
+  } else if (step === 'fix') {
+    msg.innerHTML = 'Drag a point onto the edge of the board, click the line to add a point, double-click a point to remove it.';
+    act.append(btn('Start over', () => { TR.pts = TR.auto.map((p) => [...p]); traceView.redraw(); }, 'ghost', 'Go back to the line it found'),
+      Object.assign(document.createElement('span'), { className: 'spacer' }), btn('Cancel', closeTrace), btn('Use this outline', applyTrace, 'primary'));
+  }
+  requestAnimationFrame(() => traceView.redraw());
+}
+
+function loadTracePhoto(file) {
+  if (!file) return;
+  const url = URL.createObjectURL(file), img = new Image();
+  img.onload = () => {
+    const k = Math.min(1, 2000 / Math.max(img.naturalWidth, img.naturalHeight));      // plenty for a trace, and quick
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    URL.revokeObjectURL(url);
+    TR.img = c; TR.mark = { nose: null, tail: null }; TR.traces = {};
+    traceStep('mark');
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); toast('That file could not be opened as a picture.'); };
+  img.src = url;
+}
+
+/** Straighten the photo onto the stringer (tail on the left, nose on the right) and find the edge on both sides. */
+function runTrace() {
+  const [tx, ty] = TR.mark.tail, [nx, ny] = TR.mark.nose, L = TR.L;
+  const dpx = Math.hypot(nx - tx, ny - ty);
+  if (dpx < 20) { toast('The nose and tail marks are too close together.'); return; }
+  const ppi = Math.min(24, Math.max(6, 1800 / (L + 4)));
+  const f = traceFrame(L, ppi, Math.max(15, 0.2 * L));
+  const e1 = [(nx - tx) / dpx, (ny - ty) / dpx], e2 = [e1[1], -e1[0]], k = (L / dpx) * ppi;    // e2: up in the photo when the nose points right
+  const c = document.createElement('canvas');
+  c.width = f.width; c.height = f.height;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  // photo pixel P -> frame: u = (pad + k/ppi (P - T).e1) ppi,  v = (ymax - k/ppi (P - T).e2) ppi
+  g.setTransform(k * e1[0], -k * e2[0], k * e1[1], -k * e2[1],
+    f.pad * ppi - k * (e1[0] * tx + e1[1] * ty), f.ymax * ppi + k * (e2[0] * tx + e2[1] * ty));
+  g.drawImage(TR.img, 0, 0);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  const data = g.getImageData(0, 0, f.width, f.height);
+  TR.frame = f; TR.rect = c;
+  TR.traces = { 1: traceHalf(data, f, 1), '-1': traceHalf(data, f, -1) };
+  const peak = (t) => Math.max(...t.hw);
+  // start with the side that found a board and stands out more from the floor
+  TR.side = peak(TR.traces[1]) < 2 ? -1 : peak(TR.traces[-1]) < 2 ? 1 : TR.traces[1].contrast >= TR.traces[-1].contrast ? 1 : -1;
+  useTrace();
+  if (peak(TR.traces[TR.side]) < 2) {
+    toast('Could not find the edge of the board. Check the nose and tail marks, or try a photo on a floor that contrasts more.');
+    return;
+  }
+  traceStep('review');
+  if (TR.traces[TR.side].contrast < 45) toast('The board and the floor are close in colour, so check the line carefully.');
+}
+function useTrace() {
+  TR.auto = tracePoints(TR.traces[TR.side], TR.L);
+  TR.pts = TR.auto.map((p) => [...p]);
+}
+
+function applyTrace() {
+  if (!TR.pts) return;
+  const pts = [...TR.pts].sort((a, b) => a[0] - b[0]);
+  const fit = fitOutline(pts, TR.L, state.params, buildBoard, { NOSE_TYPES, TAIL_TYPES });
+  applyParams(fit.params);
+  $('#preset').value = '';
+  state.photo = { canvas: TR.rect, ...TR.frame, flip: TR.side < 0 };
+  state.photoOn = true;
+  syncPhotoButton();
+  closeTrace();
+  const nice = (t) => t.replace(/_/g, ' ');
+  toast(`Outline traced: ${nice(fit.nose)} nose, ${nice(fit.tail)} tail, within ${fracIn(Math.max(fit.error, 1 / 32), 32)}″ of the line. Fine-tune it with Edit points.`);
+}
+function syncPhotoButton() {
+  const b = document.querySelector('.panel[data-panel="plan"] [data-act="photo"]');
+  b.hidden = !state.photo;
+  b.classList.toggle('on', !!state.photoOn);
+}
+/** The straightened photo, faint, behind the Plan graph (world = board inches). */
+function drawPhoto(v, ctx, ph, alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  const x0 = v.X(-ph.pad), w = (ph.L + 2 * ph.pad) * v.s, h = 2 * ph.ymax * v.s * v.vex;
+  if (ph.flip) { ctx.translate(0, v.Y(0)); ctx.scale(1, -1); ctx.translate(0, -v.Y(0)); }    // the traced side drawn on top, like the graph
+  ctx.drawImage(ph.canvas, x0, v.Y(ph.ymax), w, h);
+  ctx.restore();
+}
+
+function drawTrace(v) {
+  if (TR.step === 'pick' || !TR.img) { const ctx = v.begin([0, 1, 0, 1]); return ctx; }
+  if (TR.step === 'mark') {
+    const iw = TR.img.width, ih = TR.img.height;
+    const ctx = v.begin([0, iw, -ih, 0], 1, 12);
+    ctx.drawImage(TR.img, v.X(0), v.Y(0), iw * v.s, ih * v.s);
+    const { nose, tail } = TR.mark;
+    if (nose && tail) {
+      ctx.save(); ctx.setLineDash([6, 5]); ctx.strokeStyle = TRACE_COL; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(v.X(tail[0]), v.Y(-tail[1])); ctx.lineTo(v.X(nose[0]), v.Y(-nose[1])); ctx.stroke(); ctx.restore();
+    }
+    for (const key of ['tail', 'nose']) {
+      const m = TR.mark[key]; if (!m) continue;
+      v.point(ctx, { x: m[0], y: -m[1], kind: 'anchor', color: TRACE_COL, drag: (wx, wy) => { TR.mark[key] = [clip(wx, 0, iw), clip(-wy, 0, ih)]; } });
+      ctx.save(); ctx.font = '600 12px "IBM Plex Sans", sans-serif'; ctx.lineWidth = 3; ctx.strokeStyle = '#0e1317';
+      ctx.strokeText(key, v.X(m[0]) + 10, v.Y(-m[1]) - 8); ctx.fillStyle = TRACE_COL; ctx.fillText(key, v.X(m[0]) + 10, v.Y(-m[1]) - 8); ctx.restore();
+    }
+    v.curves.push({                                     // tapping anywhere places the next mark
+      dist: () => (!TR.mark.nose || !TR.mark.tail ? 0 : Infinity),
+      add: (wx, wy) => {
+        const key = !TR.mark.nose ? 'nose' : 'tail';
+        TR.mark[key] = [clip(wx, 0, iw), clip(-wy, 0, ih)];
+        setTimeout(() => traceStep('mark'));
+        return { fn: (x, y) => { TR.mark[key] = [clip(x, 0, iw), clip(-y, 0, ih)]; } };
+      },
+    });
+    return ctx;
+  }
+  // review / fix: the straightened photo in board inches, the traced edge and its mirror
+  const f = TR.frame, L = TR.L, sd = TR.side;
+  const ctx = v.begin([-f.pad, L + f.pad, -f.ymax * 0.8, f.ymax * 0.8], 1, 14);
+  drawPhoto(v, ctx, { canvas: TR.rect, ...f, flip: sd < 0 }, 0.9);
+  const pts = [...TR.pts].sort((a, b) => a[0] - b[0]), fn = pchip(pts);
+  const xs = []; for (let x = 0; x <= L; x += 0.25) xs.push(x);
+  ctx.save(); ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(14,19,23,.7)';
+  v.path(ctx, xs, xs.map((x) => fn(x))); ctx.stroke();
+  ctx.lineWidth = 1.8; ctx.strokeStyle = TRACE_COL; v.path(ctx, xs, xs.map((x) => fn(x))); ctx.stroke();
+  ctx.setLineDash([5, 5]); ctx.lineWidth = 1.2; v.path(ctx, xs, xs.map((x) => -fn(x))); ctx.stroke();
+  ctx.setLineDash([]); ctx.strokeStyle = 'rgba(232,200,114,.5)'; ctx.beginPath(); ctx.moveTo(v.X(0), v.Y(0)); ctx.lineTo(v.X(L), v.Y(0)); ctx.stroke();
+  ctx.restore();
+  if (TR.step !== 'fix') return ctx;
+  for (const p of TR.pts) {
+    const tip = p[0] >= L - 1e-6;
+    const i = pts.indexOf(p), lo = i > 0 ? pts[i - 1][0] + 0.25 : 0, hi = i < pts.length - 1 ? pts[i + 1][0] - 0.25 : L;
+    const end = p[0] <= 1e-6;
+    v.point(ctx, { x: p[0], y: p[1], kind: 'anchor', color: TRACE_COL, locked: tip,
+      drag: tip ? null : (wx, wy) => { if (!end) p[0] = clip(wx, lo, hi); p[1] = clip(wy, 0, f.ymax); },
+      remove: tip || end ? null : () => dropFrom(TR.pts, p) });
+  }
+  v.curves.push({
+    dist: (wx, wy) => { if (wx < 0 || wx > L) return Infinity; return Math.abs(v.Y(fn(wx)) - v.Y(wy)); },
+    add: (wx, wy) => {
+      const p = [clip(wx, 0.3, L - 0.3), clip(wy, 0, f.ymax)];
+      TR.pts.push(p);
+      return { fn: (x, y) => { p[0] = clip(x, 0.3, L - 0.3); p[1] = clip(y, 0, f.ymax); }, undo: () => dropFrom(TR.pts, p) };
+    },
+  });
+  return ctx;
+}
+
+function wireTrace() {
+  $('#tr-file').addEventListener('change', (e) => { loadTracePhoto(e.target.files[0]); e.target.value = ''; });
+  $('#tr-close').addEventListener('click', closeTrace);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#trace').hidden) { e.stopPropagation(); closeTrace(); } }, true);
+}
+
 /* =========================================================================
    Resizable layout: drag the dividers between the sidebar and the views, between the 3D
    view and the graphs, and between the graphs. Double-click a divider to put it back.
@@ -1907,6 +2117,7 @@ function wireSplitters() {
 }
 
 function wireUI() {
+  wireTrace();
   wireSplitters();
   wireLightPad();
   document.querySelectorAll('#views button[data-view]').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
