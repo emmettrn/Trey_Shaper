@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <title>Surfboard Designer</title>
+  <meta name="theme-color" content="#141b21" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Board Designer" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icon-180.png" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 40 16%22%3E%3Cpath d=%22M2 8C8 1 30 1 38 8 30 15 8 15 2 8Z%22 fill=%22%233cc8b4%22/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./three.module.min.js",
+        "three/addons/controls/OrbitControls.js": "./OrbitControls.js",
+        "three/addons/environments/RoomEnvironment.js": "./RoomEnvironment.js",
+        "three/addons/utils/BufferGeometryUtils.js": "./BufferGeometryUtils.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 40 16" class="logo" aria-hidden="true"><path d="M2 8 C 8 1, 30 1, 38 8 C 30 15, 8 15, 2 8 Z" /><line x1="4" y1="8" x2="36" y2="8" /></svg>
+      <span>Surfboard Designer</span>
+    </div>
+    <div class="readout" id="stats"><b id="s-vol">--</b><small>L</small><span id="s-dims"></span></div>
+    <div class="top-actions">
+      <span class="undo">
+        <button id="btn-undo" class="ghost" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>↶</button>
+        <button id="btn-redo" class="ghost" title="Redo (Ctrl+Shift+Z)" aria-label="Redo" disabled>↷</button>
+      </span>
+      <label class="preset">
+        <span>Preset</span>
+        <select id="preset"></select>
+      </label>
+      <button id="btn-feedback" class="ghost accent">Feedback</button>
+      <button id="btn-save" class="ghost">Save</button>
+      <label class="ghost file-btn">Load<input id="file-load" type="file" accept=".json,application/json" hidden /></label>
+      <div class="menu">
+        <button id="btn-export" class="primary">Export ▾</button>
+        <div class="menu-list" id="export-menu" hidden>
+          <button data-fmt="stl" data-units="mm">STL (mm)</button>
+          <button data-fmt="stl" data-units="in">STL (inches)</button>
+          <button data-fmt="obj" data-units="mm">OBJ (mm)</button>
+          <button data-fmt="txt" data-units="in">Spec sheet (.txt)</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar" id="controls"></aside>
+
+    <section class="stage">
+      <div class="viewport" id="viewport">
+        <div class="warnings" id="warnings"></div>
+        <div class="viewbar">
+          <div class="seg" id="views">
+            <button data-view="threeq" class="on">3/4</button>
+            <button data-view="deck">Top</button>
+            <button data-view="side">Side</button>
+            <button data-view="tail">Tail</button>
+          </div>
+          <div class="seg">
+            <button id="t-flip" title="Turn the board over, so the bottom can be looked at the same way as the deck">Bottom up</button>
+            <button id="t-light" title="Shaping-bay lighting on a matte blank, to show the foil and contours">Bay lights</button><input type="range" id="bay-gain" min="0" max="1" step="0.05" title="How hard the bay lights pick out contours: left is true to scale, right exaggerates every tilt" aria-label="Bay light strength"><button id="t-fixed" title="On: the light stays put and the board moves through it as you turn it, as in Shape3D. Off: lights along both rails that turn with the board.">Fixed light</button>
+            <button id="t-wire" title="Show the board as a frame: a cross section every 6 inches on its stringer and rail lines">Skeleton</button>
+            <button id="t-stringer" class="on">Stringer</button>
+            <button id="t-max" data-act="max" title="Expand">⤢</button>
+          </div>
+        </div>
+        <div class="hint" id="hint">Drag to rotate · scroll to zoom · on the graphs below, turn on Edit points to reshape a curve</div>
+        <div class="busy" id="busy"></div>
+      </div>
+
+      <div class="panels">
+        <figure class="panel" data-panel="plan">
+          <figcaption><b>Plan</b><span>outline</span>
+            <span class="tools"><button data-act="edit" title="Switch between looking (zoom and pan only) and editing (drag points, click a line to add one)">Edit points</button><button data-act="comb" title="Curvature comb: shows how smoothly each curve bends, and marks any wiggle (a stretch bending the wrong way) in red">Curvature</button><button data-act="clear" hidden title="Remove the anchor points on the outline">Clear points</button><button data-act="in" title="Zoom in (or scroll)">+</button><button data-act="fit" title="Fit to panel">Fit</button><button data-act="max" title="Expand">⤢</button></span>
+          </figcaption><canvas id="c-plan"></canvas>
+        </figure>
+        <figure class="panel" data-panel="profile">
+          <figcaption><b>Profile</b><span>rocker &amp; foil</span>
+            <span class="tools"><button data-act="edit" title="Switch between looking (zoom and pan only) and editing (drag points, click a line to add one)">Edit points</button><button data-act="comb" title="Curvature comb: shows how smoothly each curve bends, and marks any wiggle (a stretch bending the wrong way) in red">Curvature</button><button data-act="clear" hidden title="Remove the anchor points on the rocker and deck">Clear points</button><button data-act="vex" title="Switch between true scale and exaggerated height"></button><button data-act="in" title="Zoom in (or scroll)">+</button><button data-act="fit" title="Fit to panel">Fit</button><button data-act="max" title="Expand">⤢</button></span>
+          </figcaption><canvas id="c-rocker"></canvas>
+        </figure>
+        <figure class="panel" data-panel="sections">
+          <figcaption><b>Sections</b>
+            <span class="slicebar" id="slicebar"></span>
+            <span class="tools"><button data-act="edit" title="Switch between looking (zoom and pan only) and editing (drag points, click a line to add one)">Edit points</button><button data-act="clear" hidden title="Remove the anchor points on this section">Clear points</button><button data-act="vex" title="Switch between true scale and exaggerated height"></button><button data-act="fit" title="Fit to panel">Fit</button><button data-act="max" title="Expand">⤢</button></span>
+          </figcaption><canvas id="c-sections"></canvas>
+        </figure>
+      </div>
+    </section>
+  </main>
+
+  <div class="modal" id="feedback" hidden>
+    <form class="sheet" id="feedback-form">
+      <h2>Feedback</h2>
+      <p>Thanks for trying it. Write whatever comes to mind, then copy it and send it to whoever shared this link with you.</p>
+      <label>What were you trying to design?<textarea name="tried" rows="2" placeholder="e.g. a 5'10&quot; fish for small summer surf"></textarea></label>
+      <label>What worked well?<textarea name="worked" rows="2"></textarea></label>
+      <label>What was confusing, wrong, or looked off?<textarea name="confusing" rows="3"></textarea></label>
+      <label>What would you want it to do next?<textarea name="wanted" rows="2" placeholder="fins, more tail shapes, comparing two boards, ..."></textarea></label>
+      <label class="toggle"><input type="checkbox" name="design" checked /><span>Include the board I have open</span></label>
+      <div class="sheet-actions">
+        <button type="button" id="fb-cancel" class="ghost">Close</button>
+        <button type="button" id="fb-save" class="ghost">Save as file</button>
+        <button type="submit" class="primary" id="fb-send">Copy feedback</button>
+      </div>
+    </form>
+  </div>
+  <div class="toast" id="toast" hidden></div>
+  <div class="install" id="install" hidden>
+    <span>Use it like an app: tap <b>Share</b>, then <b>Add to Home Screen</b>.</span>
+    <button id="install-x" aria-label="Dismiss">Got it</button>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
