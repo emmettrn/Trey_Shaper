@@ -18,7 +18,8 @@ const state = {
 const TAIL_CLOSES = Object.keys(TAIL_TYPES).filter((k) => TAIL_TYPES[k].closes);
 
 // Viewer preferences (not part of the design): kept per browser
-const prefs = { fix: true, vexProfile: 1, vexSections: 1, bay: true, bayGain: 0.3, fixedLight: true, edit: false };
+const LIGHT_HOME = [-0.753, 0.552];   // fixed light: left and up, a little toward the viewer
+const prefs = { fix: true, vexProfile: 1, vexSections: 1, bay: true, bayGain: 0.3, fixedLight: true, edit: false, lightDir: LIGHT_HOME, layout: {} };
 try { Object.assign(prefs, JSON.parse(localStorage.getItem('surfboard.ui') || '{}')); } catch {}
 const savePrefs = () => { try { localStorage.setItem('surfboard.ui', JSON.stringify(prefs)); } catch {} };
 const COARSE = matchMedia('(pointer: coarse)').matches;      // fingers rather than a mouse: bigger targets, share sheet
@@ -726,7 +727,7 @@ function setBayGain() {
 // shows as the shading sweeps across it. This is how Shape3D lights a board.
 const viewLights = new THREE.Group();
 const viewKey = new THREE.DirectionalLight(0xffffff, 2);
-viewKey.position.set(-75, 55, 35);                     // in the camera's own frame: left, up, a little toward the viewer
+viewKey.position.set(-75, 55, 35);                     // in the camera's own frame: left, up, a little toward the viewer (moved with the light pad)
 const viewFill = new THREE.HemisphereLight(0xffffff, 0xffffff, 0.6);
 viewLights.add(viewKey, viewKey.target, viewFill);
 camera.add(viewLights);
@@ -816,6 +817,39 @@ function showRing(data = state.board, linger = true) {
   else if (!ringTimer) ring.visible = false;
 }
 
+/**
+ * The light pad: a disc that stands for the half of the world facing the viewer. The dot is
+ * where the fixed light is (centre = straight from behind the viewer, rim = side-on, raking).
+ * The ball under it is shaded by that light, so it is easy to see where it falls.
+ */
+function setLightDir() {
+  let [u, w] = Array.isArray(prefs.lightDir) && prefs.lightDir.every(Number.isFinite) ? prefs.lightDir : LIGHT_HOME;
+  const r = Math.hypot(u, w);
+  if (r > 0.995) { u *= 0.995 / r; w *= 0.995 / r; }
+  const z = Math.sqrt(Math.max(0, 1 - u * u - w * w));
+  viewKey.position.set(100 * u, 100 * w, 100 * z);
+  const pad = $('#lightpad'), lamp = $('#lamp'), ball = $('#lightball');
+  lamp.style.left = `${50 + 50 * u}%`; lamp.style.top = `${50 - 50 * w}%`;
+  ball.style.background = `radial-gradient(circle at ${50 + 42 * u}% ${50 - 42 * w}%, #fbf7ee 0%, #9aa3a8 ${18 + 30 * z}%, #20272c 78%)`;
+  pad.dataset.u = u; pad.dataset.w = w;
+}
+function wireLightPad() {
+  const pad = $('#lightpad');
+  let dragging = false;
+  const at = (e) => {
+    const r = pad.querySelector('.ball').getBoundingClientRect();
+    let u = ((e.clientX - r.left) / r.width) * 2 - 1, w = 1 - ((e.clientY - r.top) / r.height) * 2;
+    const m = Math.hypot(u, w); if (m > 0.995) { u *= 0.995 / m; w *= 0.995 / m; }
+    prefs.lightDir = [+u.toFixed(3), +w.toFixed(3)];
+    setLightDir();
+  };
+  pad.addEventListener('pointerdown', (e) => { dragging = true; try { pad.setPointerCapture(e.pointerId); } catch {} at(e); e.preventDefault(); e.stopPropagation(); });
+  pad.addEventListener('pointermove', (e) => { if (dragging) at(e); });
+  const end = () => { if (dragging) { dragging = false; savePrefs(); } };
+  pad.addEventListener('pointerup', end); pad.addEventListener('pointercancel', end);
+  pad.addEventListener('dblclick', () => { prefs.lightDir = LIGHT_HOME; savePrefs(); setLightDir(); });
+}
+
 function setLighting() {
   const bay = prefs.bay;
   const fixed = prefs.fixedLight !== false;
@@ -832,6 +866,8 @@ function setLighting() {
   $('#bay-gain').value = prefs.bayGain ?? 0.3;
   $('#t-fixed').hidden = !bay;
   $('#t-fixed').classList.toggle('on', fixed);
+  $('#lightpad').hidden = !(bay && fixed);
+  setLightDir();
   viewport.classList.toggle('bay', bay);
   $('#t-light').classList.toggle('on', bay);
 }
@@ -892,7 +928,7 @@ function setView(name, animate = true) {
   if (!views[name]) name = 'threeq';
   const to = new THREE.Vector3(...views[name]).add(target);
   state.view = name;
-  document.querySelectorAll('#views button').forEach((b) => b.classList.toggle('on', b.dataset.view === name));
+  document.querySelectorAll('#views button[data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === name));
   if (!animate) { camera.position.copy(to); controls.target.copy(target); controls.update(); return; }
   tween = { t0: performance.now(), dur: 550, fromP: camera.position.clone(), toP: to, fromT: controls.target.clone(), toT: target };
 }
@@ -1020,6 +1056,13 @@ class View2D {
       ctx.arc(px, py, 4.5 * big, 0, 7); ctx.fill(); ctx.strokeStyle = '#0e1317'; ctx.stroke();
       if (h.on && prefs.edit) { ctx.beginPath(); ctx.arc(px, py, 8 * big, 0, 7); ctx.strokeStyle = h.color; ctx.lineWidth = 1; ctx.stroke(); }
     }
+    else if (h.kind === 'apex') {                         // rail apex: a ring with up / down ticks, it only moves up and down
+      ctx.arc(px, py, 5.5 * big, 0, 7); ctx.fillStyle = '#0e1317'; ctx.fill(); ctx.lineWidth = 2; ctx.stroke();
+      ctx.beginPath(); ctx.arc(px, py, 2 * big, 0, 7); ctx.fillStyle = h.color; ctx.fill();
+      ctx.beginPath(); ctx.lineWidth = 1.5;
+      for (const d of [-1, 1]) { ctx.moveTo(px - 3 * big, py + d * 9 * big); ctx.lineTo(px, py + d * 12 * big); ctx.lineTo(px + 3 * big, py + d * 9 * big); }
+      ctx.stroke();
+    }
     else if (h.kind === 'slice') { ctx.moveTo(px, py - 6); ctx.lineTo(px + 6, py); ctx.lineTo(px, py + 6); ctx.lineTo(px - 6, py); ctx.closePath(); ctx.fill(); ctx.strokeStyle = '#0e1317'; ctx.stroke(); }
     else {
       ctx.rect(px - 3.5 * big, py - 3.5 * big, 7 * big, 7 * big); if (h.locked) { ctx.fillStyle = '#141b21'; } ctx.fill(); ctx.stroke();
@@ -1032,7 +1075,7 @@ class View2D {
     let best = null, bd = this.touch ? 24 : 13;
     for (const h of this.handles) {
       if (!all && !h.view) continue;
-      const d = Math.hypot(h.px - px, h.py - py) - (h.kind === 'anchor' ? 2 : 0) - (h.kind === 'scrub' ? -6 : 0);   // anchors win ties
+      const d = Math.hypot(h.px - px, h.py - py) - (h.kind === 'anchor' || h.kind === 'apex' ? 2 : 0) - (h.kind === 'scrub' ? -6 : 0);   // anchors win ties
       if (d < bd) { bd = d; best = h; }
     }
     return best;
@@ -1116,7 +1159,7 @@ class View2D {
       if (e.pointerType !== 'mouse') return;
       this.touch = false;
       const h = this.hit(px, py);
-      this.c.style.cursor = h ? (h.locked ? 'not-allowed' : 'grab') : prefs.edit && this.curveHit(px, py) ? 'copy' : this.zoom > 1 ? 'move' : 'default';
+      this.c.style.cursor = h ? (h.locked ? 'not-allowed' : h.kind === 'apex' ? 'ns-resize' : 'grab') : prefs.edit && this.curveHit(px, py) ? 'copy' : this.zoom > 1 ? 'move' : 'default';
       return;
     }
     if (this.drag.pan) {
@@ -1586,8 +1629,21 @@ function drawSections(v, data) {
       },
     });
   }
+  // The rail apex: a point of its own. Drag it up or down to set the apex height of this section
+  // (a change from the board-wide value, like the slider). It cannot move in or out: the width is the outline's.
+  const apexDrag = (wx, wz) => {
+    const sl = rawSlice(); if (!sl || !state.board) return;
+    const base = sectionBase(state.board.params, sl.x).rail_apex_in, hi = 0.6 * s.t;
+    // the geometry eases the apex into 60% of the thickness; ask for the height that lands where the pointer is
+    const want = clip(snap(wz, 1 / 32), 0.125, 0.97 * hi), ask = (want ** -6 - hi ** -6) ** (-1 / 6);
+    sl.adj.rail_apex_in = clip(clip(ask, 0.125, 2) - base, -1.5, 1.5);
+  };
+  for (const side of [1, -1]) {
+    v.point(ctx, { x: side * s.h, y: s.apex_in, kind: 'apex', color: COLORS.sand, drag: apexDrag,
+      remove: () => { const sl = rawSlice(); if (sl) delete sl.adj.rail_apex_in; } });   // double-click: back to the board-wide height
+  }
   sectionCaption(v, ctx, data, s, SLICE_COLOR);
-  tip(v, ctx, raw.deck.length || raw.bottom.length ? 'drag a point · drag its arms to blend · double-click removes' : 'sliders on the left · click the deck, rail or bottom line to add a point');
+  tip(v, ctx, raw.deck.length || raw.bottom.length ? 'drag a point · drag its arms to blend · double-click removes' : 'drag the rail apex up or down · click the deck, rail or bottom line to add a point');
 }
 
 const views2d = {
@@ -1763,8 +1819,72 @@ function render(data) {
 /* =========================================================================
    Toolbar, presets, save/load, export
    ========================================================================= */
+/* =========================================================================
+   Resizable layout: drag the dividers between the sidebar and the views, between the 3D
+   view and the graphs, and between the graphs. Double-click a divider to put it back.
+   Kept in prefs.layout: side (px), panels (px), cols (three widths, as fr).
+   ========================================================================= */
+const NARROW = matchMedia('(max-width: 820px)');
+function applyLayout() {
+  const L = prefs.layout || (prefs.layout = {}), root = document.documentElement.style, stage = $('.stage').style, panels = $('.panels').style;
+  if (Number.isFinite(L.side)) root.setProperty('--side-w', `${L.side}px`); else root.removeProperty('--side-w');
+  if (Number.isFinite(L.panels)) stage.setProperty('--panels-h', `${L.panels}px`); else stage.removeProperty('--panels-h');
+  if (Array.isArray(L.cols) && L.cols.length === 3 && L.cols.every((c) => c > 0)) panels.setProperty('--panel-cols', L.cols.map((c) => `${c.toFixed(3)}fr`).join(' '));
+  else panels.removeProperty('--panel-cols');
+}
+function placeSplitters() {
+  const narrow = NARROW.matches;
+  for (const el of document.querySelectorAll('.splitter')) {
+    const a = el._a, host = el.parentElement, hr = host.getBoundingClientRect(), ar = a.getBoundingClientRect();
+    const off = narrow || ar.width < 4 || ar.height < 4 || (el._b && el._b.getBoundingClientRect().width < 4);
+    el.hidden = off;
+    if (off) continue;
+    if (el._dir === 'col') el.style.left = `${ar.right - hr.left}px`; else el.style.top = `${ar.bottom - hr.top}px`;
+  }
+}
+function wireSplitters() {
+  const layout = $('.layout'), stage = $('.stage'), panelsEl = $('.panels'), side = $('.sidebar');
+  const panels = [...document.querySelectorAll('.panel')];
+  const make = (host, dir, a, b, title, drag, reset) => {
+    const el = document.createElement('div');
+    el.className = `splitter ${dir}`; el.title = title; el.setAttribute('role', 'separator');
+    Object.assign(el, { _a: a, _b: b, _dir: dir });
+    host.appendChild(el);
+    let on = false;
+    el.addEventListener('pointerdown', (e) => { on = true; el.classList.add('on'); try { el.setPointerCapture(e.pointerId); } catch {} e.preventDefault(); });
+    el.addEventListener('pointermove', (e) => { if (!on) return; drag(e); applyLayout(); placeSplitters(); });
+    const end = () => { if (!on) return; on = false; el.classList.remove('on'); savePrefs(); };
+    el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+    el.addEventListener('dblclick', () => { reset(); applyLayout(); savePrefs(); requestAnimationFrame(placeSplitters); });
+  };
+  make(layout, 'col', side, null, 'Drag to make the sidebar wider or narrower · double-click to reset', (e) => {
+    const r = layout.getBoundingClientRect();
+    prefs.layout.side = Math.round(clip(e.clientX - r.left, 240, Math.max(260, Math.min(720, r.width - 420))));
+  }, () => delete prefs.layout.side);
+  make(stage, 'row', $('#viewport'), panelsEl, 'Drag to share the space between the 3D view and the graphs · double-click to reset', (e) => {
+    const r = stage.getBoundingClientRect();
+    prefs.layout.panels = Math.round(clip(r.bottom - e.clientY, 120, Math.max(130, r.height - 120)));
+  }, () => delete prefs.layout.panels);
+  for (let i = 0; i < 2; i++) {
+    make(panelsEl, 'col', panels[i], panels[i + 1], 'Drag to make these graphs wider or narrower · double-click to reset', (e) => {
+      const w = panels.map((p) => p.getBoundingClientRect().width), left = panels[i].getBoundingClientRect().left;
+      const pair = w[i] + w[i + 1], min = Math.min(150, pair / 2 - 1);
+      w[i] = clip(e.clientX - left, min, pair - min); w[i + 1] = pair - w[i];
+      const tot = w[0] + w[1] + w[2];
+      prefs.layout.cols = w.map((x) => (3 * x) / tot);
+    }, () => delete prefs.layout.cols);
+  }
+  const ro = new ResizeObserver(() => placeSplitters());
+  for (const el of [layout, stage, panelsEl, side, $('#viewport'), ...panels]) ro.observe(el);
+  NARROW.addEventListener?.('change', placeSplitters);
+  applyLayout();
+  placeSplitters();
+}
+
 function wireUI() {
-  document.querySelectorAll('#views button').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
+  wireSplitters();
+  wireLightPad();
+  document.querySelectorAll('#views button[data-view]').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
   $('#t-wire').addEventListener('click', (e) => {
     state.wire = !state.wire; setWire();
   });
