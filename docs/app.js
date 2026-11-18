@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM } from './geometry.js';
+import { buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, toolOutline } from './geometry.js';
 import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js';
 import { traceFrame, traceHalf, tracePoints, fitOutline, pchip } from './trace.js';
 
@@ -11,6 +11,7 @@ const state = {
   schema: null, params: {}, board: null, fieldEls: {}, cellEls: {}, mirrors: [],
   dirty: false, busy: false, wire: false, stringer: true, fitted: false,
   sel: null,      // id of the cross-section slice being edited, or null while rolling through the board
+  tool: null,     // id of the concave tool being shaped on the Plan graph, or null
   scrub: null,    // where the Sections view is looking, inches from the tail (null = the wide point)
   pt: null,       // the anchor point whose handle arms are showing
   flip: false,    // 3D view: board turned bottom up
@@ -78,7 +79,14 @@ function buildControls() {
     det.open = gi < 2;
     det.innerHTML = `<summary>${g.name}</summary><div class="fields"></div>`;
     g.fields.forEach((f) => det.querySelector('.fields').appendChild(makeField(f)));
-    if (g.name === 'Bottom') det.querySelector('.fields').appendChild(buildBottomBox());
+    if (g.name === 'Bottom') {
+      const note = document.createElement('div');
+      note.className = 'bottom-note';
+      note.innerHTML = 'Three ways to shape the bottom: the <b>contour stations</b> below (blended from spot to spot), the <b>concave tools</b> (hard-edged concaves you lay out on the Plan graph), or by hand on any cross section in the <b>cross section editor</b> (Sections graph, <i>Edit here</i>).';
+      det.querySelector('.fields').prepend(note);
+      det.querySelector('.fields').appendChild(buildBottomBox());
+      det.querySelector('.fields').appendChild(buildToolsBox());
+    }
     root.appendChild(det);
   });
 }
@@ -343,6 +351,186 @@ function renderBottomTable() {
     : 'Say what the bottom does at a few spots (for example 1/16″ concave 12″ from the nose, 1/4″ at center, vee 4″ from the tail) and it is blended in between. A station can be a stretch: until… holds the same contour from one spot to another. With no stations, the two sliders above are used.';
 }
 
+
+/* Concave tools: hard-edged concaves (tear drop, straight edges, venturi), single or double,
+   between two spots on the board. Each has a box here with its numbers; "Shape it" puts it
+   on the Plan graph to drag its ends and edges. */
+const TOOL_COL = '#7ec8ff', TOOL_COL2 = '#b7e0ff';
+const toolsUI = {};
+const rawTool = (id) => state.params.tools?.find((t) => t.id === id);
+function toolsChanged(rebuild) { if (rebuild) renderTools(); saveLocal(); schedule(); }
+function newTool(shape) {
+  const P = state.params, L = have('length'), W = have('width');
+  const id = 1 + Math.max(0, ...(P.tools || []).map((t) => t.id || 0));
+  const r16 = (v) => Math.round(v * 16) / 16;
+  const t = shape === 'teardrop'
+    ? { id, shape, kind: 'single', edge: 'hard', start: { pos: 1, from: 'nose' }, end: { pos: snap(L * 0.33, 1), from: 'nose' }, depth: 0.1875, width: r16(0.62 * W), round: 'nose' }
+    : shape === 'straight'
+      ? { id, shape, kind: 'double', edge: 'hard', start: { pos: 0, from: 'center' }, end: { pos: 0, from: 'tail' }, depth: 0.125, w1: r16(0.55 * W), w2: r16(0.45 * W), ridge: 2 }
+      : { id, shape, kind: 'double', edge: 'rail', start: { pos: snap(L * 0.38, 1), from: 'tail' }, end: { pos: 0, from: 'tail' }, depth: 0.1875,
+        outer: [[0, r16(0.5 * W)], [0.55, r16(0.4 * W)], [1, r16(0.62 * W)]], inner: [[0, 2.5], [1, 3.5]] };
+  (P.tools ||= []).push(t);
+  state.tool = id;
+  if (!prefs.edit) { prefs.edit = true; savePrefs(); syncPanelTools(); }
+  toolsChanged(true);
+}
+function buildToolsBox() {
+  const box = document.createElement('div');
+  box.className = 'tools-box';
+  box.innerHTML = `<div class="bottom-head">Concave tools <small>hard edges</small></div>
+    <div class="tool-cards"></div>
+    <div class="bottom-actions"><button class="ghost" data-shape="teardrop" title="A nose concave for noseriding: round at the nose, tapering toward the tail">+ Tear drop</button><button class="ghost" data-shape="straight" title="Straight hard edges, parallel or converging">+ Straight edges</button><button class="ghost" data-shape="venturi" title="Curved hard edges you shape with points, like a Bonzer's double concaves">+ Venturi</button></div>
+    <div class="help">A tool lays a concave with hard edges over the bottom contours. Shape it on the Plan graph: drag the diamonds to move its ends and the dots to move its edges.</div>`;
+  toolsUI.cards = box.querySelector('.tool-cards');
+  box.querySelectorAll('[data-shape]').forEach((b) => b.addEventListener('click', () => newTool(b.dataset.shape)));
+  return box;
+}
+function renderTools() {
+  const P = state.params, box = toolsUI.cards;
+  if (!box) return;
+  box.innerHTML = '';
+  for (const t of P.tools || []) {
+    const el = document.createElement('div');
+    el.className = 'tcard' + (state.tool === t.id ? ' on' : '');
+    const opt = (o) => Object.entries(o).map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+    el.innerHTML = `<div class="trow top"><select class="shape" aria-label="Shape">${opt(TOOL_SHAPES)}</select><select class="kind" aria-label="Single or double">${opt({ single: 'Single', double: 'Double' })}</select><button class="x" title="Remove this concave" aria-label="Remove">×</button></div>
+      <div class="trow where"><span>from</span><input class="cell p1" spellcheck="false" aria-label="Starts, inches"><span>″</span><select class="f1" aria-label="Measured from">${FROM_LONG}</select></div>
+      <div class="trow where"><span>until</span><input class="cell p2" spellcheck="false" aria-label="Ends, inches"><span>″</span><select class="f2" aria-label="Measured from">${FROM_LONG}</select></div>
+      <div class="trow nums">
+        <label>deep<input class="cell n" data-k="depth" spellcheck="false"></label>
+        <label data-for="teardrop">widest<input class="cell n" data-k="width" spellcheck="false"></label>
+        <label data-for="teardrop">round end<select class="round">${opt({ nose: 'nose', tail: 'tail' })}</select></label>
+        <label data-for="straight">nose end<input class="cell n" data-k="w1" spellcheck="false"></label>
+        <label data-for="straight">tail end<input class="cell n" data-k="w2" spellcheck="false"></label>
+        <label data-for="ridge">ridge<input class="cell n" data-k="ridge" spellcheck="false"></label>
+        <label data-for="double">edges<select class="edge">${opt({ hard: 'hard both sides', rail: 'hard on the rail side' })}</select></label>
+      </div>
+      <div class="trow foot"><button class="ghost edit"></button><span class="angle"></span></div>`;
+    const q = (sel) => el.querySelector(sel);
+    const paint = () => {
+      q('.shape').value = t.shape; q('.kind').value = t.kind; q('.round').value = t.round || 'nose'; q('.edge').value = t.edge || 'hard';
+      q('.p1').value = fracIn(showPos(t.start)); q('.f1').value = fromKey(t.start);
+      q('.p2').value = fracIn(showPos(t.end)); q('.f2').value = fromKey(t.end);
+      for (const inp of el.querySelectorAll('.n')) inp.value = Number.isFinite(t[inp.dataset.k]) ? fracIn(t[inp.dataset.k], inp.dataset.k === 'depth' ? 32 : 16) : '';
+      const dbl = t.kind === 'double';
+      for (const lab of el.querySelectorAll('[data-for]')) {
+        const f = lab.dataset.for;
+        lab.hidden = f === 'double' ? !dbl : f === 'ridge' ? !(dbl && t.shape === 'straight') : f !== t.shape;
+      }
+      q('.edit').textContent = state.tool === t.id ? 'Done shaping' : 'Shape it on the Plan graph';
+      let ang = '';
+      if (t.shape === 'straight' && state.board) {
+        const L = state.board.params.length, len = Math.abs(posToX(t.start, L) - posToX(t.end, L)) || 1;
+        const a1 = posToX(t.start, L) >= posToX(t.end, L), w1 = a1 ? t.w1 : t.w2, w2 = a1 ? t.w2 : t.w1;
+        const deg = (Math.atan(Math.abs(w1 - w2) / 2 / len) * 180) / Math.PI;
+        ang = deg < 0.2 ? 'edges parallel' : `edges ${w1 > w2 ? 'converge' : 'spread'} ${deg.toFixed(1)}° each side toward the tail`;
+      } else if (t.shape === 'venturi') ang = 'curved edges: shape them on the Plan graph';
+      q('.angle').textContent = ang;
+    };
+    paint();
+    for (const inp of el.querySelectorAll('input')) {
+      inp.addEventListener('focus', () => inp.select());
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
+    }
+    const posBox = (sel, end) => q(sel).addEventListener('change', () => { const v = parseVal(q(sel).value); if (Number.isFinite(v)) setPos(t[end], clip(Math.abs(v), 0, 240)); paint(); toolsChanged(false); });
+    posBox('.p1', 'start'); posBox('.p2', 'end');
+    q('.f1').addEventListener('change', () => { setFrom(t.start, q('.f1').value); paint(); toolsChanged(false); });
+    q('.f2').addEventListener('change', () => { setFrom(t.end, q('.f2').value); paint(); toolsChanged(false); });
+    for (const inp of el.querySelectorAll('.n')) inp.addEventListener('change', () => {
+      const v = parseVal(inp.value), k = inp.dataset.k;
+      if (Number.isFinite(v)) t[k] = clip(Math.abs(v), 0, k === 'depth' ? 0.75 : 40);
+      paint(); toolsChanged(false);
+    });
+    q('.shape').addEventListener('change', () => {               // a new shape starts from that shape's own defaults, at the same spot
+      const keep = { id: t.id, kind: t.kind, start: t.start, end: t.end, depth: t.depth, edge: t.edge };
+      const W = have('width'), r16 = (v) => Math.round(v * 16) / 16, sh = q('.shape').value;
+      for (const k of Object.keys(t)) delete t[k];
+      Object.assign(t, keep, { shape: sh }, sh === 'teardrop' ? { width: r16(0.62 * W), round: 'nose' } : sh === 'straight' ? { w1: r16(0.55 * W), w2: r16(0.45 * W), ridge: 2 }
+        : { outer: [[0, r16(0.5 * W)], [0.55, r16(0.4 * W)], [1, r16(0.62 * W)]], inner: [[0, 2.5], [1, 3.5]] });
+      paint(); toolsChanged(false);
+    });
+    q('.kind').addEventListener('change', () => { t.kind = q('.kind').value; paint(); toolsChanged(false); });
+    q('.round').addEventListener('change', () => { t.round = q('.round').value; toolsChanged(false); });
+    q('.edge').addEventListener('change', () => { t.edge = q('.edge').value; toolsChanged(false); });
+    q('.x').addEventListener('click', () => { dropFrom(P.tools, t); if (state.tool === t.id) state.tool = null; toolsChanged(true); });
+    q('.edit').addEventListener('click', () => {
+      state.tool = state.tool === t.id ? null : t.id;
+      if (state.tool && !prefs.edit) { prefs.edit = true; savePrefs(); syncPanelTools(); }
+      renderTools(); drawPanels();
+    });
+    el._paint = paint;
+    box.appendChild(el);
+  }
+}
+/** Keep the boxes' numbers current while shapes are dragged on the graph (without rebuilding them). */
+function syncTools() { toolsUI.cards?.querySelectorAll('.tcard').forEach((c) => { if (!c.contains(document.activeElement)) c._paint?.(); }); }
+
+/** The concave tools on the Plan graph (seen through the board from above). The one being shaped gets handles. */
+function drawTools(v, ctx, data) {
+  const P = state.params, tools = data.params.tools || [], L = data.params.length, W = data.params.width;
+  let editing = null;
+  for (let k = 0; k < tools.length; k++) {
+    const o = toolOutline(data, k); if (!o) continue;
+    const sel = state.tool !== null && o.tool.id === state.tool, pts = o.pts.filter((q) => q.e > 0.05);
+    if (!pts.length) continue;
+    ctx.save();
+    ctx.strokeStyle = TOOL_COL; ctx.lineWidth = sel ? 1.6 : 1; ctx.globalAlpha = state.tool !== null && !sel ? 0.4 : 0.9;
+    if (!sel) ctx.setLineDash([4, 3]);
+    for (const sgn of [1, -1]) {
+      v.path(ctx, pts.map((q) => q.x), pts.map((q) => sgn * q.e)); ctx.stroke();
+      if (o.tool.kind === 'double') { v.path(ctx, pts.map((q) => q.x), pts.map((q) => sgn * q.r)); ctx.stroke(); }
+    }
+    const xs = [...pts.map((q) => q.x), ...[...pts].reverse().map((q) => q.x)];
+    v.path(ctx, xs, [...pts.map((q) => q.e), ...[...pts].reverse().map((q) => (o.tool.kind === 'double' ? q.r : -q.e))], true);
+    ctx.fillStyle = 'rgba(126,200,255,0.10)'; ctx.fill();
+    if (o.tool.kind === 'double') { v.path(ctx, xs, [...pts.map((q) => -q.e), ...[...pts].reverse().map((q) => -q.r)], true); ctx.fill(); }
+    ctx.restore();
+    if (sel) editing = o;
+  }
+  if (!editing || !prefs.edit) return false;
+  const tool = editing.tool, raw = rawTool(tool.id);
+  if (!raw) return false;
+  const frontIsStart = posToX(raw.start, L) >= posToX(raw.end, L);
+  const setX = (end, wx) => { const x = clip(snap(wx, 0.25), 0, L), r = raw[end]; r.pos = r.from === 'nose' ? L - x : r.from === 'center' ? x - L / 2 : x; };
+  const H = [];                                          // this tool's handles
+  const pt = (h) => { v.point(ctx, { ...h, tool: true }); };
+  pt({ x: tool.x1, y: 0, kind: 'slice', color: TOOL_COL, drag: (wx) => setX(frontIsStart ? 'start' : 'end', wx) });
+  pt({ x: tool.x0, y: 0, kind: 'slice', color: TOOL_COL, drag: (wx) => setX(frontIsStart ? 'end' : 'start', wx) });
+  const yOf = (wy) => Math.abs(wy);
+  if (tool.shape === 'teardrop') {
+    const u = tool.round === 'nose' ? 1 / 3 : 2 / 3, x = tool.x1 - u * tool.len;
+    pt({ x, y: lerpAt(editing.pts.map((q) => q.x).reverse(), editing.pts.map((q) => q.e).reverse(), x), kind: 'anchor', color: TOOL_COL, drag: (wx, wy) => { raw.width = clip(2 * yOf(wy), 1, W); } });
+  } else if (tool.shape === 'straight') {
+    const [kf, kb] = frontIsStart ? ['w1', 'w2'] : ['w2', 'w1'];
+    pt({ x: tool.x1, y: tool[frontIsStart ? 'w1' : 'w2'] / 2, kind: 'anchor', color: TOOL_COL, drag: (wx, wy) => { raw[kf] = clip(2 * yOf(wy), 0.5, W); } });
+    pt({ x: tool.x0, y: tool[frontIsStart ? 'w2' : 'w1'] / 2, kind: 'anchor', color: TOOL_COL, drag: (wx, wy) => { raw[kb] = clip(2 * yOf(wy), 0.5, W); } });
+    if (tool.kind === 'double') pt({ x: (tool.x0 + tool.x1) / 2, y: tool.ridge / 2, kind: 'anchor', color: TOOL_COL2, drag: (wx, wy) => { raw.ridge = clip(2 * yOf(wy), 0, W); } });
+  } else {
+    // venturi: points along each edge; t runs 0 at the nose end to 1 at the tail end
+    for (const [key, col, list] of [['outer', TOOL_COL, tool.outer], ...(tool.kind === 'double' ? [['inner', TOOL_COL2, tool.inner]] : [])]) {
+      if (!Array.isArray(raw[key])) raw[key] = list.pts.map((q) => [...q]);
+      const arr = raw[key].sort((a, b) => a[0] - b[0]);
+      arr.forEach((a, i) => {
+        const end = i === 0 || i === arr.length - 1, lo = i > 0 ? arr[i - 1][0] + 0.03 : 0, hi = i < arr.length - 1 ? arr[i + 1][0] - 0.03 : 1;
+        pt({ x: tool.x1 - a[0] * tool.len, y: a[1] / 2, kind: 'anchor', color: col,
+          drag: (wx, wy) => { if (!end) a[0] = clip((tool.x1 - wx) / tool.len, lo, hi); a[1] = clip(2 * yOf(wy), key === 'inner' ? 0 : 0.5, W); },
+          remove: end || arr.length <= 2 ? null : () => dropFrom(arr, a) });
+      });
+      const ys = editing.pts.map((q) => (key === 'outer' ? q.e : q.r)), xs2 = editing.pts.map((q) => q.x);
+      H.push({
+        dist: (wx, wy) => { let best = Infinity; for (let i = 0; i < xs2.length; i++) best = Math.min(best, Math.hypot(v.X(xs2[i]) - v.X(wx), v.Y(ys[i]) - v.Y(Math.abs(wy)))); return best; },
+        add: (wx, wy) => {
+          const a = [clip((tool.x1 - wx) / tool.len, 0.03, 0.97), clip(2 * yOf(wy), 0.5, W)];
+          arr.push(a);
+          return { fn: (x, y) => { a[0] = clip((tool.x1 - x) / tool.len, 0.03, 0.97); a[1] = clip(2 * yOf(y), key === 'inner' ? 0 : 0.5, W); }, undo: () => dropFrom(arr, a) };
+        },
+      });
+    }
+  }
+  v.handles = v.handles.filter((h) => h.tool);           // while a tool is being shaped, only its own handles answer
+  v.curves = H;
+  return true;
+}
 /* Sliders for the cross section picked in the Sections graph. They show that section's own
    deck dome, rails and bottom; moving one changes the board there and blends out toward
    the neighbouring sections and the tips. The board-wide Rails and Bottom sliders still
@@ -589,11 +777,21 @@ function applyParams(p, keepSel = null) {
     pos: +r.pos, from: FROM.includes(r.from) ? r.from : 'tail', type: BOTTOM_LABELS[r.type] ? r.type : 'flat',
     ...(r.to && Number.isFinite(+r.to.pos) ? { to: { pos: +r.to.pos, from: FROM.includes(r.to.from) ? r.to.from : 'tail' } } : {}),
     depth: clip(+r.depth || 0, 0, 0.75), depth2: clip(+r.depth2 || 0, 0, 0.75) }));
+  const tseen = new Set();
+  P.tools = (Array.isArray(P.tools) ? P.tools : []).filter((t) => t && TOOL_SHAPES[t.shape] && t.start && t.end).map((t) => {
+    let id = Number.isInteger(t.id) && !tseen.has(t.id) ? t.id : 1;
+    while (tseen.has(id)) id++;
+    tseen.add(id);
+    const at = (r) => ({ pos: Number.isFinite(+r.pos) ? +r.pos : 0, from: FROM.includes(r.from) ? r.from : 'tail' });
+    return { ...structuredClone(t), id, start: at(t.start), end: at(t.end) };
+  });
+  if (!P.tools.some((t) => t.id === state.tool)) state.tool = null;
   state.sel = P.slices.some((s) => s.id === keepSel) ? keepSel : null;
   state.pt = null;
   for (const [k, fe] of Object.entries(state.fieldEls)) fe.set(state.params[k]);
   for (const [k, ce] of Object.entries(state.cellEls)) ce.set(state.params[k]);
   renderBottomTable();
+  renderTools();
   renderMarks();
   updateVisibility();
   saveLocal();
@@ -1451,6 +1649,12 @@ function drawPlan(v, data) {
 
   v.text(ctx, 'tail', v.X(0), v.h - 6, COLORS.muted, 'left');
   v.text(ctx, 'nose', v.X(L), v.h - 6, COLORS.muted, 'right');
+  if (drawTools(v, ctx, data)) {
+    const long = v.w > 760;
+    tip(v, ctx, long ? 'shaping a concave: drag the diamonds to move its ends, the dots to move its edges' + (rawTool(state.tool)?.shape === 'venturi' ? ' · click an edge to add a point' : '') + ' · Esc when done'
+      : 'diamonds = ends · dots = edges · Esc when done');
+    return;
+  }
   tip(v, ctx, P.anchors.outline.length + P.anchors.swallow.length ? 'drag a point · drag its arms to blend · double-click removes'
     : p.tail_type === 'swallow' ? 'click the outline or the swallow cut to add a point · click a square for its arms' : 'click the outline to add a point · click a square for its arms');
 }
@@ -1588,7 +1792,8 @@ function sectionGuides(v, ctx, s, color) {
 function sectionCaption(v, ctx, data, s, color) {
   const L = data.params.length;
   v.text(ctx, `${whereText(s.x, L)} · ${fracIn(2 * s.h)}″ wide · ${fracIn(s.t)}″ thick`, 4, 12, color, 'left');
-  v.text(ctx, `${shapeText(s.shape)} · rail apex ${fracIn(s.apex_in)}″ up`, 4, 25, COLORS.sand, 'left');
+  const here = (data.params.tools || []).filter((t) => s.x >= t.x0 && s.x <= t.x1).map((t) => `${TOOL_SHAPES[t.shape].toLowerCase()}${t.kind === 'double' ? ' double' : ''} concave`);
+  v.text(ctx, `${shapeText(s.shape)}${here.length ? ' + ' + here.join(' + ') : ''} · rail apex ${fracIn(s.apex_in)}″ up`, 4, 25, COLORS.sand, 'left');
 }
 
 /** A point of a section line at arc-length position rho: where it is, where it was before anchor points, and the frame there. */
@@ -1829,7 +2034,8 @@ function wirePanels() {
   $('#t-max').addEventListener('click', () => setFocus('view'));
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || !$('#feedback').hidden || !$('#trace').hidden) return;
-    if (state.sel !== null) exitSection();              // Esc leaves the section being shaped first, then an expanded view
+    if (state.tool != null) { state.tool = null; renderTools(); drawPanels(); }
+    else if (state.sel !== null) exitSection();              // Esc leaves the section being shaped first, then an expanded view
     else if (state.focus) setFocus(state.focus);
   });
   syncPanelTools();
@@ -1864,6 +2070,7 @@ function render(data) {
   if (upgradeSlices(data)) { saveLocal(); schedule(); }
   refreshSectionGroup(data);
   syncMarks(data);
+  syncTools();
   syncClearButtons();
   showRing(data, false);
   const s = data.stats;

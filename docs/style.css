@@ -354,3 +354,29 @@ button:disabled { opacity: .35; cursor: default; }
 .trace-actions label { display: flex; align-items: center; gap: 6px; color: #b9c6ce; }
 .trace-actions .cell { width: 86px; }
 @media (max-width: 820px) { .trace-sheet { height: 100%; } }
+
+/* ---------- bottom: note, concave tools ---------- */
+.bottom-note { font-size: 11.5px; color: #b9c6ce; background: rgba(126,200,255,.07); border: 1px solid rgba(126,200,255,.22); border-radius: 6px; padding: 8px 10px; }
+.bottom-note b { color: var(--text); font-weight: 600; }
+.tools-box { display: grid; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
+.tools-box .bottom-head small { color: var(--muted); font-weight: 400; margin-left: 4px; }
+.tool-cards { display: grid; gap: 8px; }
+.tcard { display: grid; gap: 6px; background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid #4f86b0; border-radius: 6px; padding: 7px; }
+.tcard.on { border-color: #7ec8ff; box-shadow: 0 0 0 1px rgba(126,200,255,.25); }
+.tcard .cell { background: var(--panel); }
+.tcard select { padding: 4px 6px; min-width: 0; }
+.trow { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.trow.top select { flex: 1; }
+.trow.where span { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.trow.where span:first-child { width: 32px; }
+.trow.where .cell { width: 56px; flex: none; }
+.trow.where select { flex: 1; }
+.trow.nums { flex-wrap: wrap; gap: 6px 10px; }
+.trow.nums label { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
+.trow.nums label[hidden] { display: none; }
+.trow.nums .cell { width: 60px; }
+.trow.foot { justify-content: space-between; }
+.trow.foot .edit { padding: 3px 9px; font-size: 11.5px; color: #b7e0ff; border-color: #34556e; }
+.trow.foot .angle { color: var(--muted); font-size: 11px; text-align: right; }
+.tcard .x { padding: 0; width: 26px; height: 26px; color: var(--muted); background: transparent; }
+.tools-box .bottom-actions { flex-wrap: wrap; }
