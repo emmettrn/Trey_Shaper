@@ -69,14 +69,17 @@
             <button data-view="deck">Top</button>
             <button data-view="side">Side</button>
             <button data-view="tail">Tail</button>
+            <button id="t-flip" class="flip" title="Turn the board over, so the bottom can be looked at the same way as the deck">Bottom up</button>
           </div>
           <div class="seg">
-            <button id="t-flip" title="Turn the board over, so the bottom can be looked at the same way as the deck">Bottom up</button>
             <button id="t-light" title="Shaping-bay lighting on a matte blank, to show the foil and contours">Bay lights</button><input type="range" id="bay-gain" min="0" max="1" step="0.05" title="How hard the bay lights pick out contours: left is true to scale, right exaggerates every tilt" aria-label="Bay light strength"><button id="t-fixed" title="On: the light stays put and the board moves through it as you turn it, as in Shape3D. Off: lights along both rails that turn with the board.">Fixed light</button>
             <button id="t-wire" title="Show the board as a frame: a cross section every 6 inches on its stringer and rail lines">Skeleton</button>
             <button id="t-stringer" class="on">Stringer</button>
             <button id="t-max" data-act="max" title="Expand">⤢</button>
           </div>
+        </div>
+        <div class="lightpad" id="lightpad" hidden title="Where the fixed light is. Drag the dot to move the light; the ball shows how it falls. Double-click to put it back.">
+          <span class="ball" id="lightball"><span class="lamp" id="lamp"></span></span><small>Light</small>
         </div>
         <div class="hint" id="hint">Drag to rotate · scroll to zoom · on the graphs below, turn on Edit points to reshape a curve</div>
         <div class="busy" id="busy"></div>

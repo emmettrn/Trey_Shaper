@@ -51,10 +51,10 @@ button:hover, .file-btn:hover { border-color: #3a4a56; }
 .menu-list button:hover { background: #22303a; }
 
 /* ---------- layout ---------- */
-.layout { display: grid; grid-template-columns: calc(344px + var(--safe-l)) 1fr; height: calc(100% - var(--bar)); }
+.layout { position: relative; display: grid; grid-template-columns: calc(var(--side-w, 344px) + var(--safe-l)) 1fr; height: calc(100% - var(--bar)); }
 .sidebar { overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); padding: 0 0 calc(24px + var(--safe-b)) var(--safe-l);
   -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
-.stage { display: grid; grid-template-rows: 1fr 236px; min-width: 0; min-height: 0; }
+.stage { position: relative; display: grid; grid-template-rows: 1fr var(--panels-h, 236px); min-width: 0; min-height: 0; }
 
 /* ---------- controls ---------- */
 .group { border-bottom: 1px solid var(--line); }
@@ -129,7 +129,7 @@ input[type=range]:disabled { opacity: .35; }
 .viewport.bay { background: radial-gradient(ellipse at 50% 40%, #12171b 0%, #06080a 75%); }
 
 /* ---------- 2D panels ---------- */
-.panels { display: grid; grid-template-columns: 1.25fr 1.25fr 1fr; border-top: 1px solid var(--line); background: var(--panel); min-height: 0;
+.panels { position: relative; display: grid; grid-template-columns: var(--panel-cols, 1.25fr 1.25fr 1fr); border-top: 1px solid var(--line); background: var(--panel); min-height: 0;
   padding: 0 var(--safe-r) var(--safe-b) 0; }
 .panel { margin: 0; padding: 6px 10px 8px; border-right: 1px solid var(--line); display: grid; grid-template-rows: auto 1fr; min-width: 0; min-height: 0; }
 .panel:last-child { border-right: 0; }
@@ -231,7 +231,9 @@ input[type=range]:disabled { opacity: .35; }
   input[type=range]::-moz-range-thumb { width: 22px; height: 22px; }
   .toggle input { width: 22px; height: 22px; }
   .group > summary { padding: 15px 16px; }
-  .stage { grid-template-rows: 1fr 264px; }
+  .stage { grid-template-rows: 1fr var(--panels-h, 264px); }
+  .splitter.col { width: 16px; margin-left: -8px; }
+  .splitter.row { height: 16px; margin-top: -8px; }
 }
 
 @media (max-width: 820px) {
@@ -306,3 +308,28 @@ button:disabled { opacity: .35; cursor: default; }
 #bay-gain[hidden] { display: none; }
 .mrow[hidden] { display: none; }
 #t-fixed[hidden] { display: none; }
+
+/* ---------- resizable layout ---------- */
+.splitter { position: absolute; z-index: 15; touch-action: none; }
+.splitter[hidden] { display: none; }
+.splitter.col { top: 0; bottom: 0; width: 8px; margin-left: -4px; cursor: col-resize; }
+.splitter.row { left: 0; right: 0; height: 8px; margin-top: -4px; cursor: row-resize; }
+.splitter::after { content: ""; position: absolute; background: var(--accent); opacity: 0; transition: opacity .15s; border-radius: 2px; }
+.splitter.col::after { top: 0; bottom: 0; left: calc(50% - 1px); width: 2px; }
+.splitter.row::after { left: 0; right: 0; top: calc(50% - 1px); height: 2px; }
+.splitter:hover::after, .splitter.on::after { opacity: .7; }
+.splitter.row::before { content: ""; position: absolute; left: calc(50% - 18px); top: calc(50% - 2px); width: 36px; height: 4px; border-radius: 2px; background: #3a4a56; }
+.splitter.col::before { content: ""; position: absolute; top: calc(50% - 18px); left: calc(50% - 2px); width: 4px; height: 36px; border-radius: 2px; background: #3a4a56; }
+.stage[data-focus]:not([data-focus=""]) > .splitter { display: none; }
+
+/* ---------- fixed light pad ---------- */
+.lightpad { position: absolute; left: 14px; bottom: 14px; width: 74px; padding: 6px 6px 4px; z-index: 4;
+  background: rgba(14,19,23,.72); border: 1px solid var(--line); border-radius: 10px; touch-action: none; cursor: crosshair; user-select: none; -webkit-user-select: none; }
+.lightpad[hidden] { display: none; }
+.lightpad .ball { position: relative; display: block; width: 60px; height: 60px; border-radius: 50%; border: 1px solid #3a4a56; }
+.lightpad .lamp { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: var(--sand);
+  border: 2px solid #0e1317; box-shadow: 0 0 8px rgba(232,200,114,.8); pointer-events: none; }
+.lightpad small { display: block; text-align: center; color: var(--muted); font-size: 10px; margin-top: 2px; }
+.seg button.flip { border-left: 1px solid var(--line); border-radius: 0 6px 6px 0; margin-left: 2px; }
+.seg button.flip.on { border-radius: 6px; }
+@media (max-width: 820px) { .lightpad { left: auto; bottom: auto; top: 8px; right: 8px; } }

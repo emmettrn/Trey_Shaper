@@ -23,7 +23,10 @@ const ANCHOR_LIMIT = { outline: 6, rocker: 4, thickness: 2, swallow: 3 };   // m
 const ANCHOR_GAP = 0.75;                                         // min spacing between anchors / pinned points
 const GRID = 513;                                                // samples of a slice's deck / bottom offset curve
 // What a cross-section slice may adjust, and by how much at most (added to the board-wide value there)
-const ADJ = { rail_apex: 0.45, rail_apex_in: 1.5, rail_fullness: 1, deck_dome: 1, rail_hardness: 1, concave: 0.5, double: 0.5, vee: 0.5 };
+const ADJ = { rail_apex: 0.45, rail_apex_in: 1.5, rail_fullness: 1, deck_dome: 1, rail_hardness: 1, concave: 0.5, double: 0.5, vee: 0.5,
+  apex_deck_angle: 80, apex_deck_arm: 0.45, apex_bottom_angle: 80, apex_bottom_arm: 0.45 };
+const PINCH_MAX = 80;                                            // apex arm angle, degrees in from upright: 0 = upright, 80 = nearly a knife edge
+const ARM_MAX = 0.45;                                            // apex arm length, fraction of the height that side spans
 // Bottom contour stations: what each type puts into the three channels [single concave, double concave, vee]
 const BOTTOM_TYPES = {
   flat: () => [0, 0, 0], concave: (a) => [a, 0, 0], roll: (a) => [-a, 0, 0], double: (a) => [0, a, 0],
@@ -555,6 +558,9 @@ function sectionShape(p, x, d, t) {
     eb: 2 + 6 * clip(railHardness(p, x) + g('rail_hardness'), 0, 1),
     dome: clip(p.deck_dome + g('deck_dome'), 0, 1),
     con, dbl, vee: clip(v0 + g('vee'), 0, 0.75),
+    // the rail apex arms (slices only): angle in from upright (degrees) and length (fraction of the height that side spans)
+    pd: clip(g('apex_deck_angle'), 0, PINCH_MAX), ld: clip(g('apex_deck_arm'), 0, ARM_MAX),
+    pb: clip(g('apex_bottom_angle'), 0, PINCH_MAX), lb: clip(g('apex_bottom_arm'), 0, ARM_MAX),
   };
 }
 /**
@@ -570,7 +576,8 @@ function apexRatio(a, t) {
 export function sectionBase(p, x) {
   const [c0, d0, v0] = bottomAt(p, x);
   return { rail_apex: p.rail_apex, rail_apex_in: p.rail_apex_in ?? 0, rail_fullness: p.rail_fullness, deck_dome: p.deck_dome,
-    rail_hardness: railHardness(p, x), concave: c0, double: d0, vee: v0 };
+    rail_hardness: railHardness(p, x), concave: c0, double: d0, vee: v0,
+    apex_deck_angle: 0, apex_deck_arm: 0, apex_bottom_angle: 0, apex_bottom_arm: 0 };
 }
 const gridAt = (row, eta) => {
   const f = eta * (GRID - 1), i0 = Math.min(Math.floor(f), GRID - 2);
@@ -678,6 +685,52 @@ const S_RHO = new Float64Array(K), S_NY = new Float64Array(K), S_NZ = new Float6
 const ZERO_ROW = new Float64Array(GRID);
 
 /**
+ * The rail apex arms. On each side of the apex (deck above, bottom below) an arm of length
+ * l (in inches: the fraction times the height that side spans) leaves the apex at an angle
+ * in from upright. Near the apex the rail is replaced by a cubic Bezier: from the apex A,
+ * with its first control point along the arm, A + l (-sin a, +-cos a), to the point J where
+ * the plain rail is 2 l up (or down) from the apex, arriving along the rail's own direction
+ * there (second control point J - |AJ|/3 T). So it leaves the apex along the arm and joins
+ * the rail level and smooth. The control points climb in height, so the curve has one width
+ * per height. The apex stays on the outline (the width is untouched), nothing passes the
+ * outline or the stringer, and beyond J nothing changes. Upright with no length = no change.
+ */
+const BZ = 48, BZY = new Float64Array(BZ + 1), BZU = new Float64Array(BZ + 1);
+function pinchRail(sh, zApex, td, tb, yi, hi, Y, Z) {
+  for (const [deg, frac, span, deck] of [[sh.pd, sh.ld, td, true], [sh.pb, sh.lb, tb, false]]) {
+    const l = frac * span;
+    if (!(l > 1e-4) || !(span > 1e-4)) continue;
+    const step = deck ? -1 : 1, k0 = deck ? KA - 1 : KA, kEnd = deck ? -1 : K;
+    let R = 2 * l, j = -1;
+    for (let k = k0 + step; k !== kEnd; k += step) if (Math.abs(Z[k] - zApex) >= R) { j = k; break; }
+    if (j < 0) continue;                                  // the rail never gets that far (cannot happen while 2 l < span)
+    // J between samples j - step and j, and the rail's direction there (away from the apex)
+    const i = j - step, ui = Math.abs(Z[i] - zApex), uj = Math.abs(Z[j] - zApex);
+    const f = uj > ui ? (R - ui) / (uj - ui) : 1;
+    const Jy = Y[i] + f * (Y[j] - Y[i]);
+    let ty = Y[j] - Y[i], tu = uj - ui;
+    const tl = Math.hypot(ty, tu) || 1; ty /= tl; tu /= tl;
+    const a = (clip(deg, 0, PINCH_MAX) * Math.PI) / 180;
+    const p1y = hi - l * Math.sin(a), p1u = l * Math.cos(a);
+    const c = Math.hypot(hi - Jy, R) / 3;                // second arm: a third of the way from the apex to J, along the rail's direction
+    const p2y = Math.min(Jy - c * ty, hi), p2u = clip(R - c * tu, p1u, R);
+    for (let n = 0; n <= BZ; n++) {
+      const t = n / BZ, s1 = 1 - t, b0 = s1 * s1 * s1, b1 = 3 * s1 * s1 * t, b2 = 3 * s1 * t * t, b3 = t * t * t;
+      BZY[n] = b0 * hi + b1 * p1y + b2 * p2y + b3 * Jy;
+      BZU[n] = b1 * p1u + b2 * p2u + b3 * R;
+    }
+    Y[k0] = hi; Z[k0] = zApex;                            // the sample nearest the apex sits on it, so a sharp pinch keeps the full width
+    let n = 0;
+    for (let k = k0 + step; k !== j; k += step) {                // the samples between the apex and J take the Bezier's width at their height
+      const u = Math.abs(Z[k] - zApex);
+      while (n < BZ - 1 && BZU[n + 1] < u) n++;
+      const du = BZU[n + 1] - BZU[n], w = du > 1e-12 ? clip((u - BZU[n]) / du, 0, 1) : 0;
+      Y[k] = clip(BZY[n] + w * (BZY[n + 1] - BZY[n]), yi, hi);
+    }
+  }
+}
+
+/**
  * One cross section, densely sampled, into Y / Z. With offset rows (a slice's anchor
  * points, blended to this position) every point is moved along the normal of the section
  * there by thickness x row(rho), rho = its arc-length position between the stringer (0)
@@ -698,6 +751,7 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
       : zApex - tb * TH_SIN[k] ** (2 / e) + con * (1 - eta * eta) ** 2 + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 - vee * (1 - eta);
     Y[k] = yi + (yraw * (hi - yi)) / hs;
   }
+  pinchRail(sh, zApex, td, tb, yi, hi, Y, Z);
   if (!rowD) return sh;
   const RHO = aux ? aux.rho : S_RHO, NY = aux ? aux.ny : S_NY, NZ = aux ? aux.nz : S_NZ;
   RHO[0] = 0;
