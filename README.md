@@ -69,6 +69,20 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## 3D view, sections and layout
+
+- **Rail apex point.** While shaping a cross section (Sections graph, **Edit here**), each rail
+  apex has a point of its own (a ring with up / down ticks). Drag it up or down to set the apex
+  height of that section. It cannot move in or out, because the width belongs to the outline.
+  Double-click it to go back to the board-wide height.
+- **Fixed light.** With Bay lights and Fixed light on, the **Light** pad in the corner of the 3D
+  view moves the lamp: drag the dot (the rim is side-on and raking, the middle lights the board
+  straight on). The ball shows how the light falls. Double-click the pad to reset it.
+- **Bottom up** sits with 3/4, Top, Side and Tail, and turns the board over.
+- **Resizing.** Drag the dividers between the sidebar and the views, between the 3D view and the
+  graphs, and between the graphs. Double-click a divider to put it back. The layout is
+  remembered. On phones the views stack, so there are no dividers.
+
 ## Layout
 
 ```
