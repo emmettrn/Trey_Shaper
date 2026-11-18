@@ -15,7 +15,7 @@ package holds the reference version of the board math, and the tests check that 
 
 ## Try it
 
-Open **https://emmettrn.github.io/trey_shaper/** on a computer, phone or iPad. On a phone you
+Open **https://emmettrn.github.io/Trey_Shaper/** on a computer, phone or iPad. On a phone you
 can add it to the home screen and it works offline.
 
 Use the **Feedback** button in the app to write notes. It copies them, together with the board
