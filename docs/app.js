@@ -1638,12 +1638,37 @@ function drawSections(v, data) {
     const want = clip(snap(wz, 1 / 32), 0.125, 0.97 * hi), ask = (want ** -6 - hi ** -6) ** (-1 / 6);
     sl.adj.rail_apex_in = clip(clip(ask, 0.125, 2) - base, -1.5, 1.5);
   };
-  for (const side of [1, -1]) {
-    v.point(ctx, { x: side * s.h, y: s.apex_in, kind: 'apex', color: COLORS.sand, drag: apexDrag,
+  // Click the apex to show its two arms: one toward the deck, one toward the bottom. Each arm has its own
+  // angle (in from upright) and length, so the two sides can meet at a point for a pinched rail.
+  // Upright arms = a round rail. Double-click an arm to put that side back.
+  const APEX_ID = 'apex', MIN_PX = 16;
+  const sides = { deck: [Math.max(s.t - s.apex_in, 0.05), 1, s.shape.pd, s.shape.ld], bottom: [Math.max(s.apex_in, 0.05), -1, s.shape.pb, s.shape.lb] };
+  const armDrag = (which, rail) => (wx, wz) => {
+    const sl = rawSlice(); if (!sl) return;
+    const [span, up] = sides[which];
+    const inward = -rail * (wx - rail * s.h), along = up * (wz - s.apex_in);      // board inches, from the apex
+    const deg = clip((Math.atan2(Math.max(inward, 0), Math.max(along, 1e-6)) * 180) / Math.PI, 0, 80);
+    sl.adj[`apex_${which}_angle`] = +deg.toFixed(1);
+    sl.adj[`apex_${which}_arm`] = +clip(Math.hypot(Math.max(inward, 0), Math.max(along, 0)) / span, 0.01, 0.45).toFixed(4);
+  };
+  const armReset = (which) => () => { const sl = rawSlice(); if (sl) { delete sl.adj[`apex_${which}_angle`]; delete sl.adj[`apex_${which}_arm`]; } };
+  for (const rail of [1, -1]) {
+    const ax = rail * s.h;
+    v.point(ctx, { x: ax, y: s.apex_in, kind: 'apex', color: COLORS.sand, drag: apexDrag, on: state.pt === APEX_ID,
+      select: () => { state.pt = APEX_ID; },
       remove: () => { const sl = rawSlice(); if (sl) delete sl.adj.rail_apex_in; } });   // double-click: back to the board-wide height
+    if (!prefs.edit || state.pt !== APEX_ID) continue;
+    for (const [which, [span, up, deg, frac]] of Object.entries(sides)) {
+      const a = (deg * Math.PI) / 180, len = (frac > 0 ? frac : 0.3) * span;          // not set yet: show it upright, ready to grab
+      const dx = -rail * Math.sin(a), dz = up * Math.cos(a);
+      const px = Math.hypot(dx * len * v.s, dz * len * v.s * v.vex), k = px < MIN_PX ? MIN_PX / Math.max(px, 1e-6) : 1;
+      const ex = ax + dx * len * k, ez = s.apex_in + dz * len * k;
+      v.point(ctx, { x: ex, y: ez, kind: 'arm', color: COLORS.sand, ax, ay: s.apex_in, drag: armDrag(which, rail), remove: armReset(which) });
+      if (rail < 0 && v.w > 300) v.text(ctx, `${which} ${frac > 0 ? `${Math.round(deg)}°` : 'round'}`, v.X(ex) + 8, v.Y(ez) + (up > 0 ? -4 : 12), COLORS.sand, 'left');
+    }
   }
   sectionCaption(v, ctx, data, s, SLICE_COLOR);
-  tip(v, ctx, raw.deck.length || raw.bottom.length ? 'drag a point · drag its arms to blend · double-click removes' : 'drag the rail apex up or down · click the deck, rail or bottom line to add a point');
+  tip(v, ctx, raw.deck.length || raw.bottom.length ? 'drag a point · drag its arms to blend · double-click removes' : 'rail apex: drag up or down, click it for its arms (angle them in to pinch the rail) · click a line to add a point');
 }
 
 const views2d = {
