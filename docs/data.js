@@ -11,6 +11,7 @@ export const DEFAULTS = {
   "tail_width_12": 14.5,
   "tail_block_width": 10.0,
   "swallow_depth": 4.5,
+  "swallow_tip": 1.0,
   "swallow_width": 5.0,
   "nose_rocker": 5.0,
   "nose_rocker_12": 2.1875,
@@ -28,6 +29,7 @@ export const DEFAULTS = {
   "deck_dome": 0.35,
   "rail_hardness_nose": 0.25,
   "rail_hardness_tail": 0.85,
+  "rail_tuck": 0.5,
   "concave_depth": 0.12,
   "vee_depth": 0.0,
   "lock_volume": false,
@@ -456,6 +458,20 @@ export const GROUPS = [
             "swallow"
           ]
         }
+      },
+      {
+        "key": "swallow_tip",
+        "label": "Swallow tips",
+        "min": 0,
+        "max": 1,
+        "step": 0.01,
+        "unit": "frac",
+        "help": "0 = each side comes to a point, 1 = rounded tips",
+        "show_if": {
+          "tail_type": [
+            "swallow"
+          ]
+        }
       }
     ]
   },
@@ -597,6 +613,15 @@ export const GROUPS = [
         "max": 1,
         "step": 0.01,
         "unit": "frac"
+      },
+      {
+        "key": "rail_tuck",
+        "label": "Edge tuck",
+        "min": 0,
+        "max": 1,
+        "step": 0.01,
+        "unit": "frac",
+        "help": "with a hard rail edge: how far the edge sits in under the rail apex (0 = right under it, 1 = well tucked)"
       }
     ]
   },

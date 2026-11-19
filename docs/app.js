@@ -1,10 +1,10 @@
 import * as THREE from 'three';
-import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, toolOutline } from './geometry.js';
 import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js';
-import { traceFrame, traceHalf, tracePoints, fitOutline, pchip } from './trace.js';
+import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js';
 
 const $ = (s) => document.querySelector(s);
 const state = {
@@ -12,6 +12,7 @@ const state = {
   dirty: false, busy: false, wire: false, stringer: true, fitted: false,
   sel: null,      // id of the cross-section slice being edited, or null while rolling through the board
   tool: null,     // id of the concave tool being shaped on the Plan graph, or null
+  toolPt: null,   // the point of that tool's edge whose arms are showing
   scrub: null,    // where the Sections view is looking, inches from the tail (null = the wide point)
   pt: null,       // the anchor point whose handle arms are showing
   flip: false,    // 3D view: board turned bottom up
@@ -105,11 +106,7 @@ function buildStationTable() {
         <tbody></tbody>
       </table>
       <div class="wp-row"><span>Wide point</span><input class="cell" id="wp-offset" type="text" spellcheck="false" aria-label="Wide point from center"><span class="unit">from center (+ = nose)</span></div>
-      <div class="marks-box">
-        <div class="mrow mhead"><span>at</span><span>from</span><span>width</span><span>rocker</span><span>thick</span><span></span></div>
-        <div class="marks-rows" id="marks-rows"></div>
-        <div class="bottom-actions"><button class="ghost" id="mark-add" title="Hold the width, rocker and / or thickness at any other spot along the board">+ Add a measurement</button></div>
-      </div>
+      <div class="bottom-actions"><button class="ghost" id="mark-add" title="Add a row to the table: hold the width, rocker and / or thickness at any other spot along the board">+ Add a measurement</button></div>
       <label class="toggle fix"><input type="checkbox" id="fix-dims"><span>Fix dimensions <small>only anchor points can be dragged on the graphs</small></span></label>
       <div class="help">Inches, fractions OK: 19 3/4. Leave a box blank and it is worked out from the rest of the board (shown as ~). Rocker is bottom height above a flat table.</div>
     </div>`;
@@ -119,8 +116,10 @@ function buildStationTable() {
   fix.checked = prefs.fix;
   fix.addEventListener('change', () => { prefs.fix = fix.checked; savePrefs(); drawPanels(); });
   const body = det.querySelector('tbody');
-  for (const row of t.rows) {
+  marksUI.body = body;
+  for (const [ri, row] of t.rows.entries()) {
     const tr = document.createElement('tr');
+    tr.dataset.std = ri;                                 // a standard station: nose tip, 12" from nose, wide point, 12" from tail, tail end
     tr.innerHTML = `<th>${row.label}</th>`;
     for (let spec of row.cells) {
       if (typeof spec === 'string') spec = { key: spec };
@@ -154,6 +153,7 @@ const marksUI = { els: [] };
 const markX = (r, L) => posToX(r, L);
 /* "From" boxes: the nose, the tail, or the center. From the center the number is kept signed
    (+ toward the nose, - toward the tail) but shown as two choices, ahead of / behind center. */
+const fromOf = (f) => (FROM.includes(f) ? f : 'tail');
 const fromKey = (r) => (r.from === 'center' ? (r.pos < 0 ? 'back' : 'fwd') : r.from);
 const showPos = (r) => Math.abs(r.pos);
 /** Set from a "from" box: keep the spot's number, flip its sign for behind center. */
@@ -183,20 +183,17 @@ function addMark() {
 
 /** Rebuild the rows (nose first). Only on structural changes, so typing never loses focus. */
 function renderMarks() {
-  const P = state.params, L = P.length, box = $('#marks-rows');
-  if (!box) return;
-  P.marks.sort((p, q) => markX(q, L) - markX(p, L));
-  box.innerHTML = '';
+  const P = state.params, body = marksUI.body;
+  if (!body) return;
+  body.querySelectorAll('tr.mark').forEach((tr) => tr.remove());
   marksUI.els = [];
   for (const r of P.marks) {
-    const el = document.createElement('div');
-    el.className = 'mrow';
-    el.innerHTML = `<input class="cell pos" type="text" spellcheck="false" aria-label="Position in inches">
-      <select class="from" aria-label="Measured from" title="from the nose, the tail, or ahead of (▲) / behind (▼) center">${FROM_SHORT}</select>
-      <input class="cell" data-k="width" type="text" spellcheck="false" aria-label="Width">
-      <input class="cell" data-k="rocker" type="text" spellcheck="false" aria-label="Rocker">
-      <input class="cell" data-k="thickness" type="text" spellcheck="false" aria-label="Thickness">
-      <button class="x" title="Remove this measurement" aria-label="Remove">×</button>`;
+    const el = document.createElement('tr');
+    el.className = 'mark';
+    el.innerHTML = `<th><div class="mlabel"><input class="cell pos" type="text" spellcheck="false" aria-label="Position in inches"><select class="from" aria-label="Measured from" title="from the nose, the tail, or ahead of (▲) / behind (▼) center">${FROM_SHORT}</select><button class="x" title="Remove this measurement" aria-label="Remove">×</button></div></th>
+      <td><input class="cell" data-k="width" type="text" spellcheck="false" aria-label="Width"></td>
+      <td><input class="cell" data-k="rocker" type="text" spellcheck="false" aria-label="Rocker"></td>
+      <td><input class="cell" data-k="thickness" type="text" spellcheck="false" aria-label="Thickness"></td>`;
     const pos = el.querySelector('.pos'), from = el.querySelector('.from');
     from.value = fromKey(r);
     const cells = {};
@@ -204,8 +201,8 @@ function renderMarks() {
       inp.addEventListener('focus', () => inp.select());
       inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
     }
-    pos.addEventListener('change', () => { const v = parseVal(pos.value); if (Number.isFinite(v)) setPos(r, clip(Math.abs(v), 0, 143)); marksChanged(false); });
-    from.addEventListener('change', () => { setFrom(r, from.value); marksChanged(false); });
+    pos.addEventListener('change', () => { const v = parseVal(pos.value); if (Number.isFinite(v)) setPos(r, clip(Math.abs(v), 0, 143)); marksChanged(false); orderTable(); });
+    from.addEventListener('change', () => { setFrom(r, from.value); marksChanged(false); orderTable(); });
     for (const inp of el.querySelectorAll('[data-k]')) {
       const key = inp.dataset.k;
       cells[key] = inp;
@@ -216,10 +213,20 @@ function renderMarks() {
       });
     }
     el.querySelector('.x').addEventListener('click', () => { dropFrom(P.marks, r); state.pt = null; marksChanged(true); });
-    box.appendChild(el);
+    body.appendChild(el);
     marksUI.els.push({ r, el, pos, cells });
   }
-  $('.marks-box .mhead').hidden = !P.marks.length;
+  orderTable();
+}
+
+/** Keep the table in order nose to tail: the added rows sit between the standard stations where they belong. */
+function orderTable() {
+  const body = marksUI.body; if (!body) return;
+  const L = have('length'), xw = L / 2 + (have('wide_point_offset') || 0);
+  const stdX = [L, L - 12, xw, 12, 0];
+  const rows = [...body.children].map((tr) => ({ tr, x: tr.dataset.std !== undefined ? stdX[+tr.dataset.std] ?? 0 : markX(marksUI.els.find((m) => m.el === tr)?.r ?? { pos: 0, from: 'tail' }, L), std: tr.dataset.std !== undefined }));
+  const want = [...rows].sort((a, b) => b.x - a.x || (a.std ? -1 : 1));
+  if (want.some((q, i) => q.tr !== body.children[i])) for (const q of want) body.appendChild(q.tr);
 }
 
 /** Show each row's numbers, and in the blank boxes what the board measures there. */
@@ -237,6 +244,7 @@ function syncMarks(data) {
     el.classList.toggle('off', !used);
     el.title = used ? '' : 'Not used: too close to the tip or to another measurement';
   }
+  orderTable();
 }
 
 /* Bottom contours along the board: a short list of stations ("1/16 concave 12 from the nose,
@@ -300,6 +308,8 @@ function renderBottomTable() {
       <button class="x" title="Remove this station" aria-label="Remove">×</button>
       <div class="line3"><span>until</span><input class="cell pos2" type="text" spellcheck="false" aria-label="Until, inches"><span>″</span>
         <select class="from2" aria-label="Until, measured from">${FROM_LONG}</select><button class="x x2" title="Just this spot, not a stretch" aria-label="Remove until">×</button></div>
+      <div class="line4"><div class="trow where"><span>deepest</span><input class="cell p3" spellcheck="false" aria-label="Deepest at, inches"><span>″</span><select class="f3" aria-label="Measured from">${FROM_LONG}</select></div>
+        <div class="trow blends">${BLEND_ROW}</div></div>
       <div class="line2"><select class="type" aria-label="Contour">${BOTTOM_OPTIONS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
         <input class="cell d1" type="text" spellcheck="false"><input class="cell d2" type="text" spellcheck="false">
         <button class="ghost until" title="Make this a stretch: the same contour from here until another spot">until…</button></div>`;
@@ -312,11 +322,13 @@ function renderBottomTable() {
       q('.d1').title = `${names[0] || ''} depth, inches`; q('.d2').title = `${names[1] || ''} depth, inches`;
       q('.d1').setAttribute('aria-label', q('.d1').title); q('.d2').setAttribute('aria-label', q('.d2').title);
       q('.pos').value = fracIn(showPos(r));
-      q('.line3').hidden = !r.to; q('.until').hidden = !!r.to;
+      q('.line3').hidden = !r.to; q('.until').hidden = !!r.to; q('.line4').hidden = !r.to;
+      if (r.to) paintDeep(q, r, state.board?.params.bottom?.stretches?.find((S) => S.pos === r.pos && S.from === fromOf(r.from) && S.to.pos === r.to.pos), L);
       if (r.to) { q('.pos2').value = fracIn(showPos(r.to)); q('.from2').value = fromKey(r.to); }
     };
     q('.from').value = fromKey(r); q('.type').value = r.type;
     paint();
+    el._paint = paint;
     const numeric = (sel, key, lo, hi) => {
       const inp = q(sel);
       inp.addEventListener('focus', () => inp.select());
@@ -341,7 +353,8 @@ function renderBottomTable() {
       r.to = x2 > L / 2 ? { pos: snap(L - x2, 1), from: 'nose' } : { pos: snap(x2, 1), from: 'tail' };
       paint(); bottomChanged(false);
     });
-    q('.x2').addEventListener('click', () => { delete r.to; paint(); bottomChanged(false); });
+    q('.x2').addEventListener('click', () => { delete r.to; delete r.deep; delete r.blendNose; delete r.blendTail; paint(); bottomChanged(false); });
+    wireDeep(q, r, paint, () => bottomChanged(false));
     q('.type').addEventListener('change', () => { r.type = q('.type').value; paint(); bottomChanged(false); });
     q('.x').addEventListener('click', () => { dropFrom(P.bottom, r); bottomChanged(true); });
     box.appendChild(el);
@@ -352,6 +365,37 @@ function renderBottomTable() {
 }
 
 
+
+/* "Deepest at" and the two blend sliders, shared by the concave tools and the contour stretches. */
+const BLEND_ROW = `<label title="How the depth eases out toward the nose: left = holds full depth to the end, right = eases all the way from the deepest spot">blend → nose<input type="range" class="bn" min="0" max="1" step="0.05"></label>
+  <label title="How the depth eases out toward the tail: left = holds full depth to the end, right = eases all the way from the deepest spot">blend → tail<input type="range" class="bt" min="0" max="1" step="0.05"></label>`;
+function paintDeep(q, r, made, L) {
+  const live = (el) => document.activeElement === el;
+  if (!live(q('.p3'))) q('.p3').value = r.deep ? fracIn(showPos(r.deep)) : '';
+  q('.f3').value = r.deep ? fromKey(r.deep) : 'nose';
+  if (made && L && !r.deep) {                            // worked out: show where it is, from the nose
+    const xd = made.xd ?? (made.x0 + made.x1) / 2;
+    q('.p3').placeholder = `~${fracIn(L - xd)}`; q('.f3').value = 'nose';
+  } else q('.p3').placeholder = 'auto';
+  for (const [cls, key, def] of [['.bn', 'blendNose', made?.blendNose ?? made?.bn ?? 0], ['.bt', 'blendTail', made?.blendTail ?? made?.bt ?? 0]]) {
+    const el = q(cls), v = Number.isFinite(r[key]) ? r[key] : def;
+    if (!live(el)) el.value = v;
+    el.style.setProperty('--pct', `${v * 100}%`);
+  }
+}
+function wireDeep(q, r, paint, changed) {
+  const set = () => {
+    const v = parseVal(q('.p3').value);
+    if (q('.p3').value.trim() === '') delete r.deep;
+    else if (Number.isFinite(v)) { r.deep = { pos: Math.abs(v), from: 'tail' }; setFrom(r.deep, q('.f3').value); }
+    paint(); changed();
+  };
+  q('.p3').addEventListener('change', set);
+  q('.p3').addEventListener('focus', () => q('.p3').select());
+  q('.f3').addEventListener('change', () => { if (r.deep) setFrom(r.deep, q('.f3').value); else if (q('.p3').placeholder.startsWith('~')) { r.deep = { pos: parseVal(q('.p3').placeholder.slice(1)), from: 'nose' }; setFrom(r.deep, q('.f3').value); } paint(); changed(); });
+  for (const [cls, key] of [['.bn', 'blendNose'], ['.bt', 'blendTail']])
+    q(cls).addEventListener('input', () => { r[key] = +q(cls).value; q(cls).style.setProperty('--pct', `${r[key] * 100}%`); changed(); });
+}
 /* Concave tools: hard-edged concaves (tear drop, straight edges, venturi), single or double,
    between two spots on the board. Each has a box here with its numbers; "Shape it" puts it
    on the Plan graph to drag its ends and edges. */
@@ -405,13 +449,18 @@ function renderTools() {
         <label data-for="ridge">ridge<input class="cell n" data-k="ridge" spellcheck="false"></label>
         <label data-for="double">edges<select class="edge">${opt({ hard: 'hard both sides', rail: 'hard on the rail side' })}</select></label>
       </div>
+      <div class="trow where"><span>deepest</span><input class="cell p3" spellcheck="false" aria-label="Deepest at, inches"><span>″</span><select class="f3" aria-label="Measured from">${FROM_LONG}</select></div>
+      <div class="trow blends">${BLEND_ROW}</div>
       <div class="trow foot"><button class="ghost edit"></button><span class="angle"></span></div>`;
     const q = (sel) => el.querySelector(sel);
     const paint = () => {
+      const made = state.board?.params.tools?.find((m) => m.id === t.id);      // as the board has it (worked-out values)
       q('.shape').value = t.shape; q('.kind').value = t.kind; q('.round').value = t.round || 'nose'; q('.edge').value = t.edge || 'hard';
+      paintDeep(q, t, made, state.board?.params.length);
       q('.p1').value = fracIn(showPos(t.start)); q('.f1').value = fromKey(t.start);
       q('.p2').value = fracIn(showPos(t.end)); q('.f2').value = fromKey(t.end);
       for (const inp of el.querySelectorAll('.n')) inp.value = Number.isFinite(t[inp.dataset.k]) ? fracIn(t[inp.dataset.k], inp.dataset.k === 'depth' ? 32 : 16) : '';
+      if (t.shape !== 'straight' && made?.outer && document.activeElement !== q('[data-k="width"]')) q('[data-k="width"]').value = fracIn(2 * Math.max(...made.outer.Y));
       const dbl = t.kind === 'double';
       for (const lab of el.querySelectorAll('[data-for]')) {
         const f = lab.dataset.for;
@@ -438,19 +487,32 @@ function renderTools() {
     q('.f2').addEventListener('change', () => { setFrom(t.end, q('.f2').value); paint(); toolsChanged(false); });
     for (const inp of el.querySelectorAll('.n')) inp.addEventListener('change', () => {
       const v = parseVal(inp.value), k = inp.dataset.k;
-      if (Number.isFinite(v)) t[k] = clip(Math.abs(v), 0, k === 'depth' ? 0.75 : 40);
+      const made = state.board?.params.tools?.find((m) => m.id === t.id);
+      if (Number.isFinite(v) && k === 'width' && made?.outer) {              // the widest: scale the whole edge to it
+        const now = 2 * Math.max(...made.outer.Y), f = now > 0 ? Math.abs(v) / now : 1;
+        if (!Array.isArray(t.outer)) t.outer = made.outer.pts.map((pq) => [...pq]);
+        for (const pq of t.outer) { pq[1] *= f; if (Number.isFinite(pq[3])) pq[3] *= f; if (Number.isFinite(pq[4])) pq[4] *= f; }
+        t.width = Math.abs(v);
+      } else if (Number.isFinite(v)) t[k] = clip(Math.abs(v), 0, k === 'depth' ? 0.75 : 40);
       paint(); toolsChanged(false);
     });
+    wireDeep(q, t, paint, () => toolsChanged(false));
     q('.shape').addEventListener('change', () => {               // a new shape starts from that shape's own defaults, at the same spot
       const keep = { id: t.id, kind: t.kind, start: t.start, end: t.end, depth: t.depth, edge: t.edge };
       const W = have('width'), r16 = (v) => Math.round(v * 16) / 16, sh = q('.shape').value;
       for (const k of Object.keys(t)) delete t[k];
       Object.assign(t, keep, { shape: sh }, sh === 'teardrop' ? { width: r16(0.62 * W), round: 'nose' } : sh === 'straight' ? { w1: r16(0.55 * W), w2: r16(0.45 * W), ridge: 2 }
         : { outer: [[0, r16(0.5 * W)], [0.55, r16(0.4 * W)], [1, r16(0.62 * W)]], inner: [[0, 2.5], [1, 3.5]] });
+      state.toolPt = null;
       paint(); toolsChanged(false);
     });
     q('.kind').addEventListener('change', () => { t.kind = q('.kind').value; paint(); toolsChanged(false); });
-    q('.round').addEventListener('change', () => { t.round = q('.round').value; toolsChanged(false); });
+    q('.round').addEventListener('change', () => {                // a fresh tear drop turned the other way, the same width
+      const made = state.board?.params.tools?.find((m) => m.id === t.id);
+      if (made?.outer) t.width = 2 * Math.max(...made.outer.Y);
+      t.round = q('.round').value; delete t.outer; delete t.inner; delete t.deep; state.toolPt = null;
+      toolsChanged(false);
+    });
     q('.edge').addEventListener('change', () => { t.edge = q('.edge').value; toolsChanged(false); });
     q('.x').addEventListener('click', () => { dropFrom(P.tools, t); if (state.tool === t.id) state.tool = null; toolsChanged(true); });
     q('.edit').addEventListener('click', () => {
@@ -497,32 +559,66 @@ function drawTools(v, ctx, data) {
   pt({ x: tool.x1, y: 0, kind: 'slice', color: TOOL_COL, drag: (wx) => setX(frontIsStart ? 'start' : 'end', wx) });
   pt({ x: tool.x0, y: 0, kind: 'slice', color: TOOL_COL, drag: (wx) => setX(frontIsStart ? 'end' : 'start', wx) });
   const yOf = (wy) => Math.abs(wy);
-  if (tool.shape === 'teardrop') {
-    const u = tool.round === 'nose' ? 1 / 3 : 2 / 3, x = tool.x1 - u * tool.len;
-    pt({ x, y: lerpAt(editing.pts.map((q) => q.x).reverse(), editing.pts.map((q) => q.e).reverse(), x), kind: 'anchor', color: TOOL_COL, drag: (wx, wy) => { raw.width = clip(2 * yOf(wy), 1, W); } });
-  } else if (tool.shape === 'straight') {
+  // the deepest spot: a small triangle on the stringer, dragged along the board
+  pt({ x: tool.xd, y: 0, kind: 'scrub', color: COLORS.sand, drag: (wx) => {
+    const x = clip(snap(wx, 0.25), tool.x0, tool.x1);
+    raw.deep = x > L / 2 ? { pos: L - x, from: 'nose' } : { pos: x, from: 'tail' };
+  } });
+  if (tool.shape === 'straight') {
     const [kf, kb] = frontIsStart ? ['w1', 'w2'] : ['w2', 'w1'];
     pt({ x: tool.x1, y: tool[frontIsStart ? 'w1' : 'w2'] / 2, kind: 'anchor', color: TOOL_COL, drag: (wx, wy) => { raw[kf] = clip(2 * yOf(wy), 0.5, W); } });
     pt({ x: tool.x0, y: tool[frontIsStart ? 'w2' : 'w1'] / 2, kind: 'anchor', color: TOOL_COL, drag: (wx, wy) => { raw[kb] = clip(2 * yOf(wy), 0.5, W); } });
     if (tool.kind === 'double') pt({ x: (tool.x0 + tool.x1) / 2, y: tool.ridge / 2, kind: 'anchor', color: TOOL_COL2, drag: (wx, wy) => { raw.ridge = clip(2 * yOf(wy), 0, W); } });
   } else {
-    // venturi: points along each edge; t runs 0 at the nose end to 1 at the tail end
-    for (const [key, col, list] of [['outer', TOOL_COL, tool.outer], ...(tool.kind === 'double' ? [['inner', TOOL_COL2, tool.inner]] : [])]) {
-      if (!Array.isArray(raw[key])) raw[key] = list.pts.map((q) => [...q]);
+    // tear drop and venturi: points along each edge, with arms like the outline's. A point is
+    // [t, width, angle, left arm, right arm]; t runs 0 at the nose end to 1 at the tail end.
+    const edges = [['outer', TOOL_COL, tool.outer]];
+    if (tool.kind === 'double' && (tool.inner || tool.shape === 'venturi')) edges.push(['inner', TOOL_COL2, tool.inner]);
+    else if (tool.kind === 'double' && tool.shape === 'teardrop')
+      v.text(ctx, 'the ridge of a double tear drop follows its edge', v.X((tool.x0 + tool.x1) / 2), v.Y(0) + 14, TOOL_COL2);
+    const len = tool.len, X = (q) => tool.x1 - q[0] * len;
+    for (const [key, col, tab] of edges) {
+      if (!tab) continue;
+      if (!Array.isArray(raw[key]) || raw[key].some((q) => q.length < 2)) raw[key] = tab.pts.map((q) => [...q]);
       const arr = raw[key].sort((a, b) => a[0] - b[0]);
       arr.forEach((a, i) => {
-        const end = i === 0 || i === arr.length - 1, lo = i > 0 ? arr[i - 1][0] + 0.03 : 0, hi = i < arr.length - 1 ? arr[i + 1][0] - 0.03 : 1;
-        pt({ x: tool.x1 - a[0] * tool.len, y: a[1] / 2, kind: 'anchor', color: col,
-          drag: (wx, wy) => { if (!end) a[0] = clip((tool.x1 - wx) / tool.len, lo, hi); a[1] = clip(2 * yOf(wy), key === 'inner' ? 0 : 0.5, W); },
+        const end = i === 0 || i === arr.length - 1, lo = i > 0 ? arr[i - 1][0] + 0.02 : 0, hi = i < arr.length - 1 ? arr[i + 1][0] - 0.02 : 1;
+        pt({ x: X(a), y: a[1] / 2, kind: 'anchor', color: col, on: state.toolPt === a, select: () => { state.toolPt = a; },
+          drag: (wx, wy) => { if (!end) a[0] = clip((tool.x1 - wx) / len, lo, hi); a[1] = clip(2 * yOf(wy), 0, W); },
           remove: end || arr.length <= 2 ? null : () => dropFrom(arr, a) });
+        if (state.toolPt !== a) return;
+        // its arms: one direction (so the edge stays smooth), each side its own length
+        const tabPt = tab.pts.find((q) => Math.abs(q[0] - a[0]) < 1e-6) || a;
+        const gapL = i > 0 ? (a[0] - arr[i - 1][0]) * len : 0, gapR = i < arr.length - 1 ? (arr[i + 1][0] - a[0]) * len : 0;
+        const ang = Number.isFinite(a[2]) ? a[2] : (() => {           // automatic: along the curve there
+          const k = tab.X.findIndex((xx) => xx >= a[0] * len), j = clip(k, 1, tab.X.length - 1);
+          return Math.atan2(tab.Y[j] - tab.Y[j - 1], Math.max(tab.X[j] - tab.X[j - 1], 1e-6)) * 180 / Math.PI;
+        })();
+        const th = (ang * Math.PI) / 180, px = X(a), py = a[1] / 2;
+        for (const side of [-1, 1]) {
+          const gap = side < 0 ? gapL : gapR;
+          if (!(gap > 0)) continue;
+          const len0 = Number.isFinite(a[side < 0 ? 3 : 4]) ? a[side < 0 ? 3 : 4] : gap / 3;
+          const ex = px - side * len0 * Math.cos(th), ey = py + side * len0 * Math.sin(th);
+          v.point(ctx, { x: ex, y: ey, kind: 'arm', color: col, ax: px, ay: py, tool: true,
+            drag: (wx, wy) => {
+              const dX = -(wx - px) * side, dY = (yOf(wy) - py) * side;          // back along the tool's own direction
+              if (Math.hypot(dX, dY) < 0.05) return;
+              while (a.length < 5) a.push(null);
+              a[2] = clip(Math.atan2(dY, Math.max(dX, 0)) * 180 / Math.PI, -90, 90);
+              a[side < 0 ? 3 : 4] = clip(Math.hypot(wx - px, yOf(wy) - py), 0.05, 0.98 * gap);
+            },
+            remove: () => { a.length = 2; } });
+        }
+        void tabPt;
       });
       const ys = editing.pts.map((q) => (key === 'outer' ? q.e : q.r)), xs2 = editing.pts.map((q) => q.x);
       H.push({
         dist: (wx, wy) => { let best = Infinity; for (let i = 0; i < xs2.length; i++) best = Math.min(best, Math.hypot(v.X(xs2[i]) - v.X(wx), v.Y(ys[i]) - v.Y(Math.abs(wy)))); return best; },
         add: (wx, wy) => {
-          const a = [clip((tool.x1 - wx) / tool.len, 0.03, 0.97), clip(2 * yOf(wy), 0.5, W)];
-          arr.push(a);
-          return { fn: (x, y) => { a[0] = clip((tool.x1 - x) / tool.len, 0.03, 0.97); a[1] = clip(2 * yOf(y), key === 'inner' ? 0 : 0.5, W); }, undo: () => dropFrom(arr, a) };
+          const a = [clip((tool.x1 - wx) / len, 0.02, 0.98), clip(2 * yOf(wy), 0, W)];
+          arr.push(a); state.toolPt = a;
+          return { fn: (x, y) => { a[0] = clip((tool.x1 - x) / len, 0.02, 0.98); a[1] = clip(2 * yOf(y), 0, W); }, undo: () => dropFrom(arr, a) };
         },
       });
     }
@@ -540,6 +636,7 @@ const SECTION_SLIDERS = [
   ['rail_fullness', 'Rail fullness', 0, 1, 0.01, 'frac', 'how much foam the rail carries'],
   ['rail_apex_in', 'Rail apex height', 0.125, 2, 0.0625, 'in', 'up from the flat bottom line'],
   ['rail_hardness', 'Rail edge', 0, 1, 0.01, 'frac', '0 = soft, 1 = hard edge'],
+  ['rail_tuck', 'Edge tuck', 0, 1, 0.01, 'frac', 'with a hard edge: how far it sits in under the apex (or drag the edge point)'],
   ['concave', 'Single concave', -0.5, 0.5, 0.01, 'in', 'below zero = roll (convex)'],
   ['double', 'Double concave', 0, 0.5, 0.01, 'in', ''],
   ['vee', 'Vee', 0, 0.5, 0.01, 'in', ''],
@@ -753,7 +850,7 @@ function applyParams(p, keepSel = null) {
   P.handles = {};
   for (const name of ['outline', 'rocker', 'thickness']) {            // handles on the 12" and center markers
     P.handles[name] = {};
-    for (const key of ['tail12', 'origin', 'nose12']) { const q = hd3(hs[name]?.[key]); if (q) P.handles[name][key] = q; }
+    for (const key of ['tail', 'tail12', 'origin', 'nose12', 'nose']) { const q = hd3(hs[name]?.[key]); if (q) P.handles[name][key] = q; }
   }
   P.marks = (Array.isArray(P.marks) ? P.marks : []).filter((r) => r && Number.isFinite(+r.pos)).map((r) => {      // added measurements
     const m = { pos: +r.pos, from: FROM.includes(r.from) ? r.from : 'tail', width: num(r.width), rocker: num(r.rocker), thickness: num(r.thickness) };
@@ -776,6 +873,8 @@ function applyParams(p, keepSel = null) {
   P.bottom = (Array.isArray(P.bottom) ? P.bottom : []).filter((r) => r && Number.isFinite(+r.pos)).map((r) => ({
     pos: +r.pos, from: FROM.includes(r.from) ? r.from : 'tail', type: BOTTOM_LABELS[r.type] ? r.type : 'flat',
     ...(r.to && Number.isFinite(+r.to.pos) ? { to: { pos: +r.to.pos, from: FROM.includes(r.to.from) ? r.to.from : 'tail' } } : {}),
+    ...(r.deep && Number.isFinite(+r.deep.pos) ? { deep: { pos: +r.deep.pos, from: FROM.includes(r.deep.from) ? r.deep.from : 'tail' } } : {}),
+    ...(Number.isFinite(+r.blendNose) ? { blendNose: clip(+r.blendNose, 0, 1) } : {}), ...(Number.isFinite(+r.blendTail) ? { blendTail: clip(+r.blendTail, 0, 1) } : {}),
     depth: clip(+r.depth || 0, 0, 0.75), depth2: clip(+r.depth2 || 0, 0, 0.75) }));
   const tseen = new Set();
   P.tools = (Array.isArray(P.tools) ? P.tools : []).filter((t) => t && TOOL_SHAPES[t.shape] && t.start && t.end).map((t) => {
@@ -899,10 +998,9 @@ scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
 const camera = new THREE.PerspectiveCamera(32, 1, 0.5, 2000);
 camera.position.set(50, 45, 70);
-// Trackball: the board turns freely all the way around in every direction (right side up,
-// bottom up, end over end), not stopping at straight above / below as an orbit would.
-const controls = new TrackballControls(camera, renderer.domElement);
-Object.assign(controls, { rotateSpeed: 2.6, zoomSpeed: 1.1, panSpeed: 0.7, dynamicDampingFactor: 0.14, minDistance: 8, maxDistance: 900 });
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
 const UP = new THREE.Vector3(0, 1, 0);
 
 // Studio lighting: soft key + fill, glossy glassed board.
@@ -1192,10 +1290,21 @@ function resize() {
   renderer.setSize(r.width, r.height);
   camera.aspect = r.width / Math.max(r.height, 1);
   camera.updateProjectionMatrix();
-  controls.handleResize();
   if (state.board && !state.userMoved && !tween) setView(state.view || 'threeq', false);   // keep the board framed until they grab it
 }
-controls.addEventListener('start', () => (state.userMoved = true));
+controls.addEventListener('start', () => { state.userMoved = true; state.orbiting = true; });
+controls.addEventListener('end', () => { state.orbiting = false; });
+// Turning past straight above or below: an orbit stops there, so the board turns over instead
+// (the same as Bottom up), and the drag carries on from the other side.
+let atPole = true;
+controls.addEventListener('change', () => {
+  const a = controls.getPolarAngle(), near = a < 0.05 || a > Math.PI - 0.05;
+  if (near && !atPole && state.orbiting) {
+    state.flip = !state.flip;
+    $('#t-flip').classList.toggle('on', state.flip);
+  }
+  if (near) atPole = true; else if (a > 0.2 && a < Math.PI - 0.2) atPole = false;
+});
 new ResizeObserver(resize).observe(viewport);
 renderer.domElement.addEventListener('pointerdown', () => $('#hint').classList.add('gone'), { once: true });
 setTimeout(() => $('#hint').classList.add('gone'), 12000);
@@ -1597,8 +1706,12 @@ function drawPlan(v, data) {
     v.text(ctx, `${fracIn(2 * y)}″`, v.X(r.x), v.Y(y) - 9, COLORS.sand);
     drawArms(v, ctx, H, r.x, y, armOf(pq.arms.outline, [r.x]), { S0: slopeAt(pq.x, pq.h0, r.x), k: 1, color: COLORS.sand });
   }
-  if (!TAIL_CLOSES.includes(p.tail_type))
-    station(v, ctx, 0, p.tail_block_width / 2, COLORS.warm, (wx, wy) => setParam('tail_block_width', snap(2 * Math.abs(wy), 0.125), 'graph'));
+  // the tail end and the nose tip: their arms set how the outline leaves them (blunter or more pointed)
+  const yTail = lerpAt(x, h, 0);
+  station(v, ctx, 0, yTail, COLORS.warm, TAIL_CLOSES.includes(p.tail_type) ? null : (wx, wy) => setParam('tail_block_width', snap(2 * Math.abs(wy), 0.125), 'graph'), 'p|outline|tail');
+  pinArms('tail', 0, yTail, COLORS.warm);
+  station(v, ctx, L, 0, COLORS.sand, null, 'p|outline|nose');
+  pinArms('nose', L, 0, COLORS.sand);
 
   // anchor points on the outline (shown on both rails, they are one point)
   const dragFn = (a) => (wx, wy) => {
@@ -1896,9 +2009,25 @@ function drawSections(v, data) {
     const inward = -rail * (wx - rail * s.h), along = up * (wz - s.apex_in);      // board inches, from the apex
     const deg = clip((Math.atan2(Math.max(inward, 0), Math.max(along, 1e-6)) * 180) / Math.PI, 0, 80);
     sl.adj[`apex_${which}_angle`] = +deg.toFixed(1);
-    sl.adj[`apex_${which}_arm`] = +clip(Math.hypot(Math.max(inward, 0), Math.max(along, 0)) / span, 0.01, 0.45).toFixed(4);
+    sl.adj[`apex_${which}_arm`] = +clip(Math.hypot(Math.max(inward, 0), Math.max(along, 0)) / span, 0.01, 0.5).toFixed(4);
   };
   const armReset = (which) => () => { const sl = rawSlice(); if (sl) { delete sl.adj[`apex_${which}_angle`]; delete sl.adj[`apex_${which}_arm`]; } };
+  // the hard edge: where the bottom meets the tuck. Drag it in or out (how far it sits in under the apex).
+  if (s.shape.hard > 0.3 && prefs.edit) {
+    const tb = s.apex_in, wt = clip(tb * (0.25 + 1.5 * s.shape.tuck), 0.05, 0.35 * s.h), ey = s.h - wt;
+    let ez = 0, bd = Infinity;
+    s.bottom.y.forEach((yy, i) => { const d0 = Math.abs(yy - ey); if (d0 < bd) { bd = d0; ez = s.bottom.z[i]; } });
+    for (const rail of [1, -1]) {
+      v.point(ctx, { x: rail * ey, y: ez, kind: 'anchor', color: COLORS.warm,
+        drag: (wx) => {
+          const sl = rawSlice(); if (!sl || !state.board) return;
+          const w2 = clip(s.h - Math.abs(wx), 0.05, 0.35 * s.h), tuck = clip((w2 / tb - 0.25) / 1.5, 0, 1);
+          sl.adj.rail_tuck = clip(+(tuck - sectionBase(state.board.params, sl.x).rail_tuck).toFixed(3), -1, 1);
+        },
+        remove: () => { const sl = rawSlice(); if (sl) delete sl.adj.rail_tuck; } });
+      if (rail < 0 && v.w > 300) v.text(ctx, 'edge', v.X(-ey) + 8, v.Y(ez) + 13, COLORS.warm, 'left');
+    }
+  }
   for (const rail of [1, -1]) {
     const ax = rail * s.h;
     v.point(ctx, { x: ax, y: s.apex_in, kind: 'apex', color: COLORS.sand, drag: apexDrag, on: state.pt === APEX_ID,
@@ -2071,6 +2200,7 @@ function render(data) {
   refreshSectionGroup(data);
   syncMarks(data);
   syncTools();
+  bottomUI.rows?.querySelectorAll('.brow').forEach((el) => { if (!el.contains(document.activeElement)) el._paint?.(); });
   syncClearButtons();
   showRing(data, false);
   const s = data.stats;
@@ -2103,7 +2233,7 @@ function render(data) {
    4. "Does this look good?"  yes -> use it, no -> fix the line with points, then use it
    The straightened photo stays behind the Plan graph (Photo button) until the page is reloaded.
    ========================================================================= */
-const TR = { step: 'pick', img: null, mark: { nose: null, tail: null }, L: 72, side: 1, frame: null, rect: null, traces: {}, pts: null, auto: null };
+const TR = { step: 'pick', img: null, mark: { nose: null, tail: null }, L: 72, side: 1, frame: null, rect: null, traces: {}, pts: null, auto: null, arms: { tail: null, nose: null }, cut: null };
 const traceView = new View2D($('#c-trace'), (v) => drawTrace(v));
 Object.assign(traceView, { alwaysEdit: true, self: true });
 const TRACE_COL = '#e8c872';
@@ -2140,12 +2270,13 @@ function traceStep(step) {
       document.createElement('span'), lab, btn('Cancel', closeTrace), go);
     act.children[2].className = 'spacer';
   } else if (step === 'review') {
-    msg.innerHTML = 'Does this look good? The <b>yellow line</b> is the edge it found; the dashed line is its mirror on the other side.';
+    msg.innerHTML = `Does this look good? The <b>yellow line</b> is the edge it found; the dashed line is its mirror on the other side.${TR.cut ? ' It found a <b>swallow</b> cut (the V at the tail).' : ''}`;
     act.append(btn('Back', () => traceStep('mark')), btn('Trace the other side', () => { TR.side = -TR.side; useTrace(); traceStep('review'); }, 'ghost', 'Use the other edge of the board in the photo'),
       Object.assign(document.createElement('span'), { className: 'spacer' }), btn('No, fix it', () => traceStep('fix')), btn('Yes, use it', applyTrace, 'primary'));
   } else if (step === 'fix') {
-    msg.innerHTML = 'Drag a point onto the edge of the board, click the line to add a point, double-click a point to remove it.';
-    act.append(btn('Start over', () => { TR.pts = TR.auto.map((p) => [...p]); traceView.redraw(); }, 'ghost', 'Go back to the line it found'),
+    msg.innerHTML = `Drag a point onto the edge of the board, click the line to add a point, double-click a point to remove it. The <b>end points</b> move too (the length follows: <b id="tr-L">${ftin(traceLen())}</b>), and their <b>arms</b> set how the line leaves the tips.${TR.cut ? ' The dashed V is the swallow cut: drag its two points.' : ''}`;
+    act.append(btn('Start over', () => { TR.pts = TR.auto.map((p) => [...p]); TR.arms = { tail: null, nose: null }; TR.cut = TR.autoCut && { ...TR.autoCut }; traceView.redraw(); }, 'ghost', 'Go back to the line it found'),
+      btn(TR.cut ? 'No swallow cut' : 'Add a swallow cut', () => { TR.cut = TR.cut ? null : { depth: 4, half: 2.5 }; traceStep('fix'); }, 'ghost', 'The tail has a swallow cut (or does not)'),
       Object.assign(document.createElement('span'), { className: 'spacer' }), btn('Cancel', closeTrace), btn('Use this outline', applyTrace, 'primary'));
   }
   requestAnimationFrame(() => traceView.redraw());
@@ -2173,7 +2304,7 @@ function runTrace() {
   const dpx = Math.hypot(nx - tx, ny - ty);
   if (dpx < 20) { toast('The nose and tail marks are too close together.'); return; }
   const ppi = Math.min(24, Math.max(6, 1800 / (L + 4)));
-  const f = traceFrame(L, ppi, Math.max(15, 0.2 * L));
+  const f = traceFrame(L, ppi, Math.max(15, 0.2 * L), 6);       // room past each end to move the nose and tail points
   const e1 = [(nx - tx) / dpx, (ny - ty) / dpx], e2 = [e1[1], -e1[0]], k = (L / dpx) * ppi;    // e2: up in the photo when the nose points right
   const c = document.createElement('canvas');
   c.width = f.width; c.height = f.height;
@@ -2198,17 +2329,25 @@ function runTrace() {
   if (TR.traces[TR.side].contrast < 45) toast('The board and the floor are close in colour, so check the line carefully.');
 }
 function useTrace() {
-  TR.auto = tracePoints(TR.traces[TR.side], TR.L);
+  const tr = TR.traces[TR.side];
+  TR.auto = tracePoints(tr, TR.L);
   TR.pts = TR.auto.map((p) => [...p]);
+  TR.arms = { tail: null, nose: null };
+  TR.cut = tr.notch ? { depth: tr.notch.depth, half: tr.notch.half } : null;
+  TR.autoCut = TR.cut && { ...TR.cut };
 }
+/** The traced line's length now (its tail end and nose tip can be moved while fixing it). */
+const traceLen = () => { const p = [...TR.pts].sort((a, b) => a[0] - b[0]); return p[p.length - 1][0] - p[0][0]; };
 
 function applyTrace() {
   if (!TR.pts) return;
-  const pts = [...TR.pts].sort((a, b) => a[0] - b[0]);
-  const fit = fitOutline(pts, TR.L, state.params, buildBoard, { NOSE_TYPES, TAIL_TYPES });
+  const sorted = [...TR.pts].sort((a, b) => a[0] - b[0]), x0 = sorted[0][0];
+  const L = sorted[sorted.length - 1][0] - x0, pts = sorted.map(([x, y]) => [x - x0, y]);      // tail end at 0
+  const cut = TR.cut && TR.cut.depth >= 0.75 ? TR.cut : null;
+  const fit = fitOutline(pts, L, state.params, buildBoard, { NOSE_TYPES, TAIL_TYPES }, cut, traceCurve(pts, TR.arms));
   applyParams(fit.params);
   $('#preset').value = '';
-  state.photo = { canvas: TR.rect, ...TR.frame, flip: TR.side < 0 };
+  state.photo = { canvas: TR.rect, ...TR.frame, flip: TR.side < 0, shift: x0 };
   state.photoOn = true;
   syncPhotoButton();
   closeTrace();
@@ -2224,7 +2363,7 @@ function syncPhotoButton() {
 function drawPhoto(v, ctx, ph, alpha) {
   ctx.save();
   ctx.globalAlpha = alpha;
-  const x0 = v.X(-ph.pad), w = (ph.L + 2 * ph.pad) * v.s, h = 2 * ph.ymax * v.s * v.vex;
+  const x0 = v.X(-ph.pad - (ph.shift || 0)), w = (ph.L + 2 * ph.pad) * v.s, h = 2 * ph.ymax * v.s * v.vex;
   if (ph.flip) { ctx.translate(0, v.Y(0)); ctx.scale(1, -1); ctx.translate(0, -v.Y(0)); }    // the traced side drawn on top, like the graph
   ctx.drawImage(ph.canvas, x0, v.Y(ph.ymax), w, h);
   ctx.restore();
@@ -2262,29 +2401,50 @@ function drawTrace(v) {
   const f = TR.frame, L = TR.L, sd = TR.side;
   const ctx = v.begin([-f.pad, L + f.pad, -f.ymax * 0.8, f.ymax * 0.8], 1, 14);
   drawPhoto(v, ctx, { canvas: TR.rect, ...f, flip: sd < 0 }, 0.9);
-  const pts = [...TR.pts].sort((a, b) => a[0] - b[0]), fn = pchip(pts);
-  const xs = []; for (let x = 0; x <= L; x += 0.25) xs.push(x);
+  const pts = [...TR.pts].sort((a, b) => a[0] - b[0]), fn = traceCurve(pts, TR.arms), n = pts.length;
+  const xa = pts[0][0], xb = pts[n - 1][0];
+  const xs = []; for (let x = xa; x < xb; x += 0.25) xs.push(x); xs.push(xb);
   ctx.save(); ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(14,19,23,.7)';
   v.path(ctx, xs, xs.map((x) => fn(x))); ctx.stroke();
   ctx.lineWidth = 1.8; ctx.strokeStyle = TRACE_COL; v.path(ctx, xs, xs.map((x) => fn(x))); ctx.stroke();
   ctx.setLineDash([5, 5]); ctx.lineWidth = 1.2; v.path(ctx, xs, xs.map((x) => -fn(x))); ctx.stroke();
-  ctx.setLineDash([]); ctx.strokeStyle = 'rgba(232,200,114,.5)'; ctx.beginPath(); ctx.moveTo(v.X(0), v.Y(0)); ctx.lineTo(v.X(L), v.Y(0)); ctx.stroke();
+  if (TR.cut) {                                           // the swallow cut: a V from the tail end to its point
+    ctx.beginPath(); ctx.moveTo(v.X(xa), v.Y(TR.cut.half)); ctx.lineTo(v.X(xa + TR.cut.depth), v.Y(0)); ctx.lineTo(v.X(xa), v.Y(-TR.cut.half)); ctx.stroke();
+  }
+  ctx.setLineDash([]); ctx.strokeStyle = 'rgba(232,200,114,.5)'; ctx.beginPath(); ctx.moveTo(v.X(xa), v.Y(0)); ctx.lineTo(v.X(xb), v.Y(0)); ctx.stroke();
   ctx.restore();
   if (TR.step !== 'fix') return ctx;
+  const sayLen = () => { const el = $('#tr-L'); if (el) el.textContent = ftin(traceLen()); };
   for (const p of TR.pts) {
-    const tip = p[0] >= L - 1e-6;
-    const i = pts.indexOf(p), lo = i > 0 ? pts[i - 1][0] + 0.25 : 0, hi = i < pts.length - 1 ? pts[i + 1][0] - 0.25 : L;
-    const end = p[0] <= 1e-6;
-    v.point(ctx, { x: p[0], y: p[1], kind: 'anchor', color: TRACE_COL, locked: tip,
-      drag: tip ? null : (wx, wy) => { if (!end) p[0] = clip(wx, lo, hi); p[1] = clip(wy, 0, f.ymax); },
-      remove: tip || end ? null : () => dropFrom(TR.pts, p) });
+    const i = pts.indexOf(p), tail = i === 0, nose = i === n - 1;
+    const lo = i > 0 ? pts[i - 1][0] + 0.25 : -f.pad, hi = i < n - 1 ? pts[i + 1][0] - 0.25 : L + f.pad;
+    v.point(ctx, { x: p[0], y: p[1], kind: 'anchor', color: TRACE_COL,
+      drag: (wx, wy) => { p[0] = clip(wx, lo, hi); if (!nose) p[1] = clip(wy, 0, f.ymax); if (tail || nose) sayLen(); },
+      remove: tail || nose ? null : () => dropFrom(TR.pts, p) });
+  }
+  // arms at the two ends: the direction the line leaves the tip, and how far it holds it
+  for (const [key, A, B, dir] of [['tail', pts[0], pts[1], 1], ['nose', pts[n - 1], pts[n - 2], -1]]) {
+    const g = Math.abs(B[0] - A[0]), auto = Math.atan(dir * fn.slopes[key === 'tail' ? 0 : n - 1]) * 180 / Math.PI;
+    const [deg, len] = TR.arms[key] || [key === 'nose' ? Math.max(auto, 0) : auto, g / 3];
+    const a = (deg * Math.PI) / 180, px = Math.max(len * v.s, 18) / v.s;      // at least 18 px out, so it can be grabbed
+    v.point(ctx, { x: A[0] + dir * px * Math.cos(a), y: A[1] + px * Math.sin(a), kind: 'arm', color: TRACE_COL, ax: A[0], ay: A[1],
+      drag: (wx, wy) => {
+        const dx = dir * (wx - A[0]), dy = wy - A[1];
+        TR.arms[key] = [clip(Math.atan2(dy, Math.max(dx, 1e-3)) * 180 / Math.PI, key === 'nose' ? 0 : -80, 89), clip(Math.hypot(dx, dy), 0.1, 0.95 * g)];
+      },
+      remove: () => { TR.arms[key] = null; } });
+  }
+  if (TR.cut) {
+    const c = TR.cut;
+    v.point(ctx, { x: xa, y: c.half, kind: 'anchor', color: TRACE_COL, drag: (wx, wy) => { c.half = clip(wy, 0.25, fn(xa) + 0.01); } });
+    v.point(ctx, { x: xa + c.depth, y: 0, kind: 'slice', color: TRACE_COL, drag: (wx) => { c.depth = clip(wx - xa, 0.75, 12); } });
   }
   v.curves.push({
-    dist: (wx, wy) => { if (wx < 0 || wx > L) return Infinity; return Math.abs(v.Y(fn(wx)) - v.Y(wy)); },
+    dist: (wx, wy) => { if (wx < xa || wx > xb) return Infinity; return Math.abs(v.Y(fn(wx)) - v.Y(wy)); },
     add: (wx, wy) => {
-      const p = [clip(wx, 0.3, L - 0.3), clip(wy, 0, f.ymax)];
+      const p = [clip(wx, xa + 0.3, xb - 0.3), clip(wy, 0, f.ymax)];
       TR.pts.push(p);
-      return { fn: (x, y) => { p[0] = clip(x, 0.3, L - 0.3); p[1] = clip(y, 0, f.ymax); }, undo: () => dropFrom(TR.pts, p) };
+      return { fn: (x, y) => { p[0] = clip(x, xa + 0.3, xb - 0.3); p[1] = clip(y, 0, f.ymax); }, undo: () => dropFrom(TR.pts, p) };
     },
   });
   return ctx;

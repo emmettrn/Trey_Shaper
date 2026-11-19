@@ -71,7 +71,33 @@ export function traceHalf(img, f, side = 1) {
     for (let j = Math.max(0, i - k); j <= Math.min(n - 1, i + k); j++) w.push(hw[j]);
     med[i] = median(w);
   }
-  return { xs: Array.from(xs), hw: Array.from(med), contrast, board };
+  // a swallow's cut: from the stringer outward, where the board starts. Through the cut the
+  // middle of the board is floor; the cut ends (its depth) where the middle is board again.
+  const cut = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    if (med[i] <= 0) continue;
+    const u = f.u(xs[i]);
+    let inside = 0, start = -1;
+    for (let r = rMin; r <= Math.round(med[i] * ppi); r++) {
+      const c = at(u, f.v(0) - side * r);
+      if (c && dist(c, board) <= thr) { if (++inside >= run) { start = r - run + 1; break; } }
+      else inside = 0;
+    }
+    cut[i] = start > rMin + 1 ? start / ppi : 0;
+  }
+  let seen = 0;
+  for (let i = 0; i < n; i++) { if (cut[i] > 0.4) seen = xs[i]; else if (xs[i] > 0.5) break; }
+  let notch = null;
+  const near = Array.from(cut).filter((c, i) => xs[i] <= seen / 3);
+  if (seen >= 0.75 && near.length && median(near) >= 0.6) {
+    // the cut is a V: fit a straight line to the part that could be seen and run it out to its point
+    let sx = 0, sy = 0, sxx = 0, sxy = 0, c = 0;
+    for (let i = 0; i < n; i++) if (xs[i] <= seen && cut[i] > 0.4) { sx += xs[i]; sy += cut[i]; sxx += xs[i] * xs[i]; sxy += xs[i] * cut[i]; c++; }
+    const slope = (c * sxy - sx * sy) / (c * sxx - sx * sx || 1), icpt = (sy - slope * sx) / c;
+    const depth = slope < -1e-3 ? -icpt / slope : seen;
+    notch = { depth: Math.min(Math.max(depth, seen), 3 * seen + 2), half: Math.max(icpt, 0.5), cut: Array.from(cut) };
+  }
+  return { xs: Array.from(xs), hw: Array.from(med), contrast, board, notch };
 }
 
 /** Shape-preserving cubic through points [[x, y], ...] (sorted by x): never overshoots them. */
@@ -92,7 +118,7 @@ export function pchip(pts) {
   };
   if (n > 2) { m[0] = end(h[0], h[1], d[0], d[1]); m[n - 1] = end(h[n - 2], h[n - 3], d[n - 2], d[n - 3]); }
   else m[0] = m[1] = d[0];
-  return (x) => {
+  const fn = (x) => {
     if (x <= xs[0]) return ys[0];
     if (x >= xs[n - 1]) return ys[n - 1];
     let i = 0;
@@ -100,6 +126,43 @@ export function pchip(pts) {
     const t = (x - xs[i]) / h[i], t2 = t * t, t3 = t2 * t;
     return (2 * t3 - 3 * t2 + 1) * ys[i] + (t3 - 2 * t2 + t) * h[i] * m[i] + (-2 * t3 + 3 * t2) * ys[i + 1] + (t3 - t2) * h[i] * m[i + 1];
   };
+  fn.slopes = m;
+  return fn;
+}
+
+/**
+ * The traced line with control arms at its two ends. `arms` = { tail, nose }, each null (automatic)
+ * or [angle, length]: the direction the line leaves that end (degrees from the stringer, toward the
+ * other end) and how far it holds it. Between, a shape-preserving cubic through the points; the
+ * first and last stretch become cubic Beziers whose inner control point follows the next point.
+ */
+export function traceCurve(pts, arms = {}) {
+  const base = pchip(pts), n = pts.length;
+  if (n < 3 || (!arms.tail && !arms.nose)) return base;
+  const seg = (A, B, mB, arm, dir) => {                  // Bezier from end A to its neighbour B
+    if (!arm) return null;
+    const g = Math.abs(B[0] - A[0]), a = (arm[0] * Math.PI) / 180, len = Math.min(arm[1], 0.95 * g);
+    const P1 = [A[0] + dir * len * Math.cos(a), A[1] + len * Math.sin(a)];
+    const P2 = [B[0] - dir * g / 3, B[1] - dir * mB * g / 3];
+    return (x) => {
+      let lo = 0, hi = 1;
+      for (let k = 0; k < 40; k++) {
+        const t = (lo + hi) / 2, s1 = 1 - t, bx = s1 * s1 * s1 * A[0] + 3 * s1 * s1 * t * P1[0] + 3 * s1 * t * t * P2[0] + t * t * t * B[0];
+        if ((bx - x) * dir < 0) lo = t; else hi = t;
+      }
+      const t = (lo + hi) / 2, s1 = 1 - t;
+      return Math.max(0, s1 * s1 * s1 * A[1] + 3 * s1 * s1 * t * P1[1] + 3 * s1 * t * t * P2[1] + t * t * t * B[1]);
+    };
+  };
+  const m = base.slopes;
+  const tailSeg = seg(pts[0], pts[1], m[1], arms.tail, 1), noseSeg = seg(pts[n - 1], pts[n - 2], m[n - 2], arms.nose, -1);
+  const fn = (x) => {
+    if (tailSeg && x <= pts[1][0]) return tailSeg(Math.max(x, pts[0][0]));
+    if (noseSeg && x >= pts[n - 2][0]) return noseSeg(Math.min(x, pts[n - 1][0]));
+    return base(x);
+  };
+  fn.slopes = m;
+  return fn;
 }
 
 /**
@@ -113,9 +176,16 @@ export function tracePoints(tr, L, n = 22) {
   for (let i = 0; i < n; i++) xs.push((L * (1 - Math.cos((Math.PI * i) / (n - 1)))) / 2);
   // the nose tip comes to a point; right at a tip the board is too narrow to scan, so a point
   // there that found nothing is left out and the nose (or tail) type takes care of the last bit
-  return [...new Set(xs.map((x) => +x.toFixed(3)))].sort((a, b) => a - b)
+  const pts = [...new Set(xs.map((x) => +x.toFixed(3)))].sort((a, b) => a - b)
     .map((x) => [x, x >= L ? 0 : Math.max(0, near(x))])
     .filter(([x, w], i, a) => x <= 0 || x >= L || w > 0.05);
+  // a swallow's tips can be too thin to see from outside: run the outline out to the tail end
+  if (tr.notch && pts.length > 3) {
+    const a = pts.find((p) => p[0] >= 1), b = pts.find((p) => p[0] >= 2.5);
+    if (a && b && b[0] > a[0]) pts[0][1] = Math.max(pts[0][1], a[1] - ((b[1] - a[1]) / (b[0] - a[0])) * a[0]);
+    for (const p of pts) if (p[0] > 0 && p[0] < 1 && p[1] < pts[0][1]) p[1] = pts[0][1] + (p[0] / 1) * ((a ? a[1] : p[1]) - pts[0][1]);
+  }
+  return pts;
 }
 
 const r16 = (v) => Math.round(v * 16) / 16;
@@ -124,10 +194,11 @@ const r16 = (v) => Math.round(v * 16) / 16;
  * A design that follows the traced half outline `pts`: the measurements read off it (width,
  * wide point, widths 12" from each end, tail block), the nose and tail types whose curves come
  * closest, then outline anchor points so it follows the trace between the measurements.
- * `build` is buildBoard; `types` = { NOSE_TYPES, TAIL_TYPES }. Returns { params, nose, tail, error }.
+ * `build` is buildBoard; `types` = { NOSE_TYPES, TAIL_TYPES }; `notch` = { depth, half } when the
+ * photo shows a swallow cut. Returns { params, nose, tail, error }.
  */
-export function fitOutline(pts, L, current, build, types) {
-  const f = pchip(pts);
+export function fitOutline(pts, L, current, build, types, notch = null, curve = null) {
+  const f = curve || pchip(pts);
   let W = 0, xw = L / 2;
   for (let x = 0; x <= L; x += 0.125) { const w = 2 * f(x); if (w > W) { W = w; xw = x; } }
   const half = L / 2, wpo = Math.min(Math.max(xw - half, -(half - 14)), half - 14);
@@ -155,7 +226,20 @@ export function fitOutline(pts, L, current, build, types) {
   // tail type: a swallow stays a swallow (the trace only sees the outside); otherwise a tail
   // that ends in a block is squash or square, one that closes is round, rounded pin or pin
   let tail = base.tail_type;
-  if (tail !== 'swallow') {
+  if (notch) {                                            // the photo shows a swallow cut
+    tail = 'swallow';
+    base.swallow_depth = r16(Math.min(Math.max(notch.depth, 1), 10));
+    const tipGap = f(0) - notch.half;                      // how much board is left at each tip
+    base.swallow_tip = tipGap < 0.35 ? 0 : Math.min(1, tipGap / 1.5);
+    base.swallow_width = r16(Math.max(1, 2 * notch.half));
+    let block = tb;
+    best = Infinity;
+    for (const bw of Array.from({ length: 13 }, (_, k) => r16(tb + 0.25 * k))) {
+      const e = err({ ...base, tail_type: 'swallow', tail_block_width: bw }, 0, xw);
+      if (e < best) { best = e; block = bw; }
+    }
+    base.tail_block_width = block;
+  } else if (tail !== 'swallow') {
     const closes = tb < Math.max(2, 0.12 * W);
     const cands = Object.entries(types.TAIL_TYPES).filter(([k, v]) => !v.notch && v.closes === closes).map(([k]) => k);
     best = Infinity;

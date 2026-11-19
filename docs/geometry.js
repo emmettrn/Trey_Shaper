@@ -24,9 +24,9 @@ const ANCHOR_GAP = 0.75;                                         // min spacing 
 const GRID = 513;                                                // samples of a slice's deck / bottom offset curve
 // What a cross-section slice may adjust, and by how much at most (added to the board-wide value there)
 const ADJ = { rail_apex: 0.45, rail_apex_in: 1.5, rail_fullness: 1, deck_dome: 1, rail_hardness: 1, concave: 0.5, double: 0.5, vee: 0.5,
-  apex_deck_angle: 80, apex_deck_arm: 0.45, apex_bottom_angle: 80, apex_bottom_arm: 0.45 };
+  apex_deck_angle: 80, apex_deck_arm: 0.5, apex_bottom_angle: 80, apex_bottom_arm: 0.5, rail_tuck: 1 };
 const PINCH_MAX = 80;                                            // apex arm angle, degrees in from upright: 0 = upright, 80 = nearly a knife edge
-const ARM_MAX = 0.45;                                            // apex arm length, fraction of the height that side spans
+const ARM_MAX = 0.5;                                            // apex arm length, fraction of the height that side spans
 // Bottom contour stations: what each type puts into the three channels [single concave, double concave, vee]
 const BOTTOM_TYPES = {
   flat: () => [0, 0, 0], concave: (a) => [a, 0, 0], roll: (a) => [-a, 0, 0], double: (a) => [0, a, 0],
@@ -152,7 +152,9 @@ export function validated(src) {
   const te0 = tail.closes ? 0 : p.tail_block_width / W;
   fill('tail_width_12', W * (te0 + (1 - te0) * (1 - u12(L, xw, false) ** AUTO.tail_a) ** (1 / tail.b)));
   clamp('tail_width_12', tail.closes ? 4 : p.tail_block_width + 0.5, W - 0.5);
-  if (tail.notch) { clamp('swallow_width', 1, p.tail_block_width - 2 * tail.corner - 1); clamp('swallow_depth', 1, 10); }
+  if (!Number.isFinite(p.swallow_tip)) p.swallow_tip = 1;
+  clamp('swallow_tip', 0, 1);
+  if (tail.notch) { clamp('swallow_width', 1, p.tail_block_width - (2 * tail.corner + 1) * p.swallow_tip - 0.25); clamp('swallow_depth', 1, 10); }
 
   const rn = (1 - u12(L, xw, true) ** A_MIN) ** (1 / NOSE_TYPES[p.nose_type]);
   clamp('nose_width_12', W * rn, W - 0.5, 'width 12" from nose');
@@ -179,7 +181,8 @@ export function validated(src) {
     clamp(`${side}_thickness_12`, te + span * (1 - u ** P_MIN), te + span * (1 - u ** P_MAX), `thickness 12" from ${side}`);
   }
   clamp('rail_apex', 0.15, 0.6);
-  for (const n of ['rail_fullness', 'deck_dome', 'rail_hardness_nose', 'rail_hardness_tail']) clamp(n, 0, 1);
+  if (!Number.isFinite(p.rail_tuck)) p.rail_tuck = 0.5;
+  for (const n of ['rail_fullness', 'deck_dome', 'rail_hardness_nose', 'rail_hardness_tail', 'rail_tuck']) clamp(n, 0, 1);
   clamp('concave_depth', 0, 0.4);
   clamp('vee_depth', 0, 0.4);
   clamp('target_volume', 10, 120);
@@ -298,8 +301,8 @@ function cleanHandles(p) {
   const src = p.handles && typeof p.handles === 'object' ? p.handles : {}, out = {};
   for (const name of ['outline', 'rocker', 'thickness']) {
     const pin = pinsFor(p, name), s = src[name] && typeof src[name] === 'object' ? src[name] : {}, o = {};
-    for (const key of ['tail12', 'origin', 'nose12']) {
-      if (key !== 'origin' && !pin[key]) continue;
+    for (const key of ['tail', 'tail12', 'origin', 'nose12', 'nose']) {
+      if ((key === 'tail12' || key === 'nose12') && !pin[key]) continue;
       const hd = handleOf(s[key], 3);
       if (!hd) continue;
       if (key === 'origin') hd[0] = null;                 // the wide / low / thick point stays level
@@ -431,7 +434,7 @@ function knotCurve(knots, fixStart, fixEnd) {
  * shape-preserving cubic. The nose tip is flat and the last station runs out the tail.
  */
 function cleanBottom(p) {
-  const L = p.length, rows = [];
+  const L = p.length, rows = [], stretches = [];
   for (const r of Array.isArray(p.bottom) ? p.bottom : []) {
     if (!r || !Number.isFinite(r.pos)) continue;
     const from = fromOf(r.from);
@@ -439,21 +442,46 @@ function cleanBottom(p) {
     const depth = Number.isFinite(r.depth) ? clip(r.depth, 0, 0.75) : 0, depth2 = Number.isFinite(r.depth2) ? clip(r.depth2, 0, 0.75) : 0;
     const [c, d, v] = BOTTOM_TYPES[type](depth, depth2);
     const x = clip(posToX({ pos: r.pos, from }, L), 0, L);
-    rows.push({ pos: r.pos, from, type, depth, depth2, x, c, d, v });
-    // a stretch ("single concave from 3 off the nose until 1 behind center"): held at the same
-    // contour from one end to the other, then blended toward the stations either side as usual
-    if (r.to && Number.isFinite(r.to.pos)) {
-      const x2 = clip(posToX({ pos: r.to.pos, from: fromOf(r.to.from) }, L), 0, L);
-      if (Math.abs(x2 - x) >= 0.5) rows.push({ pos: r.to.pos, from: fromOf(r.to.from), type, depth, depth2, x: x2, c, d, v, end: true });
+    const base = { pos: r.pos, from, type, depth, depth2, src: rows.length + stretches.length };
+    const x2 = r.to && Number.isFinite(r.to.pos) ? clip(posToX({ pos: r.to.pos, from: fromOf(r.to.from) }, L), 0, L) : null;
+    if (x2 === null || Math.abs(x2 - x) < 0.5) { rows.push({ ...base, x, c, d, v }); continue; }
+    // a stretch ("single concave from 3 off the nose until 1 behind center"): full depth at its deepest
+    // spot (or the whole way, with no blends), easing out toward each end as its blends say, then
+    // blended toward the stations either side as usual
+    const x0 = Math.min(x, x2), x1 = Math.max(x, x2);
+    const xd = r.deep && Number.isFinite(r.deep.pos) ? clip(posToX({ pos: r.deep.pos, from: fromOf(r.deep.from) }, L), x0, x1) : (x0 + x1) / 2;
+    const bn = blendOf(r.blendNose, 0), bt = blendOf(r.blendTail, 0);
+    const S = { ...base, x0, x1, xd, bn, bt, c, d, v, to: { pos: r.to.pos, from: fromOf(r.to.from) }, deep: r.deep && Number.isFinite(r.deep.pos) ? { pos: r.deep.pos, from: fromOf(r.deep.from) } : null };
+    S.at = (q) => { const f = depthAlong(q, x0, x1, xd, bn, bt); return [c * f, d * f, v * f]; };
+    stretches.push(S);
+    const xs = new Set([x0, x1, xd]);
+    if (bn > 0 || bt > 0) for (let k = 1; k < 8; k++) { xs.add(xd + ((x1 - xd) * k) / 8); xs.add(x0 + ((xd - x0) * k) / 8); }
+    for (const q of [...xs].sort((m, n) => m - n)) {
+      const [cq, dq, vq] = S.at(q);
+      rows.push({ ...base, x: q, c: cq, d: dq, v: vq, inner: q !== (x === x0 ? x0 : x1), end: q === (x === x0 ? x1 : x0) });
     }
+  }
+  // where a stretch overlaps other stations or stretches, each spot takes the stronger of the
+  // contours there instead of one cutting into the other
+  for (const r of rows) for (const S of stretches) {
+    if (S.src === r.src || r.x < S.x0 - 1e-9 || r.x > S.x1 + 1e-9) continue;
+    const [c, d, v] = S.at(r.x);
+    if (Math.abs(c) > Math.abs(r.c)) r.c = c;
+    r.d = Math.max(r.d, d); r.v = Math.max(r.v, v);
   }
   rows.sort((a, b) => a.x - b.x);
   const kept = [];
   for (const r of rows) {
-    if (kept.length === 24) break;
-    if (kept.length && r.x - kept[kept.length - 1].x < 0.5) continue;
+    if (kept.length === 64) break;
+    const last = kept[kept.length - 1];
+    if (last && r.x - last.x < 0.5) {                    // two at (almost) the same spot: one station with the stronger contour of each
+      if (Math.abs(r.c) > Math.abs(last.c)) last.c = r.c;
+      last.d = Math.max(last.d, r.d); last.v = Math.max(last.v, r.v);
+      continue;
+    }
     kept.push(r);
   }
+  kept.stretches = stretches;
   return kept;
 }
 
@@ -487,11 +515,11 @@ function curveDelta(p, name, x, arms) {
   const out = new Float64Array(x.length);
   const pts = [...p.anchors[name], ...p._marks[name]].sort((a, b) => a[0] - b[0]);
   const L = p.length, pin = pinsFor(p, name), H = p.handles[name];
-  const P = [[0, null]];
+  const P = [[0, 'tail']];                               // the tips can carry a handle too: how the curve leaves them
   if (pin.tail12) P.push([12, 'tail12']);
   P.push([pin.origin, 'origin']);
   if (pin.nose12) P.push([L - 12, 'nose12']);
-  P.push([L, null]);
+  P.push([L, 'nose']);
   // a pinned point as a knot: offset 0, and the slope and arms of its handle if it has been given one
   const pinKnot = (q) => { const hd = q[1] ? H[q[1]] : null; return hd ? [q[0], 0, hd[0], hd[1], hd[2]] : [q[0], 0, null, null, null]; };
   if (arms) arms.pins = {};
@@ -574,7 +602,9 @@ function sectionShape(p, x, d, t) {
   return {
     ar: p.rail_apex_in !== null ? apexRatio(p.rail_apex_in + g('rail_apex_in'), t) : clip(p.rail_apex + g('rail_apex'), 0.15, 0.6),
     ed: 1.7 + 1.4 * clip(p.rail_fullness + g('rail_fullness'), 0, 1),
-    eb: 2 + 6 * clip(railHardness(p, x) + g('rail_hardness'), 0, 1),
+    eb: 2 + 3 * clip(railHardness(p, x) + g('rail_hardness'), 0, 1),     // rounder; past 0.3 it turns into a tucked edge (hardEdge)
+    hard: clip(railHardness(p, x) + g('rail_hardness'), 0, 1),
+    tuck: clip((p.rail_tuck ?? 0.5) + g('rail_tuck'), 0, 1),
     dome: clip(p.deck_dome + g('deck_dome'), 0, 1),
     con, dbl, vee: clip(v0 + g('vee'), 0, 0.75),
     // the rail apex arms (slices only): angle in from upright (degrees) and length (fraction of the height that side spans)
@@ -596,7 +626,7 @@ export function sectionBase(p, x) {
   const [c0, d0, v0] = bottomAt(p, x);
   return { rail_apex: p.rail_apex, rail_apex_in: p.rail_apex_in ?? 0, rail_fullness: p.rail_fullness, deck_dome: p.deck_dome,
     rail_hardness: railHardness(p, x), concave: c0, double: d0, vee: v0,
-    apex_deck_angle: 0, apex_deck_arm: 0, apex_bottom_angle: 0, apex_bottom_arm: 0 };
+    apex_deck_angle: 0, apex_deck_arm: 0, apex_bottom_angle: 0, apex_bottom_arm: 0, rail_tuck: p.rail_tuck ?? 0.5 };
 }
 const gridAt = (row, eta) => {
   const f = eta * (GRID - 1), i0 = Math.min(Math.floor(f), GRID - 2);
@@ -618,7 +648,7 @@ function halfWidth(p, x) {
   const tail = TAIL_TYPES[p.tail_type], bt = tail.b;
   const te = tail.closes ? 0 : p.tail_block_width / p.width;
   const at = closureExponent((p.tail_width_12 / p.width - te) / (1 - te), bt, (xw - 12) / xw);
-  const rc = tail.corner;
+  const rc = tail.notch ? tail.corner * (p.swallow_tip ?? 1) : tail.corner;   // a swallow's tips: rounded, or (swallow_tip 0) a point
   const h = new Float64Array(x.length);
   for (let i = 0; i < x.length; i++) {
     const xi = x[i];
@@ -635,9 +665,12 @@ function notchHalfWidth(p, x, arms) {
   const out = new Float64Array(x.length);
   if (!TAIL_TYPES[p.tail_type].notch) return out;
   const D = p.swallow_depth, pts = p.anchors.swallow;
+  // with pointed tips (swallow_tip 0) the cut reaches right out to the outline at the tail end, so each side ends in a point
+  const tip = p.swallow_tip ?? 1, hb = tip < 1 ? halfWidth(p, [0])[0] : 0;
+  const w0 = p.swallow_width + Math.max(0, 2 * hb - p.swallow_width) * (1 - tip);
   const curve = pts.length ? knotCurve([[0, 0, null, null, null], ...pts, [D, 0, null, null, null]], false, false) : null;
   for (let i = 0; i < x.length; i++) {
-    const base = Math.max((p.swallow_width / 2) * (1 - x[i] / D), 0);
+    const base = Math.max((w0 / 2) * (1 - x[i] / D), 0);
     out[i] = curve && x[i] > 0 && x[i] < D ? Math.max(base + curve.at(x[i]), 0.1 * base) : base;   // the cut never closes early
   }
   if (arms && curve) arms.push(...curve.arms.slice(1, -1));
@@ -701,43 +734,93 @@ const veeAt = (p, x) => p.vee_depth * smoothstep((0.35 * p.length - x) / (0.3 * 
    tool to 1 at its tail end.
    --------------------------------------------------------------------------- */
 export const TOOL_SHAPES = { teardrop: 'Tear drop', straight: 'Straight edges', venturi: 'Venturi' };
-const TEAR_K = 1 / ((2 / 3) * Math.sqrt(1 / 3));             // scales (1 - s) sqrt(s) to a peak of 1 (at s = 1/3)
-const tear = (s) => (s <= 0 || s >= 1 ? 0 : TEAR_K * (1 - s) * Math.sqrt(s));
-const smooth01 = (v) => { const q = clip(v, 0, 1); return q * q * (3 - 2 * q); };
+
+/**
+ * An edge of a concave tool as a smooth curve through points, like the outline: each point
+ * [t, width, angle, left arm, right arm] (t 0 at the nose end of the tool to 1 at its tail end,
+ * width = full width in inches; angle in degrees, 0 = running straight along the board, + =
+ * widening toward the tail, 90 = straight across; arms in inches). A blank angle or arm is worked
+ * out from the neighbouring points. Sampled into a table of (inches from the nose end, half width).
+ */
+function edgeTable(list, len, W) {
+  const pts = (Array.isArray(list) ? list : []).filter((q) => Array.isArray(q) && Number.isFinite(+q[0]) && Number.isFinite(+q[1]))
+    .map((q) => [clip(+q[0], 0, 1), clip(+q[1], 0, W), optNum(q[2], -90, 90), optNum(q[3], 0.05, 60), optNum(q[4], 0.05, 60)])
+    .sort((a, b) => a[0] - b[0]);
+  const k = [];
+  for (const q of pts) if (!k.length || q[0] - k[k.length - 1][0] > 0.01) k.push(q);
+  if (k.length < 2) return null;
+  const P = k.slice(0, 16), Xs = P.map((q) => q[0] * len), Ys = P.map((q) => q[1] / 2);
+  const m = pchipSlopes(Xs, Ys, false, false);
+  const th = P.map((q, i) => (q[2] !== null ? (q[2] * Math.PI) / 180 : Math.atan(m[i])));
+  const X = [], Y = [];
+  for (let i = 0; i < P.length - 1; i++) {
+    const g = Xs[i + 1] - Xs[i];
+    let a = P[i][4] ?? g / 3, b = P[i + 1][3] ?? g / 3;
+    const ca = Math.cos(th[i]), cb = Math.cos(th[i + 1]);
+    if (a * ca + b * cb > 0.98 * g) { const f = (0.98 * g) / (a * ca + b * cb); a *= f; b *= f; }   // the arms may not cross
+    const x0 = Xs[i], y0 = Ys[i], x3 = Xs[i + 1], y3 = Ys[i + 1];
+    const x1 = x0 + a * ca, y1 = y0 + a * Math.sin(th[i]), x2 = x3 - b * cb, y2 = y3 - b * Math.sin(th[i + 1]);
+    for (let j = i ? 1 : 0; j <= 24; j++) {
+      const t = j / 24, u = 1 - t;
+      X.push(u * u * u * x0 + 3 * u * u * t * x1 + 3 * u * t * t * x2 + t * t * t * x3);
+      Y.push(Math.max(0, u * u * u * y0 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * y3));
+    }
+  }
+  for (let i = 1; i < X.length; i++) if (X[i] < X[i - 1]) X[i] = X[i - 1];
+  return { pts: P, X, Y, at: (xq) => interp(xq, X, Y) };
+}
+
+/** The tear drop's starting shape: round at one end (a quarter circle), widest a third of the way, tapering to a point. */
+function teardropPoints(W, round) {
+  const pts = [[0, 0, 90, null, 0.28 * W], [0.33, W, 0, null, null], [0.72, 0.55 * W, null, null, null], [1, 0, null, null, null]];
+  return round === 'tail' ? pts.map(([t, w, a, l, r]) => [1 - t, w, a === null ? null : -a, r, l]).reverse() : pts;
+}
+
+/**
+ * How deep a tool or a contour stretch is along its length: full depth at its deepest spot xd,
+ * easing to nothing toward each end. A blend of 0 holds full depth all the way to that end (an
+ * abrupt end); 1 eases from the deepest spot all the way to the end; between, it holds for part
+ * of the way and then eases out.
+ */
+function depthAlong(x, x0, x1, xd, bn, bt) {
+  const ease = (q) => { const v = clip(q, 0, 1); return v * v * (3 - 2 * v); };
+  if (x >= xd) { const span = x1 - xd; if (span < 1e-6 || bn <= 0) return 1; const s = (x - xd) / span, hold = 1 - bn; return s <= hold ? 1 : ease((1 - s) / bn); }
+  const span = xd - x0; if (span < 1e-6 || bt <= 0) return 1; const s = (xd - x) / span, hold = 1 - bt; return s <= hold ? 1 : ease((1 - s) / bt);
+}
+const blendOf = (v, def) => (Number.isFinite(+v) ? clip(+v, 0, 1) : def);
 
 function cleanTools(p) {
   const L = p.length, W = p.width, out = [];
-  const wlist = (list, lo, hi, def) => {
-    const pts = (Array.isArray(list) ? list : []).filter((q) => Array.isArray(q) && Number.isFinite(+q[0]) && Number.isFinite(+q[1]))
-      .map((q) => [clip(+q[0], 0, 1), clip(+q[1], lo, hi)]).sort((a, b) => a[0] - b[0]);
-    const k = [];
-    for (const q of pts) if (!k.length || q[0] - k[k.length - 1][0] > 0.02) k.push(q);
-    const use = k.length >= 2 ? k.slice(0, 12) : def;
-    const xs = use.map((q) => q[0]), ys = use.map((q) => q[1]);
-    return { pts: use, xs, ys, m: pchipSlopes(xs, ys, false, false) };
-  };
   for (const t of Array.isArray(p.tools) ? p.tools : []) {
     if (!t || !TOOL_SHAPES[t.shape] || !t.start || !t.end) continue;
     if (out.length === 8) break;
     const a = clip(posToX({ pos: +t.start.pos, from: fromOf(t.start.from) }, L), 0, L);
     const b = clip(posToX({ pos: +t.end.pos, from: fromOf(t.end.from) }, L), 0, L);
-    const x1 = Math.max(a, b), x0 = Math.min(a, b);
-    if (!(x1 - x0 >= 2)) continue;
+    const x1 = Math.max(a, b), x0 = Math.min(a, b), len = x1 - x0;
+    if (!(len >= 2)) continue;
     const double = t.kind === 'double', depth = Number.isFinite(+t.depth) ? clip(+t.depth, 0, 0.75) : 0.125;
     const ridge = Number.isFinite(+t.ridge) ? clip(+t.ridge, 0, W) : 2;
     const tool = { id: t.id ?? null, shape: t.shape, kind: double ? 'double' : 'single', edge: double && t.edge === 'rail' ? 'rail' : 'hard',
-      x0, x1, len: x1 - x0, depth, start: { pos: +t.start.pos, from: fromOf(t.start.from) }, end: { pos: +t.end.pos, from: fromOf(t.end.from) } };
-    if (t.shape === 'teardrop') {
-      tool.width = Number.isFinite(+t.width) ? clip(+t.width, 1, W) : 0.6 * W;
-      tool.round = t.round === 'tail' ? 'tail' : 'nose';
-    } else if (t.shape === 'straight') {
+      x0, x1, len, depth, start: { pos: +t.start.pos, from: fromOf(t.start.from) }, end: { pos: +t.end.pos, from: fromOf(t.end.from) } };
+    let xdDef = x0 <= 1 ? x0 : (x0 + x1) / 2, bDef = [0.6, x0 <= 1 ? 0 : 0.6];
+    if (t.shape === 'straight') {
       tool.w1 = Number.isFinite(+t.w1) ? clip(+t.w1, 0.5, W) : 10;       // at the nose end
       tool.w2 = Number.isFinite(+t.w2) ? clip(+t.w2, 0.5, W) : 10;       // at the tail end
       tool.ridge = ridge;
     } else {
-      tool.outer = wlist(t.outer, 0.5, W, [[0, 10], [0.5, 8], [1, 12]]);
-      tool.inner = wlist(t.inner, 0, W, [[0, ridge], [1, ridge]]);
+      const width = Number.isFinite(+t.width) ? clip(+t.width, 1, W) : 0.6 * W;
+      tool.round = t.round === 'tail' ? 'tail' : 'nose';
+      const outer = t.shape === 'teardrop' && !Array.isArray(t.outer) ? teardropPoints(width, tool.round) : t.outer;
+      tool.outer = edgeTable(outer, len, W) || edgeTable(t.shape === 'teardrop' ? teardropPoints(width, tool.round) : [[0, 10], [0.5, 8], [1, 12]], len, W);
+      tool.inner = double ? edgeTable(Array.isArray(t.inner) ? t.inner : t.shape === 'teardrop' ? null : [[0, ridge], [1, ridge]], len, W) : null;
+      if (t.shape === 'teardrop') {                       // deepest where it is widest; eases out both ways
+        let iw = 0; for (let i = 1; i < tool.outer.Y.length; i++) if (tool.outer.Y[i] > tool.outer.Y[iw]) iw = i;
+        xdDef = x1 - tool.outer.X[iw]; bDef = [1, 1];
+      }
     }
+    tool.xd = t.deep && Number.isFinite(+t.deep.pos) ? clip(posToX({ pos: +t.deep.pos, from: fromOf(t.deep.from) }, L), x0, x1) : xdDef;
+    tool.deep = t.deep && Number.isFinite(+t.deep.pos) ? { pos: +t.deep.pos, from: fromOf(t.deep.from) } : null;
+    tool.blendNose = blendOf(t.blendNose, bDef[0]); tool.blendTail = blendOf(t.blendTail, bDef[1]);
     out.push(tool);
   }
   return out;
@@ -745,21 +828,12 @@ function cleanTools(p) {
 
 /** A tool's edges at spot x: outer and inner half widths (before staying off the rail) and how much of its depth it has there. */
 function toolShapeAt(tool, x) {
-  const u = (tool.x1 - x) / tool.len;                    // 0 at the nose end, 1 at the tail end
-  let e, r = 0, A;
-  if (tool.shape === 'teardrop') {
-    A = tear(tool.round === 'nose' ? u : 1 - u);         // from the round end
-    e = (tool.width / 2) * A;
-    r = 0.18 * e;
-  } else {
-    const Lf = Math.min(6, 0.3 * tool.len);
-    const front = smooth01((tool.x1 - x) / Lf), back = tool.x0 <= 1 ? 1 : smooth01((x - tool.x0) / Lf);
-    A = front * back;                                    // eases in at the nose end; runs out the tail if it reaches it
-    if (tool.shape === 'straight') { e = (tool.w1 + (tool.w2 - tool.w1) * u) / 2; r = tool.ridge / 2; }
-    else { e = hermiteAt(tool.outer.xs, tool.outer.ys, tool.outer.m, u) / 2; r = hermiteAt(tool.inner.xs, tool.inner.ys, tool.inner.m, u) / 2; }
-  }
+  const X = tool.x1 - x, u = X / tool.len;                // from the nose end of the tool
+  let e, r = 0;
+  if (tool.shape === 'straight') { e = (tool.w1 + (tool.w2 - tool.w1) * u) / 2; r = tool.ridge / 2; }
+  else { e = tool.outer.at(X); r = tool.inner ? tool.inner.at(X) : 0.18 * e; }
   if (tool.kind === 'single') r = 0;
-  return { e, r, A, u };
+  return { e, r, A: depthAlong(x, tool.x0, tool.x1, tool.xd, tool.blendNose, tool.blendTail), u };
 }
 
 /** The tools that reach spot x, each as { lift depth here, outer and inner half widths, single / double, edge }. */
@@ -813,6 +887,51 @@ const KA = K / 2;                                        // deck = samples 0 .. 
 const S_RHO = new Float64Array(K), S_NY = new Float64Array(K), S_NZ = new Float64Array(K);
 const ZERO_ROW = new Float64Array(GRID);
 
+
+/**
+ * A hard rail edge. Past 0.3 on the Rail edge range the bottom side of the section blends
+ * from the rounded rail into a tucked edge: the bottom runs flat (with its contours) right out to
+ * a corner, the edge, set in from the outline by the tuck; from the edge a rounded tuck curves up
+ * and out to the rail apex, leaving it straight up and down. At Rail edge 1 the edge is a true
+ * corner. Blended sample for sample at the same share of the way round, so nothing crosses.
+ */
+const YR = new Float64Array(K), HARD_N = 96, HY = new Float64Array(2 * HARD_N + 1), HZ = new Float64Array(2 * HARD_N + 1), HS = new Float64Array(2 * HARD_N + 1);
+function hardEdge(sh, zApex, tb, yi, hi, tl, Y, Z) {
+  const w = smoothstep((sh.hard - 0.3) / 0.7);
+  if (!(w > 0)) return;
+  const hs = Math.max(hi, 1e-9), map = (yr) => yi + (yr * (hi - yi)) / hs;
+  const cont = (yr) => {
+    const eta = clip(yr / hs, 0, 1);
+    return sh.con * (1 - eta * eta) ** 2 + (sh.dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 - sh.vee * (1 - eta) + (tl ? toolLift(tl, map(yr)) : 0);
+  };
+  const wt = clip(tb * (0.25 + 1.5 * sh.tuck), 0.05, 0.35 * hi), yE = hi - wt;
+  // the tuck: a cubic from the apex (straight down) to the edge, arriving at an angle (the corner)
+  for (let n = 0; n <= HARD_N; n++) {
+    const t = n / HARD_N, u = 1 - t;
+    const yr = u * u * u * hi + 3 * u * u * t * hi + 3 * u * t * t * (hi - wt / 3) + t * t * t * yE;
+    const dz = 3 * u * u * t * (tb / 3) + 3 * u * t * t * ((2 * tb) / 3) + t * t * t * tb;
+    HY[n] = yr; HZ[n] = zApex - dz + cont(yr) * t;
+  }
+  // the bottom, flat from the edge in to the stringer
+  for (let n = 1; n <= HARD_N; n++) { const yr = yE * (1 - n / HARD_N); HY[HARD_N + n] = yr; HZ[HARD_N + n] = zApex - tb + cont(yr); }
+  HS[0] = 0;
+  for (let n = 1; n <= 2 * HARD_N; n++) HS[n] = HS[n - 1] + Math.hypot(HY[n] - HY[n - 1], HZ[n] - HZ[n - 1]);
+  // the rounded rail's share of the way round at each sample, and the same share on the hard edge
+  let tot = 0;
+  for (let k = KA + 1; k < K; k++) tot += Math.hypot(YR[k] - YR[k - 1], Z[k] - Z[k - 1]);
+  let run = 0, n = 0;
+  const hTot = HS[2 * HARD_N];
+  for (let k = KA; k < K; k++) {
+    if (k > KA) run += Math.hypot(YR[k] - YR[k - 1], Z[k] - Z[k - 1]);
+    const target = tot > 0 ? (run / tot) * hTot : 0;
+    while (n < 2 * HARD_N - 1 && HS[n + 1] < target) n++;
+    const f = HS[n + 1] > HS[n] ? clip((target - HS[n]) / (HS[n + 1] - HS[n]), 0, 1) : 0;
+    const yh = HY[n] + f * (HY[n + 1] - HY[n]), zh = HZ[n] + f * (HZ[n + 1] - HZ[n]);
+    Y[k] = map(YR[k] + w * (yh - YR[k]));
+    Z[k] = Z[k] + w * (zh - Z[k]);
+  }
+}
+
 /**
  * The rail apex arms. On each side of the apex (deck above, bottom below) an arm of length
  * l (in inches: the fraction times the height that side spans) leaves the apex at an angle
@@ -830,7 +949,9 @@ function pinchRail(sh, zApex, td, tb, yi, hi, Y, Z) {
     const l = frac * span;
     if (!(l > 1e-4) || !(span > 1e-4)) continue;
     const step = deck ? -1 : 1, k0 = deck ? KA - 1 : KA, kEnd = deck ? -1 : K;
-    let R = 2 * l, j = -1;
+    let far = 0;
+    for (let k = k0 + step; k !== kEnd; k += step) far = Math.max(far, Math.abs(Z[k] - zApex));
+    let R = Math.min(2 * l, 0.97 * far), j = -1;                  // an arm pulled all the way out reshapes the whole side
     for (let k = k0 + step; k !== kEnd; k += step) if (Math.abs(Z[k] - zApex) >= R) { j = k; break; }
     if (j < 0) continue;                                  // the rail never gets that far (cannot happen while 2 l < span)
     // J between samples j - step and j, and the rail's direction there (away from the apex)
@@ -876,12 +997,14 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
     const deck = TH_DECK[k], e = deck ? ed : eb;
     const yraw = hi * TH_COS[k] ** (2 / e);
     const eta = clip(yraw / hs, 0, 1);
+    YR[k] = yraw;
     Y[k] = yi + (yraw * (hi - yi)) / hs;
     Z[k] = deck
       ? zApex + td * TH_SIN[k] ** (2 / ed) * (1 - 0.7 * dome * eta * eta)
       : zApex - tb * TH_SIN[k] ** (2 / e) + con * (1 - eta * eta) ** 2 + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 - vee * (1 - eta)
         + (tl ? toolLift(tl, Y[k]) : 0);
   }
+  if (sh.hard > 0.3 && hi > 1e-6 && tb > 1e-6) hardEdge(sh, zApex, tb, yi, hi, tl, Y, Z);
   pinchRail(sh, zApex, td, tb, yi, hi, Y, Z);
   if (!rowD) return sh;
   const RHO = aux ? aux.rho : S_RHO, NY = aux ? aux.ny : S_NY, NZ = aux ? aux.nz : S_NZ;
@@ -985,7 +1108,8 @@ function buildMesh(p, tScale) {
     return ti * Math.tanh((1.5 * h[i]) / Math.max(ti, 1e-9));   // pinch where the outline gets narrow
   });
   const notch = notchHalfWidth(p, x, arms.swallow);
-  const yin = Float64Array.from(notch, (v, i) => Math.min(v, h[i] * 0.95));
+  const keep = TAIL_TYPES[p.tail_type].notch ? 0.95 + 0.046 * (1 - (p.swallow_tip ?? 1)) : 0.95;   // pointed swallow tips: the cut runs right out
+  const yin = Float64Array.from(notch, (v, i) => Math.min(v, h[i] * keep));
   const sl = sliceTables(p);
   const [Y, Z] = sections(p, x, h, yin, t, zb, M, sl);
 
@@ -1196,7 +1320,7 @@ export function sliceInfo(board, k) {
 }
 
 export function specSheet(board) {
-  const s = board.stats, p = board.params;
+  const s = board.stats, p = board.params, L_ = p.length;
   const name = (v) => v.replace(/_/g, ' ');
   const L = (str, n) => str.padEnd(n), R = (str, n) => str.padStart(n);
   const lines = [
@@ -1211,11 +1335,16 @@ export function specSheet(board) {
     `thick point  ${fmtIn(p.thickness_point_offset)} from center`,
     `rails        apex ${p.rail_apex_in !== null ? `${fmtIn(p.rail_apex_in)} above the bottom` : `${Math.round(p.rail_apex * 100)}% of thickness`}, fullness ${p.rail_fullness.toFixed(2)}, deck dome ${p.deck_dome.toFixed(2)}`,
     ...(p.bottom.length
-      ? ['bottom       contours, nose to tail:', ...[...p.bottom].reverse().map((r) =>
-        `             ${whereIs(r)}: ${BOTTOM_LABELS[r.type]}${r.type === 'flat' ? '' : ` ${fmtIn(r.depth)}`}${r.type.endsWith('_double') ? ` / ${fmtIn(r.depth2)}` : ''}${r.end ? ' (end of stretch)' : ''}`)]
+      ? ['bottom       contours, nose to tail:', ...[...p.bottom.filter((r) => r.inner === undefined).map((r) => ({ ...r, x0: r.x })), ...(p.bottom.stretches || [])]
+        .sort((a, b) => b.x0 - a.x0).map((r) => {
+          const what = `${BOTTOM_LABELS[r.type]}${r.type === 'flat' ? '' : ` ${fmtIn(r.depth)}`}${r.type.endsWith('_double') ? ` / ${fmtIn(r.depth2)}` : ''}`;
+          if (!r.to) return `             ${whereIs(r)}: ${what}`;
+          const blend = r.bn > 0 || r.bt > 0 ? `, deepest ${r.deep ? whereIs(r.deep) : 'in the middle'}, blends ${r.bn.toFixed(2)} toward the nose / ${r.bt.toFixed(2)} toward the tail` : '';
+          return `             ${whereIs(r)} until ${whereIs(r.to)}: ${what}${blend}`;
+        })]
       : [`bottom       concave ${fmtIn(p.concave_depth)}, tail vee ${fmtIn(p.vee_depth)}`]),
     ...p.tools.map((t) => `concave tool ${TOOL_SHAPES[t.shape].toLowerCase()}, ${t.kind}${t.kind === 'double' ? (t.edge === 'rail' ? ', hard on the rail side' : ', hard edges') : ', hard edge'}, ${fmtIn(t.depth)} deep, from ${whereIs(t.start)} until ${whereIs(t.end)}${
-      t.shape === 'teardrop' ? `, ${fmtIn(t.width)} at its widest, round end toward the ${t.round}` : t.shape === 'straight' ? `, ${fmtIn(t.w1)} wide at the nose end to ${fmtIn(t.w2)} at the tail end` : ', curved edges'}`),
+      t.shape === 'teardrop' ? `, ${fmtIn(2 * Math.max(...t.outer.Y))} at its widest, round end toward the ${t.round}` : t.shape === 'straight' ? `, ${fmtIn(t.w1)} wide at the nose end to ${fmtIn(t.w2)} at the tail end` : ', curved edges'}, deepest ${fmtFtin(L_ - t.xd)} from the nose, blends ${t.blendNose.toFixed(2)} / ${t.blendTail.toFixed(2)}`),
     `plan area    ${s.plan_area_in2.toFixed(0)} sq in`,
     '',
     'Inches to the nearest 1/16. Rocker is bottom height above a flat table touching the low point.',

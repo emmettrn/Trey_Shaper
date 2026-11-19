@@ -5,12 +5,12 @@
  *     straight away) and fall back to the saved copy when there isn't
  * Bump CACHE when the list of files changes.
  */
-const CACHE = 'surfboard-designer-v9';
+const CACHE = 'surfboard-designer-v11';
 const FILES = [
   './', 'index.html', 'style.css', 'app.js', 'geometry.js', 'trace.js', 'data.js', 'manifest.webmanifest',
   'icon-180.png', 'icon-192.png', 'icon-512.png',
   'three.module.min.js',
-  'TrackballControls.js',
+  'OrbitControls.js',
   'RoomEnvironment.js',
   'BufferGeometryUtils.js',
 ];
@@ -30,7 +30,10 @@ self.addEventListener('fetch', (e) => {
   e.respondWith((async () => {
     const cache = await caches.open(CACHE);
     try {
-      const res = await fetch(e.request);
+      // always ask the server whether a file changed (a quick 'not modified' when it has not), instead of
+      // using the browser's own 10-minute copy: right after an update, a mix of old and new files breaks the page
+      const fresh = e.request.mode === 'navigate' ? new Request(e.request.url, { cache: 'no-cache' }) : new Request(e.request, { cache: 'no-cache' });
+      const res = await fetch(fresh);
       if (res && (res.ok || res.type === 'opaque')) cache.put(e.request, res.clone()).catch(() => {});
       return res;
     } catch (err) {
