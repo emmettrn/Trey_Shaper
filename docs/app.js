@@ -21,7 +21,7 @@ const state = {
 const TAIL_CLOSES = Object.keys(TAIL_TYPES).filter((k) => TAIL_TYPES[k].closes);
 
 // Viewer preferences (not part of the design): kept per browser
-const LIGHT_HOME = [-0.753, 0.552];   // fixed light: left and up, a little toward the viewer
+const LIGHT_HOME = [-0.79, 0.59];     // fixed light: left and up, low and raking (about 10 degrees), so slight contours show
 const prefs = { fix: true, vexProfile: 1, vexSections: 1, bay: true, bayGain: 0.3, fixedLight: true, edit: false, lightDir: LIGHT_HOME, layout: {} };
 try { Object.assign(prefs, JSON.parse(localStorage.getItem('surfboard.ui') || '{}')); } catch {}
 const savePrefs = () => { try { localStorage.setItem('surfboard.ui', JSON.stringify(prefs)); } catch {} };
@@ -553,7 +553,7 @@ function drawTools(v, ctx, data) {
   const tool = editing.tool, raw = rawTool(tool.id);
   if (!raw) return false;
   const frontIsStart = posToX(raw.start, L) >= posToX(raw.end, L);
-  const setX = (end, wx) => { const x = clip(snap(wx, 0.25), 0, L), r = raw[end]; r.pos = r.from === 'nose' ? L - x : r.from === 'center' ? x - L / 2 : x; };
+  const setX = (end, wx) => { const x = clip(snap(wx, 0.25), -24, L + 24), r = raw[end]; r.pos = r.from === 'nose' ? L - x : r.from === 'center' ? x - L / 2 : x; };
   const H = [];                                          // this tool's handles
   const pt = (h) => { v.point(ctx, { ...h, tool: true }); };
   pt({ x: tool.x1, y: 0, kind: 'slice', color: TOOL_COL, drag: (wx) => setX(frontIsStart ? 'start' : 'end', wx) });
@@ -566,8 +566,8 @@ function drawTools(v, ctx, data) {
   } });
   if (tool.shape === 'straight') {
     const [kf, kb] = frontIsStart ? ['w1', 'w2'] : ['w2', 'w1'];
-    pt({ x: tool.x1, y: tool[frontIsStart ? 'w1' : 'w2'] / 2, kind: 'anchor', color: TOOL_COL, drag: (wx, wy) => { raw[kf] = clip(2 * yOf(wy), 0.5, W); } });
-    pt({ x: tool.x0, y: tool[frontIsStart ? 'w2' : 'w1'] / 2, kind: 'anchor', color: TOOL_COL, drag: (wx, wy) => { raw[kb] = clip(2 * yOf(wy), 0.5, W); } });
+    pt({ x: tool.x1, y: tool[frontIsStart ? 'w1' : 'w2'] / 2, kind: 'anchor', color: TOOL_COL, drag: (wx, wy) => { raw[kf] = clip(2 * yOf(wy), 0.5, 2 * W); } });
+    pt({ x: tool.x0, y: tool[frontIsStart ? 'w2' : 'w1'] / 2, kind: 'anchor', color: TOOL_COL, drag: (wx, wy) => { raw[kb] = clip(2 * yOf(wy), 0.5, 2 * W); } });
     if (tool.kind === 'double') pt({ x: (tool.x0 + tool.x1) / 2, y: tool.ridge / 2, kind: 'anchor', color: TOOL_COL2, drag: (wx, wy) => { raw.ridge = clip(2 * yOf(wy), 0, W); } });
   } else {
     // tear drop and venturi: points along each edge, with arms like the outline's. A point is
@@ -584,7 +584,7 @@ function drawTools(v, ctx, data) {
       arr.forEach((a, i) => {
         const end = i === 0 || i === arr.length - 1, lo = i > 0 ? arr[i - 1][0] + 0.02 : 0, hi = i < arr.length - 1 ? arr[i + 1][0] - 0.02 : 1;
         pt({ x: X(a), y: a[1] / 2, kind: 'anchor', color: col, on: state.toolPt === a, select: () => { state.toolPt = a; },
-          drag: (wx, wy) => { if (!end) a[0] = clip((tool.x1 - wx) / len, lo, hi); a[1] = clip(2 * yOf(wy), 0, W); },
+          drag: (wx, wy) => { if (!end) a[0] = clip((tool.x1 - wx) / len, lo, hi); a[1] = clip(2 * yOf(wy), 0, 2 * W); },
           remove: end || arr.length <= 2 ? null : () => dropFrom(arr, a) });
         if (state.toolPt !== a) return;
         // its arms: one direction (so the edge stays smooth), each side its own length
@@ -616,9 +616,9 @@ function drawTools(v, ctx, data) {
       H.push({
         dist: (wx, wy) => { let best = Infinity; for (let i = 0; i < xs2.length; i++) best = Math.min(best, Math.hypot(v.X(xs2[i]) - v.X(wx), v.Y(ys[i]) - v.Y(Math.abs(wy)))); return best; },
         add: (wx, wy) => {
-          const a = [clip((tool.x1 - wx) / len, 0.02, 0.98), clip(2 * yOf(wy), 0, W)];
+          const a = [clip((tool.x1 - wx) / len, 0.02, 0.98), clip(2 * yOf(wy), 0, 2 * W)];
           arr.push(a); state.toolPt = a;
-          return { fn: (x, y) => { a[0] = clip((tool.x1 - x) / len, 0.02, 0.98); a[1] = clip(2 * yOf(y), 0, W); }, undo: () => dropFrom(arr, a) };
+          return { fn: (x, y) => { a[0] = clip((tool.x1 - x) / len, 0.02, 0.98); a[1] = clip(2 * yOf(y), 0, 2 * W); }, undo: () => dropFrom(arr, a) };
         },
       });
     }
@@ -853,6 +853,8 @@ function applyParams(p, keepSel = null) {
     P.handles[name] = {};
     for (const key of ['tail', 'tail12', 'origin', 'nose12', 'nose']) { const q = hd3(hs[name]?.[key]); if (q) P.handles[name][key] = q; }
   }
+  { const q = hd3(hs.swallow?.tail); P.handles.swallow = q ? { tail: q } : {};
+  }
   P.marks = (Array.isArray(P.marks) ? P.marks : []).filter((r) => r && Number.isFinite(+r.pos)).map((r) => {      // added measurements
     const m = { pos: +r.pos, from: FROM.includes(r.from) ? r.from : 'tail', width: num(r.width), rocker: num(r.rocker), thickness: num(r.thickness) };
     for (const f of ['hw', 'hr', 'ht']) { const q = hd3(r[f]); if (q) m[f] = q; }
@@ -1033,7 +1035,9 @@ const bayLamp = (color, x, y, z, set) => {
   set?.push(lamp);
   return lamp;
 };
-for (const [side, color] of [[1, 0xfff6ec], [-1, 0xeef3ff]]) {
+// warm on one rail, cool on the other: a concave's halves face across (the colours cross over at the stringer),
+// a vee's or a roll's face their own side, and flat foam takes neither
+for (const [side, color] of [[1, 0xffbf80], [-1, 0x8fbcff]]) {
   bayLamp(color, 0, 2.6, 60 * side, bayDeck);          // deck: about 2.5 degrees above level
   bayLamp(color, 0, -0.75, 60 * side, bayBottom);      // bottom: under 1 degree
 }
@@ -1589,10 +1593,13 @@ function drawArms(v, ctx, H, x0, y0, res, { S0, k, kx = 1, color, mMax = 3, aMin
   if (!prefs.edit || state.pt !== H.id || !res) return;
   const S = S0 + k * res.m;                             // graph height per unit of position
   for (const side of [-1, 1]) {
-    const len = side < 0 ? res.aL : res.aR;
-    if (!Number.isFinite(len)) continue;
+    const len0 = side < 0 ? res.aL : res.aR;
+    if (!Number.isFinite(len0)) continue;
+    // a short arm is drawn at least 16 px out, so it can be grabbed (dragging sets its real length)
+    const dir = [kx * T[0] + S * N[0], kx * T[1] + S * N[1]], px = Math.hypot(dir[0] * v.s, dir[1] * v.s * (v.vex || 1));
+    const len = px > 0 ? Math.max(len0, 16 / px) : len0;
     v.point(ctx, {
-      x: x0 + side * len * (kx * T[0] + S * N[0]), y: y0 + side * len * (kx * T[1] + S * N[1]), kind: 'arm', color, ax: x0, ay: y0,
+      x: x0 + side * len * dir[0], y: y0 + side * len * dir[1], kind: 'arm', color, ax: x0, ay: y0,
       drag: (wx, wy) => {
         const along = (wx - x0) * T[0] + (wy - y0) * T[1], across = (wx - x0) * N[0] + (wy - y0) * N[1];
         const d = Math.max((side * along) / kx, aMin);
@@ -1679,8 +1686,12 @@ function drawPlan(v, data) {
 
   // measurements
   const pq = data._profiles;
-  const pinArms = (key, px, py, color) => drawArms(v, ctx, pinHandle('outline', key), px, py, pq.arms.outline.pins[key],
-    { S0: slopeAt(pq.x, pq.h0, px), k: 1, color, level: key === 'origin' });
+  const pinArms = (key, px, py, color) => {
+    let res = pq.arms.outline.pins[key];
+    if (res && key === 'tail') res = { ...res, aL: NaN };   // the tips only have an arm on the board's side
+    if (res && key === 'nose') res = { ...res, aR: NaN };
+    drawArms(v, ctx, pinHandle('outline', key), px, py, res, { S0: slopeAt(pq.x, pq.h0, px), k: 1, color, level: key === 'origin' });
+  };
   station(v, ctx, 12, lerpAt(x, h, 12), COLORS.warm, (wx, wy) => setParam('tail_width_12', snap(2 * Math.abs(wy), 0.0625), 'graph'), 'p|outline|tail12');
   pinArms('tail12', 12, lerpAt(x, h, 12), COLORS.warm);
   station(v, ctx, L - 12, lerpAt(x, h, L - 12), COLORS.sand, (wx, wy) => setParam('nose_width_12', snap(2 * Math.abs(wy), 0.0625), 'graph'), 'p|outline|nose12');
@@ -1732,6 +1743,10 @@ function drawPlan(v, data) {
       v.point(ctx, { x: a[0], y: -y, kind: 'anchor', color: COLORS.warm, ghost: true });
       drawArms(v, ctx, anchorHandle(a), a[0], y, armOf(pq.arms.swallow, a), { S0, k: 1, color: COLORS.warm, aMin: 0.2 });
     }
+    // the swallow tip's second arm: how the cut leaves the tail end (shown with the tail end's own arm)
+    const cutTip = tripleHandle('p|outline|tail', () => state.params.handles.swallow?.tail,
+      (hd) => { state.params.handles.swallow ||= {}; if (hd) state.params.handles.swallow.tail = [hd[0], null, hd[2]]; else delete state.params.handles.swallow.tail; });
+    drawArms(v, ctx, cutTip, 0, yn(0), pq.arms.swallow?.tip && { ...pq.arms.swallow.tip, aL: NaN }, { S0, k: 1, color: COLORS.warm, aMin: 0.2 });
     v.curves.push({
       at: (wx, wy) => (wx < 0.35 || wx > D - 0.35 ? null : (wy < 0 ? -1 : 1) * yn(wx)),
       add: (wx) => {
@@ -2562,7 +2577,7 @@ function wireUI() {
   document.addEventListener('click', () => (menu.hidden = true));
   menu.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
     const { fmt, units } = b.dataset;
-    const board = fmt === 'txt' ? state.board : buildBoard({ ...state.params, stations: 321, section_points: 96 });
+    const board = fmt === 'txt' ? state.board : buildBoard({ ...state.params, stations: 321, section_points: 160 });
     const name = `surfboard_${ftin(board.params.length).replace(/'/g, 'ft').replace(/"/g, 'in')}_${board.volume_l.toFixed(1)}L`;
     if (fmt === 'stl') saveFile(`${name}.stl`, toSTL(board, units));
     if (fmt === 'obj') saveFile(`${name}.obj`, toOBJ(board, units));
