@@ -29,7 +29,6 @@ export const DEFAULTS = {
   "deck_dome": 0.35,
   "rail_hardness_nose": 0.25,
   "rail_hardness_tail": 0.85,
-  "rail_tuck": 0.5,
   "concave_depth": 0.12,
   "vee_depth": 0.0,
   "lock_volume": false,
@@ -598,30 +597,44 @@ export const GROUPS = [
         "unit": "frac"
       },
       {
-        "key": "rail_hardness_nose",
-        "label": "Rail edge (nose)",
+        "key": "rail_tuck_nose",
+        "label": "Nose rail tuck",
+        "min": 0,
+        "max": 4,
+        "step": 0.0625,
+        "unit": "in",
+        "help": "how far in from the rail apex the rail turns under to the flat bottom: 0 = straight down from the apex, 3\" = very soft"
+      },
+      {
+        "key": "rail_tuck_tail",
+        "label": "Tail rail tuck",
+        "min": 0,
+        "max": 4,
+        "step": 0.0625,
+        "unit": "in"
+      },
+      {
+        "key": "hard_edge",
+        "label": "Hard edge (tail)",
+        "type": "bool"
+      },
+      {
+        "key": "rail_reach_tail",
+        "label": "Tail tuck reaches",
         "min": 0,
         "max": 1,
         "step": 0.01,
         "unit": "frac",
-        "help": "0 = soft, 1 = hard edge"
+        "help": "how far up the board the tail tuck (and hard edge) holds before blending into the nose tuck"
       },
       {
-        "key": "rail_hardness_tail",
-        "label": "Rail edge (tail)",
-        "min": 0,
-        "max": 1,
-        "step": 0.01,
-        "unit": "frac"
-      },
-      {
-        "key": "rail_tuck",
-        "label": "Edge tuck",
+        "key": "rail_reach_nose",
+        "label": "Nose tuck reaches",
         "min": 0,
         "max": 1,
         "step": 0.01,
         "unit": "frac",
-        "help": "with a hard rail edge: how far the edge sits in under the rail apex (0 = right under it, 1 = well tucked)"
+        "help": "how far back from the nose the nose tuck holds"
       }
     ]
   },

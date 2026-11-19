@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, toolOutline } from './geometry.js';
+import { railTuckFromOld, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, toolOutline } from './geometry.js';
 import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js';
 import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js';
 
@@ -635,8 +635,8 @@ const SECTION_SLIDERS = [
   ['deck_dome', 'Deck dome', 0, 1, 0.01, 'frac', '0 = flat deck, 1 = strongly domed'],
   ['rail_fullness', 'Rail fullness', 0, 1, 0.01, 'frac', 'how much foam the rail carries'],
   ['rail_apex_in', 'Rail apex height', 0.125, 2, 0.0625, 'in', 'up from the flat bottom line'],
-  ['rail_hardness', 'Rail edge', 0, 1, 0.01, 'frac', '0 = soft, 1 = hard edge'],
-  ['rail_tuck', 'Edge tuck', 0, 1, 0.01, 'frac', 'with a hard edge: how far it sits in under the apex (or drag the edge point)'],
+  ['rail_tuck_in', 'Rail tuck', 0, 4, 0.0625, 'in', 'inches in from the apex to the flat bottom (or drag the edge point)'],
+  ['edge', 'Edge', 0, 1, 0.01, 'frac', '0 = soft (meets the bottom smoothly), 1 = hard corner'],
   ['concave', 'Single concave', -0.5, 0.5, 0.01, 'in', 'below zero = roll (convex)'],
   ['double', 'Double concave', 0, 0.5, 0.01, 'in', ''],
   ['vee', 'Vee', 0, 0.5, 0.01, 'in', ''],
@@ -840,6 +840,7 @@ function setParam(key, v, src) {
 function applyParams(p, keepSel = null) {
   state.params = structuredClone({ ...state.schema.defaults, ...p });
   const P = state.params, a = P.anchors && typeof P.anchors === 'object' ? P.anchors : {};
+  railTuckFromOld(P);                                    // designs from before rail tucks (Rail edge 0..1) get tucks in inches
   const num = (v) => (Number.isFinite(v) ? v : null);
   // an anchor is [position, offset] plus, once its handle has been moved, [slope, left arm, right arm]
   const pts = (l) => (Array.isArray(l) ? l : []).filter((q) => Array.isArray(q) && Number.isFinite(+q[0]) && Number.isFinite(+q[1]))
@@ -868,6 +869,8 @@ function applyParams(p, keepSel = null) {
     const adj = { ...(s.adj && typeof s.adj === 'object' ? s.adj : {}) };
     if (Number.isFinite(adj.rail_apex) && adj.rail_apex) { adj.rail_apex_in = (adj.rail_apex_in || 0) + adj.rail_apex * T; }
     delete adj.rail_apex;
+    if (Number.isFinite(adj.rail_hardness)) { if (adj.rail_hardness) adj.edge = adj.rail_hardness; delete adj.rail_hardness; }   // older sections
+    delete adj.rail_tuck;
     return { id, x: s.x, adj, deck: pts(s.deck), bottom: pts(s.bottom), v: s.v === 2 ? 2 : 1 };
   });
   P.bottom = (Array.isArray(P.bottom) ? P.bottom : []).filter((r) => r && Number.isFinite(+r.pos)).map((r) => ({
@@ -1292,19 +1295,8 @@ function resize() {
   camera.updateProjectionMatrix();
   if (state.board && !state.userMoved && !tween) setView(state.view || 'threeq', false);   // keep the board framed until they grab it
 }
-controls.addEventListener('start', () => { state.userMoved = true; state.orbiting = true; });
-controls.addEventListener('end', () => { state.orbiting = false; });
-// Turning past straight above or below: an orbit stops there, so the board turns over instead
-// (the same as Bottom up), and the drag carries on from the other side.
-let atPole = true;
-controls.addEventListener('change', () => {
-  const a = controls.getPolarAngle(), near = a < 0.05 || a > Math.PI - 0.05;
-  if (near && !atPole && state.orbiting) {
-    state.flip = !state.flip;
-    $('#t-flip').classList.toggle('on', state.flip);
-  }
-  if (near) atPole = true; else if (a > 0.2 && a < Math.PI - 0.2) atPole = false;
-});
+controls.addEventListener('start', () => (state.userMoved = true));
+
 new ResizeObserver(resize).observe(viewport);
 renderer.domElement.addEventListener('pointerdown', () => $('#hint').classList.add('gone'), { once: true });
 setTimeout(() => $('#hint').classList.add('gone'), 12000);
@@ -2012,20 +2004,20 @@ function drawSections(v, data) {
     sl.adj[`apex_${which}_arm`] = +clip(Math.hypot(Math.max(inward, 0), Math.max(along, 0)) / span, 0.01, 0.5).toFixed(4);
   };
   const armReset = (which) => () => { const sl = rawSlice(); if (sl) { delete sl.adj[`apex_${which}_angle`]; delete sl.adj[`apex_${which}_arm`]; } };
-  // the hard edge: where the bottom meets the tuck. Drag it in or out (how far it sits in under the apex).
-  if (s.shape.hard > 0.3 && prefs.edit) {
-    const tb = s.apex_in, wt = clip(tb * (0.25 + 1.5 * s.shape.tuck), 0.05, 0.35 * s.h), ey = s.h - wt;
+  // the edge: where the rail's tuck meets the flat bottom. Drag it in or out (the tuck, in inches).
+  if (prefs.edit) {
+    const ey = s.h - Math.min(s.shape.tuck, 0.97 * s.h);
     let ez = 0, bd = Infinity;
     s.bottom.y.forEach((yy, i) => { const d0 = Math.abs(yy - ey); if (d0 < bd) { bd = d0; ez = s.bottom.z[i]; } });
     for (const rail of [1, -1]) {
       v.point(ctx, { x: rail * ey, y: ez, kind: 'anchor', color: COLORS.warm,
         drag: (wx) => {
           const sl = rawSlice(); if (!sl || !state.board) return;
-          const w2 = clip(s.h - Math.abs(wx), 0.05, 0.35 * s.h), tuck = clip((w2 / tb - 0.25) / 1.5, 0, 1);
-          sl.adj.rail_tuck = clip(+(tuck - sectionBase(state.board.params, sl.x).rail_tuck).toFixed(3), -1, 1);
+          const w = clip(snap(s.h - Math.abs(wx), 1 / 16), 0, 4);
+          sl.adj.rail_tuck_in = clip(+(w - sectionBase(state.board.params, sl.x).rail_tuck_in).toFixed(4), -4, 4);
         },
-        remove: () => { const sl = rawSlice(); if (sl) delete sl.adj.rail_tuck; } });
-      if (rail < 0 && v.w > 300) v.text(ctx, 'edge', v.X(-ey) + 8, v.Y(ez) + 13, COLORS.warm, 'left');
+        remove: () => { const sl = rawSlice(); if (sl) delete sl.adj.rail_tuck_in; } });
+      if (rail < 0 && v.w > 300) v.text(ctx, `edge · tuck ${fracIn(s.shape.tuck)}″`, v.X(-ey) + 8, v.Y(ez) + 13, COLORS.warm, 'left');
     }
   }
   for (const rail of [1, -1]) {
