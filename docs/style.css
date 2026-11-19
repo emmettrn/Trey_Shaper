@@ -366,6 +366,7 @@ button:disabled { opacity: .35; cursor: default; }
 .tcard .cell { background: var(--panel); }
 .tcard select { padding: 4px 6px; min-width: 0; }
 .trow { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.trow[hidden] { display: none; }
 .trow.top select { flex: 1; }
 .trow.where span { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .trow.where span:first-child { width: 32px; }

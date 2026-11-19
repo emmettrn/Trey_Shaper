@@ -75,7 +75,8 @@ the tip), it is limited to the nearest value that can, and a warning chip says s
   below the rocker, which also made a divot where a vee met a single concave).
 - **Single concave** is one dish across the bottom (the old curve flattened toward the rail and
   read as two under the bay lights).
-- **Bay lights**: warm lamp on one rail, cool on the other. A concave's colours cross over at the
+- **Bay lights**: a soft warm lamp on one rail, a soft cool one on the other, plus a dim overhead
+  lamp and a brighter-from-above fill for natural shading. A concave's colours cross over at the
   stringer; a vee's or a roll's stay on their own side; flat foam stays dim. The fixed light
   starts lower (about 10 degrees) so slight contours show.
 - **Concave tools**: edges rounded over 1/10" and a finer mesh (at least 96 points round each
@@ -112,6 +113,8 @@ see the bottom.
   screen the nose and tail end points move (the length follows) and have arms; a swallow's V has
   two points of its own, and buttons add or remove the cut.
 - **Swallow tips** slider: 0 makes each side of a swallow come to a point.
+- **Swallow tip radius** (Outline, swallows only): rounds the deck down toward the rail over that
+  many inches at each tip, like a rail radius on the swallow's ends. 0 keeps square ends.
 - **Nose tip and tail end arms** on the Plan graph: click the square at either tip to shape how
   the outline leaves it (blunter or more pointed). The 12" widths and the width do not move.
 - **Concave tools:** tear drop and venturi edges are curves through points with arms (click a
@@ -155,6 +158,13 @@ can be measured from the nose, from the tail, or ahead of / behind center.
    single or double. The edges of the concave are creases, not blends; a double can be hard on
    both sides or only on the rail side (blending into the ridge). **Shape it on the Plan graph**
    puts handles on it: diamonds move its ends, dots move its edges.
+   - **Center line** (on each tool's card) sets the rocker along the stringer inside the concave,
+     separate from the rail-line rocker:
+     *blended* uses the deepest spot and the two blend sliders (a blend of 0 now gives a kink in
+     the rocker at that end instead of a step); *flat* runs the stringer straight from one end
+     of the tool to the other, so the rocker kinks at both ends; *custom* lets you draw it on the
+     Profile graph (drag points up to go deeper, click the line to add one; each point is a
+     kink). For a nose concave that exits straight out the rocker, put the nose end point at 0.
    - *Tear drop*: the noserider nose concave: round at one end (following the rails near the
      nose), tapering to a point, deepest a third of the way along.
    - *Straight edges*: set the width at each end: equal widths are parallel, different widths
