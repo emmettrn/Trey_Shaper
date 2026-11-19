@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { railTuckFromOld, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, toolOutline } from './geometry.js';
+import { railTuckFromOld, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, toolOutline, toolCenterLine } from './geometry.js';
 import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js';
 import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js';
 
@@ -449,14 +449,17 @@ function renderTools() {
         <label data-for="ridge">ridge<input class="cell n" data-k="ridge" spellcheck="false"></label>
         <label data-for="double">edges<select class="edge">${opt({ hard: 'hard both sides', rail: 'hard on the rail side' })}</select></label>
       </div>
-      <div class="trow where"><span>deepest</span><input class="cell p3" spellcheck="false" aria-label="Deepest at, inches"><span>″</span><select class="f3" aria-label="Measured from">${FROM_LONG}</select></div>
-      <div class="trow blends">${BLEND_ROW}</div>
+      <div class="trow where"><span>center</span><select class="center" aria-label="Center line" title="How deep the concave is along the stringer">${opt({ blend: 'blended: deepest spot + blends', flat: 'flat: straight from end to end', custom: 'custom: points on the Profile graph' })}</select></div>
+      <div class="trow where blendonly"><span>deepest</span><input class="cell p3" spellcheck="false" aria-label="Deepest at, inches"><span>″</span><select class="f3" aria-label="Measured from">${FROM_LONG}</select></div>
+      <div class="trow blends blendonly">${BLEND_ROW}</div>
       <div class="trow foot"><button class="ghost edit"></button><span class="angle"></span></div>`;
     const q = (sel) => el.querySelector(sel);
     const paint = () => {
       const made = state.board?.params.tools?.find((m) => m.id === t.id);      // as the board has it (worked-out values)
       q('.shape').value = t.shape; q('.kind').value = t.kind; q('.round').value = t.round || 'nose'; q('.edge').value = t.edge || 'hard';
       paintDeep(q, t, made, state.board?.params.length);
+      q('.center').value = t.center || 'blend';
+      for (const el2 of el.querySelectorAll('.blendonly')) el2.hidden = (t.center || 'blend') !== 'blend';
       q('.p1').value = fracIn(showPos(t.start)); q('.f1').value = fromKey(t.start);
       q('.p2').value = fracIn(showPos(t.end)); q('.f2').value = fromKey(t.end);
       for (const inp of el.querySelectorAll('.n')) inp.value = Number.isFinite(t[inp.dataset.k]) ? fracIn(t[inp.dataset.k], inp.dataset.k === 'depth' ? 32 : 16) : '';
@@ -507,6 +510,16 @@ function renderTools() {
       paint(); toolsChanged(false);
     });
     q('.kind').addEventListener('change', () => { t.kind = q('.kind').value; paint(); toolsChanged(false); });
+    q('.center').addEventListener('change', () => {
+      const c = q('.center').value, k = state.board?.params.tools.findIndex((m) => m.id === t.id);
+      if (c === 'custom' && !(Array.isArray(t.cpts) && t.cpts.length >= 2) && k >= 0) {      // start from the line it has now
+        const cl = toolCenterLine(state.board, k, 4);
+        t.cpts = cl.pts.map((pt) => [+((cl.tool.x1 - pt.x) / cl.tool.len).toFixed(4), +pt.depth.toFixed(4)]);
+      }
+      t.center = c;
+      if (c === 'custom') { state.tool = t.id; if (!prefs.edit) { prefs.edit = true; savePrefs(); syncPanelTools(); } }
+      paint(); toolsChanged(true);
+    });
     q('.round').addEventListener('change', () => {                // a fresh tear drop turned the other way, the same width
       const made = state.board?.params.tools?.find((m) => m.id === t.id);
       if (made?.outer) t.width = 2 * Math.max(...made.outer.Y);
@@ -625,6 +638,47 @@ function drawTools(v, ctx, data) {
   }
   v.handles = v.handles.filter((h) => h.tool);           // while a tool is being shaped, only its own handles answer
   v.curves = H;
+  return true;
+}
+
+/** Concave tools on the Profile graph: each one's center line (the stringer, lifted by the concave).
+ *  A custom one being shaped gets points: drag them up or down (deeper or shallower) and along;
+ *  the line runs straight between points, so each point is a kink. Returns true while shaping it. */
+function drawToolCenters(v, ctx, data) {
+  const tools = data.params.tools || [];
+  let shaping = null;
+  for (let k = 0; k < tools.length; k++) {
+    const cl = toolCenterLine(data, k); if (!cl || !cl.pts.length) continue;
+    const sel = state.tool !== null && cl.tool.id === state.tool;
+    ctx.save(); ctx.strokeStyle = TOOL_COL; ctx.lineWidth = sel ? 1.6 : 1; ctx.globalAlpha = sel ? 1 : 0.6;
+    if (!sel) ctx.setLineDash([4, 3]);
+    v.path(ctx, cl.pts.map((q) => q.x), cl.pts.map((q) => q.zb + q.depth)); ctx.stroke(); ctx.restore();
+    if (sel && cl.tool.center === 'custom' && prefs.edit) shaping = cl;
+  }
+  if (!shaping) return false;
+  const tool = shaping.tool, raw = rawTool(tool.id), pr = data._profiles;
+  if (!raw) return false;
+  const zbAt = (xq) => lerpAt(pr.x, pr.zb, xq), X = (t) => tool.x1 - t * tool.len;
+  if (!Array.isArray(raw.cpts) || raw.cpts.length < 2) raw.cpts = tool.cpts.map((q) => [...q]);
+  const arr = raw.cpts.sort((a, b) => a[0] - b[0]);
+  arr.forEach((a, i) => {
+    const lo = i > 0 ? arr[i - 1][0] + 0.01 : 0, hi = i < arr.length - 1 ? arr[i + 1][0] - 0.01 : 1, end = i === 0 || i === arr.length - 1;
+    const x = clip(X(a[0]), 0, data.params.length);
+    v.point(ctx, { x, y: zbAt(x) + a[1], kind: 'anchor', color: TOOL_COL, tool: true,
+      drag: (wx, wy) => { if (!end) a[0] = clip((tool.x1 - wx) / tool.len, lo, hi); const xx = clip(X(a[0]), 0, data.params.length); a[1] = clip(+(wy - zbAt(xx)).toFixed(4), 0, 0.75); },
+      remove: end || arr.length <= 2 ? null : () => dropFrom(arr, a) });
+  });
+  const cx = shaping.pts.map((q) => q.x), cy = shaping.pts.map((q) => q.zb + q.depth);
+  v.handles = v.handles.filter((h) => h.tool);           // only this line's points answer while shaping it
+  v.curves = [{
+    dist: (wx, wy) => { let best = Infinity; for (let i = 0; i < cx.length; i++) best = Math.min(best, Math.hypot(v.X(cx[i]) - v.X(wx), v.Y(cy[i]) - v.Y(wy))); return best; },
+    add: (wx, wy) => {
+      const a = [clip((tool.x1 - wx) / tool.len, 0.01, 0.99), clip(wy - zbAt(wx), 0, 0.75)];
+      arr.push(a);
+      return { fn: (x2, y2) => { a[0] = clip((tool.x1 - x2) / tool.len, 0.01, 0.99); a[1] = clip(y2 - zbAt(clip(x2, 0, data.params.length)), 0, 0.75); }, undo: () => dropFrom(arr, a) };
+    },
+  }];
+  v.text(ctx, 'concave center line: drag points up (deeper) or down · click the line to add a point (each one is a kink)', v.X(data.params.length / 2), v.Y(Math.max(...cy)) - 18, TOOL_COL);
   return true;
 }
 /* Sliders for the cross section picked in the Sections graph. They show that section's own
@@ -1037,12 +1091,16 @@ const bayLamp = (color, x, y, z, set) => {
 };
 // warm on one rail, cool on the other: a concave's halves face across (the colours cross over at the stringer),
 // a vee's or a roll's face their own side, and flat foam takes neither
-for (const [side, color] of [[1, 0xffbf80], [-1, 0x8fbcff]]) {
+for (const [side, color] of [[1, 0xffd6ad], [-1, 0xb9d3ff]]) {   // tints mixed toward white: still tell-apart, less theatrical
   bayLamp(color, 0, 2.6, 60 * side, bayDeck);          // deck: about 2.5 degrees above level
   bayLamp(color, 0, -0.75, 60 * side, bayBottom);      // bottom: under 1 degree
 }
 for (const end of [1, -1]) for (const up of [1, -1]) bayLamp(0xf2f6ff, 60 * end, 14 * up, 0).intensity = 0.3;   // a little down the length, for rocker and foil
-const bayFill = new THREE.HemisphereLight(0xffffff, 0xffffff, 0.05);
+// organic shading: a soft overhead lamp a little off to one end (like the bay's ceiling light), and a
+// sky / floor fill that is brighter from above than below, so the deck rolls off into the rails
+// and the bottom sits in its own soft shadow instead of every flat face reading the same
+const bayTop = bayLamp(0xfff6ea, 25, 60, 12);
+const bayFill = new THREE.HemisphereLight(0xfff8ee, 0x4a5058, 0.05);
 bayLights.add(bayFill);
 /**
  * How hard the bay lights work. The side lamps make brightness follow the tilt of the
@@ -1052,9 +1110,10 @@ bayLights.add(bayFill);
  */
 function setBayGain() {
   const g = clip(prefs.bayGain ?? 0.3, 0, 1);
-  for (const lamp of bayDeck) lamp.intensity = 0.7 + 3.9 * g;
-  for (const lamp of bayBottom) lamp.intensity = 0.7 + 10.3 * g * g;
-  bayFill.intensity = 0.78 - 0.73 * g;
+  for (const lamp of bayDeck) lamp.intensity = 0.5 + 2.9 * g;
+  for (const lamp of bayBottom) lamp.intensity = 0.5 + 7.8 * g * g;
+  bayTop.intensity = 0.55 - 0.25 * g;
+  bayFill.intensity = 0.75 - 0.55 * g;
   viewKey.intensity = 1.4 + 3.2 * g;
   viewFill.intensity = 0.58 - 0.46 * g;
 }
@@ -1212,6 +1271,39 @@ function setLighting() {
 // board space (x along, y across, z up) -> three space (X along, Y up, Z across), centered on length
 const toThree = (x, y, z, L) => [x - L / 2, z, -y];
 
+/**
+ * Smooth shading within each patch of the board's surface (deck, rail below the apex, flat
+ * bottom, notch walls, end caps), creased exactly where two patches meet. A soft rail's patches
+ * meet smoothly, so no line shows; a hard edge stays crisp the whole length. (An angle test
+ * would switch the crease on and off along the board as the edge softens, drawing a false line.)
+ */
+function patchNormals(P, idx, patches) {
+  const nv = P.length / 3, K5 = 5, acc = new Float32Array(nv * K5 * 3);
+  const nf = idx.length / 3, fn = new Float32Array(nf * 3);
+  for (let f = 0; f < nf; f++) {
+    const a = idx[3 * f] * 3, b = idx[3 * f + 1] * 3, c = idx[3 * f + 2] * 3;
+    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
+    const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;     // area weighted
+    fn[3 * f] = nx; fn[3 * f + 1] = ny; fn[3 * f + 2] = nz;
+    const k = patches[f];
+    for (let j = 0; j < 3; j++) { const o = (idx[3 * f + j] * K5 + k) * 3; acc[o] += nx; acc[o + 1] += ny; acc[o + 2] += nz; }
+  }
+  const pos = new Float32Array(nf * 9), nor = new Float32Array(nf * 9);
+  for (let f = 0; f < nf; f++) for (let j = 0; j < 3; j++) {
+    const v = idx[3 * f + j], o = (v * K5 + patches[f]) * 3, q = 9 * f + 3 * j;
+    pos[q] = P[3 * v]; pos[q + 1] = P[3 * v + 1]; pos[q + 2] = P[3 * v + 2];
+    let nx = acc[o], ny = acc[o + 1], nz = acc[o + 2];
+    const l = Math.hypot(nx, ny, nz) || 1;
+    nor[q] = nx / l; nor[q + 1] = ny / l; nor[q + 2] = nz / l;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  g.computeBoundingBox(); g.computeBoundingSphere();
+  return g;
+}
+
 function updateMesh(data) {
   const L = data.params.length;
   const pos = data.vertices;
@@ -1226,7 +1318,7 @@ function updateMesh(data) {
   g.computeBoundingBox();
 
   boardMesh.geometry.dispose();
-  boardMesh.geometry = toCreasedNormals(g, THREE.MathUtils.degToRad(40));
+  boardMesh.geometry = data.patches ? patchNormals(P, idx, data.patches) : toCreasedNormals(g, THREE.MathUtils.degToRad(40));
   wireMesh.geometry.dispose();
   wireMesh.geometry = g;
   buildRibs(data);
@@ -1811,6 +1903,8 @@ function drawProfile(v, data) {
     v.point(ctx, { x: sx, y: zb(sx), kind: 'scrub', color: SLICE_COLOR, view: true, light: true,
       drag: (wx) => { state.scrub = clip(snap(wx, 0.25), 0.5, state.board.params.length - 0.5); } });
   }
+
+  if (drawToolCenters(v, ctx, data)) return;
 
   // measurements: rocker on the bottom line, thickness on the deck line
   const now = () => state.board, bz = (xq) => lerpAt(now()._profiles.x, now()._profiles.zb, xq);

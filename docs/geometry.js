@@ -38,6 +38,7 @@ const K2 = (3 / 7) ** 1.5 * (4 / 7) ** 2;                         // peak of eta
 
 const clip = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 const smoothstep = (t) => { t = clip(t, 0, 1); return t * t * (3 - 2 * t); };
+const smoother = (t) => { t = clip(t, 0, 1); return t * t * t * (t * (6 * t - 15) + 10); };
 
 /* ---------------------------------------------------------------------------
    Feet / inches / fractions (same rules as surfboard/units.py)
@@ -104,7 +105,7 @@ export function paramsFromDict(d = {}) {
   const base = { ...DEFAULTS };
   for (const k of Object.keys(DEFAULTS)) if (k in d) base[k] = d[k];
   base.tools = Array.isArray(d.tools) ? d.tools : [];      // concave tools (newer than the generated defaults)
-  for (const k of ['rail_tuck_nose', 'rail_tuck_tail', 'hard_edge', 'rail_reach_nose', 'rail_reach_tail']) if (k in d) base[k] = d[k];   // rail tucks (newer too)
+  for (const k of ['rail_tuck_nose', 'rail_tuck_tail', 'hard_edge', 'rail_reach_nose', 'rail_reach_tail', 'swallow_round']) if (k in d) base[k] = d[k];   // rail tucks (newer too)
   const L = base.length;
   const xl = L / 2 + base.rocker_low_point, xt = L / 2 + base.thickness_point_offset;
   for (const [side, nose] of [['nose', true], ['tail', false]]) {
@@ -183,6 +184,8 @@ export function validated(src) {
   }
   clamp('rail_apex', 0.15, 0.6);
   railTuckFromOld(p);
+  if (!Number.isFinite(p.swallow_round)) p.swallow_round = 0;
+  clamp('swallow_round', 0, 6);
   for (const n of ['rail_fullness', 'deck_dome', 'rail_hardness_nose', 'rail_hardness_tail', 'rail_reach_nose', 'rail_reach_tail']) clamp(n, 0, 1);
   clamp('rail_tuck_nose', 0, 4); clamp('rail_tuck_tail', 0, 4);
   p.hard_edge = !!p.hard_edge;
@@ -457,22 +460,17 @@ function cleanBottom(p) {
     const xd = r.deep && Number.isFinite(r.deep.pos) ? clip(posToX({ pos: r.deep.pos, from: fromOf(r.deep.from) }, L), x0, x1) : (x0 + x1) / 2;
     const bn = blendOf(r.blendNose, 0), bt = blendOf(r.blendTail, 0);
     const S = { ...base, x0, x1, xd, bn, bt, c, d, v, to: { pos: r.to.pos, from: fromOf(r.to.from) }, deep: r.deep && Number.isFinite(r.deep.pos) ? { pos: r.deep.pos, from: fromOf(r.deep.from) } : null };
-    S.at = (q) => { const f = depthAlong(q, x0, x1, xd, bn, bt); return [c * f, d * f, v * f]; };
+    // its depth along the board, worked out exactly wherever it is needed (no sampled rows, so no
+    // kinks): inside, as its deepest spot and blends say; past an end it still holds at (blend 0),
+    // it eases out over 6", unless that end is the end of the board
+    const R = 6;
+    S.f = (q) => {
+      if (q >= x0 && q <= x1) return depthAlong(q, x0, x1, xd, bn, bt);
+      if (q > x1) return x1 >= L - 0.5 ? 1 : depthAlong(x1, x0, x1, xd, bn, bt) * smoother(1 - (q - x1) / R);
+      return x0 <= 0.5 ? 1 : depthAlong(x0, x0, x1, xd, bn, bt) * smoother(1 - (x0 - q) / R);
+    };
+    S.at = (q) => { const f = S.f(q); return [c * f, d * f, v * f]; };
     stretches.push(S);
-    const xs = new Set([x0, x1, xd]);
-    if (bn > 0 || bt > 0) for (let k = 1; k < 8; k++) { xs.add(xd + ((x1 - xd) * k) / 8); xs.add(x0 + ((xd - x0) * k) / 8); }
-    for (const q of [...xs].sort((m, n) => m - n)) {
-      const [cq, dq, vq] = S.at(q);
-      rows.push({ ...base, x: q, c: cq, d: dq, v: vq, inner: q !== (x === x0 ? x0 : x1), end: q === (x === x0 ? x1 : x0) });
-    }
-  }
-  // where a stretch overlaps other stations or stretches, each spot takes the stronger of the
-  // contours there instead of one cutting into the other
-  for (const r of rows) for (const S of stretches) {
-    if (S.src === r.src || r.x < S.x0 - 1e-9 || r.x > S.x1 + 1e-9) continue;
-    const [c, d, v] = S.at(r.x);
-    if (Math.abs(c) > Math.abs(r.c)) r.c = c;
-    r.d = Math.max(r.d, d); r.v = Math.max(r.v, v);
   }
   rows.sort((a, b) => a.x - b.x);
   const kept = [];
@@ -503,11 +501,16 @@ function bottomCurves(p) {
 }
 
 /** [single concave (negative = roll), double concave, vee] depths at x, before any slice adjustment. */
+/** The stronger of two contours, without a corner where one overtakes the other (a smooth max, 1/100" wide). */
+const smax = (a, b, k = 0.01) => (a + b + Math.sqrt((a - b) * (a - b) + k * k)) / 2 - (k / 2) * Math.exp(-Math.abs(a - b) / k);
+const stronger = (a, b) => (a >= 0 && b >= 0 ? smax(a, b) : a <= 0 && b <= 0 ? -smax(-a, -b) : a + b);
 function bottomAt(p, x) {
-  const b = p._bottom;
-  if (!b) return [concaveAt(p, x), 0, veeAt(p, x)];             // the simple Concave / Vee sliders
-  const xq = clip(x, b.xs[0], b.xs[b.xs.length - 1]);
-  return [hermiteAt(b.xs, b.C, b.mC, xq), hermiteAt(b.xs, b.D, b.mD, xq), hermiteAt(b.xs, b.V, b.mV, xq)];
+  const b = p._bottom, S = p.bottom.stretches || [];
+  if (!b && !S.length) return [concaveAt(p, x), 0, veeAt(p, x)];             // the simple Concave / Vee sliders
+  let out = [0, 0, 0];
+  if (b) { const xq = clip(x, b.xs[0], b.xs[b.xs.length - 1]); out = [hermiteAt(b.xs, b.C, b.mC, xq), hermiteAt(b.xs, b.D, b.mD, xq), hermiteAt(b.xs, b.V, b.mV, xq)]; }
+  for (const st of S) { const [c, d, v] = st.at(x); out = [stronger(out[0], c), stronger(out[1], d), stronger(out[2], v)]; }
+  return out;
 }
 
 /**
@@ -809,7 +812,7 @@ function teardropPoints(W, round) {
  * of the way and then eases out.
  */
 function depthAlong(x, x0, x1, xd, bn, bt) {
-  const ease = (q) => { const v = clip(q, 0, 1); return v * v * (3 - 2 * v); };
+  const ease = (q) => { const v = clip(q, 0, 1); return v * v * v * (v * (6 * v - 15) + 10); };   // smootherstep: no jump in curvature where it starts
   if (x >= xd) { const span = x1 - xd; if (span < 1e-6 || bn <= 0) return 1; const s = (x - xd) / span, hold = 1 - bn; return s <= hold ? 1 : ease((1 - s) / bn); }
   const span = xd - x0; if (span < 1e-6 || bt <= 0) return 1; const s = (xd - x) / span, hold = 1 - bt; return s <= hold ? 1 : ease((1 - s) / bt);
 }
@@ -849,6 +852,15 @@ function cleanTools(p) {
     tool.xd = t.deep && Number.isFinite(+t.deep.pos) ? clip(posToX({ pos: +t.deep.pos, from: fromOf(t.deep.from) }, L), x0, x1) : xdDef;
     tool.deep = t.deep && Number.isFinite(+t.deep.pos) ? { pos: +t.deep.pos, from: fromOf(t.deep.from) } : null;
     tool.blendNose = blendOf(t.blendNose, bDef[0]); tool.blendTail = blendOf(t.blendTail, bDef[1]);
+    // the center line: 'blend' (deepest spot + blends), 'flat' (the stringer runs straight from end to
+    // end, so the rocker kinks at the ends), or 'custom' (points [t, depth], straight between them, so
+    // each point is a kink; add points for a curve)
+    tool.L = L;
+    tool.center = t.center === 'flat' || t.center === 'custom' ? t.center : 'blend';
+    const cp = (Array.isArray(t.cpts) ? t.cpts : []).filter((q) => Array.isArray(q) && Number.isFinite(+q[0]) && Number.isFinite(+q[1]))
+      .map((q) => [clip(+q[0], 0, 1), clip(+q[1], 0, 0.75)]).sort((a, b) => a[0] - b[0]);
+    tool.cpts = cp.length >= 2 ? cp.slice(0, 24) : [[0, 0], [0.33, tool.depth], [1, 0]];
+    if (tool.center === 'custom' && cp.length < 2) tool.center = 'blend';
     out.push(tool);
   }
   return out;
@@ -861,7 +873,30 @@ function toolShapeAt(tool, x) {
   if (tool.shape === 'straight') { e = (tool.w1 + (tool.w2 - tool.w1) * u) / 2; r = tool.ridge / 2; }
   else { e = tool.outer.at(X); r = tool.inner ? tool.inner.at(X) : 0.18 * e; }
   if (tool.kind === 'single') r = 0;
-  return { e, r, A: depthAlong(x, tool.x0, tool.x1, tool.xd, tool.blendNose, tool.blendTail), u };
+  return { e, r, D: toolDepth(tool, x), u };
+}
+
+/** How deep a tool is at spot x (inches), from its center line. */
+function toolDepth(tool, x, zbAt = tool.zbAt) {
+  const u = (tool.x1 - x) / tool.len;
+  if (tool.center === 'custom') {
+    const c = tool.cpts;
+    if (u <= c[0][0]) return c[0][1];
+    for (let i = 1; i < c.length; i++) if (u <= c[i][0]) return c[i - 1][1] + ((u - c[i - 1][0]) / Math.max(c[i][0] - c[i - 1][0], 1e-9)) * (c[i][1] - c[i - 1][1]);
+    return c[c.length - 1][1];
+  }
+  if (tool.center === 'flat' && zbAt) {                  // straight from the rocker at one end to the rocker at the other (on the board)
+    const a = clip(tool.x0, 0, tool.L), b = clip(tool.x1, 0, tool.L);
+    if (b - a < 1) return 0;
+    const chord = zbAt(a) + ((zbAt(b) - zbAt(a)) * (x - a)) / (b - a);
+    return Math.max(0, chord - zbAt(x));
+  }
+  let f = depthAlong(x, tool.x0, tool.x1, tool.xd, tool.blendNose, tool.blendTail);
+  // a blend of 0 holds full depth to that end, then the center line kinks back to the rocker over
+  // the last 3/4" (unless the concave runs right off the board there): a kink, never a step
+  if (tool.blendNose <= 0 && tool.x1 < tool.L - 0.5) f *= clip((tool.x1 - x) / 0.75, 0, 1);
+  if (tool.blendTail <= 0 && tool.x0 > 0.5) f *= clip((x - tool.x0) / 0.75, 0, 1);
+  return tool.depth * f;
 }
 
 /** The tools that reach spot x, each as { lift depth here, outer and inner half widths, single / double, edge }. */
@@ -869,21 +904,36 @@ function toolsAt(p, x, h, t) {
   const list = [];
   for (const tool of p.tools) {
     if (x < tool.x0 - 1e-9 || x > tool.x1 + 1e-9) continue;
+    tool.zbAt = p._zbAt;
     const q = toolShapeAt(tool, x), e = q.e;                 // an edge past the outline runs the concave off the rail (it lifts the rail there)
-    const D = Math.min(tool.depth, 0.4 * t) * q.A;
+    const D = Math.min(q.D, 0.4 * t);
     if (!(D > 1e-6) || !(e > q.r + 0.2)) continue;
     list.push({ D, e, r: q.r, double: tool.kind === 'double', rail: tool.edge === 'rail' });
   }
   return list.length ? list : null;
 }
 
+/** A tool's center line for the Profile graph: how deep it is (above the rocker) along its length, nose end first. */
+export function toolCenterLine(board, k, n = 80) {
+  const tool = board.params.tools[k], pr = board._profiles, out = [];
+  if (!tool) return null;
+  tool.zbAt = (xq) => interp(xq, pr.x, pr.zb);
+  for (let i = 0; i <= n; i++) {
+    const x = tool.x1 - (tool.len * i) / n;
+    if (x < 0 || x > board.params.length) continue;
+    out.push({ x, depth: toolDepth(tool, x), zb: tool.zbAt(x) });
+  }
+  return { tool, pts: out };
+}
+
 /** For drawing a tool on the Plan graph: its edges along its length, as the board has them (n + 1 spots, nose end first). */
 export function toolOutline(board, k, n = 80) {
   const tool = board.params.tools[k], pr = board._profiles, out = [];
+  if (tool) tool.zbAt = (xq) => interp(xq, pr.x, pr.zb);
   if (!tool) return null;
   for (let i = 0; i <= n; i++) {
     const x = tool.x1 - (tool.len * i) / n, q = toolShapeAt(tool, x), h = interp(x, pr.x, pr.h);
-    out.push({ x, e: Math.max(0, q.e), r: q.r, A: q.A, h });
+    out.push({ x, e: Math.max(0, q.e), r: q.r, D: q.D, h });
   }
   return { tool, pts: out };
 }
@@ -978,7 +1028,10 @@ function pinchRail(sh, zApex, td, tb, yi, hi, Y, Z) {
 function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   const sh = sectionShape(p, xi, d, ti);
   const { ar, ed, dome, con, dbl, vee } = sh;
-  const zApex = zbi + ar * ti, td = (1 - ar) * ti, tb = ar * ti;
+  // a swallow's tips: the deck rounds down toward the rail over the last swallow_round inches (a deck-side radius at the tips)
+  const sr = TAIL_TYPES[p.tail_type].notch ? p.swallow_round ?? 0 : 0;
+  const tipK = sr > 0 && xi < sr ? Math.sqrt(Math.max(0, 1 - (1 - xi / sr) ** 2)) * 0.95 + 0.05 : 1;
+  const zApex = zbi + ar * ti, td = (1 - ar) * ti * tipK, tb = ar * ti;
   const hs = Math.max(hi, 1e-9);
   const tl = p.tools && p.tools.length ? toolsAt(p, xi, hi, ti) : null;     // hard-edged concaves at this spot
   // the deck: from the stringer round to the rail apex (a superellipse, as before)
@@ -991,7 +1044,8 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   // then the flat bottom (with its contours and concave tools) in to the stringer. Soft: a quarter
   // ellipse meeting the bottom level; hard: leaves the apex straight down and meets the bottom at a
   // corner. Always the same samples for the same parts, so nothing shifts from section to section.
-  const w = Math.min(sh.tuck, 0.97 * hi), yE = hi - w, hf = sh.hard;
+  // near the tips the board gets narrower than the tuck: ease the tuck down smoothly (no sudden cap, so no lump at the ends)
+  const w = sh.tuck > 1e-6 ? (sh.tuck ** -4 + (0.85 * hi) ** -4) ** -0.25 : 0, yE = hi - w, hf = sh.hard;
   // contours: a single concave is one dish across the bottom (deepest at the stringer, the same curve all
   // the way out, so it reads as one concave); a vee keeps the stringer on the rocker and lifts the rails.
   const contour = (yr) => { const eta = clip(yr / hs, 0, 1); return con * (1 - eta * eta) + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 + vee * eta; };
@@ -1034,6 +1088,9 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   return sh;
 }
 
+/** How the M points of a section are shared: Md round the deck to the apex, Mr round the rail to the edge, the rest across the flat bottom. */
+const sampleSplit = (M) => ({ Md: Math.round(0.45 * M), Mr: Math.round(0.15 * M) });
+
 function sections(p, x, h, yin, t, zb, M, sl) {
   const n = x.length;
   const Yo = new Float64Array(n * M), Zo = new Float64Array(n * M);
@@ -1047,7 +1104,7 @@ function sections(p, x, h, yin, t, zb, M, sl) {
     // resample to M points, the same way in every section so nothing ripples along the board: the
     // deck by arc length plus turning (the rail's roll gets its share), then the rail from the apex
     // to the edge and the flat bottom evenly, with the apex and the edge always on the same points
-    const base = i * M, Md = Math.round(0.45 * M), Mr = Math.round(0.15 * M), Mf = M - Md - Mr;
+    const base = i * M, { Md, Mr } = sampleSplit(M), Mf = M - Md - Mr;
     cum[0] = 0;
     let prevA = Math.atan2(Z[1] - Z[0], Y[1] - Y[0]);
     for (let j = 0; j < KA; j++) {                         // deck samples 0 .. KA-1, then the apex (KA)
@@ -1112,6 +1169,7 @@ function buildMesh(p, tScale) {
   const keep = TAIL_TYPES[p.tail_type].notch ? 0.95 + 0.046 * (1 - (p.swallow_tip ?? 1)) : 0.95;   // pointed swallow tips: the cut runs right out
   const yin = Float64Array.from(notch, (v, i) => Math.min(v, h[i] * keep));
   const sl = sliceTables(p);
+  p._zbAt = (xq) => interp(clip(xq, x[0], x[n - 1]), x, zb);     // the rocker, for concave tools with a flat center line
   const [Y, Z] = sections(p, x, h, yin, t, zb, M, sl);
 
   let nv = 0;
@@ -1132,14 +1190,22 @@ function buildMesh(p, tScale) {
     }
   }
 
-  const F = [];
-  const tri = (a, b, d, flip) => (flip ? F.push(d, b, a) : F.push(a, b, d));
+  // each triangle also gets the patch of surface it belongs to (deck, rail below the apex, flat
+  // bottom, notch walls, end caps), so the viewer can crease exactly where patches meet and
+  // nowhere else: a hard edge stays crisp all the way along, a soft one shows no line at all
+  const F = [], PF = [];
+  const { Md, Mr } = sampleSplit(M);
+  const patchOf = (m) => (m < Md ? 0 : m < Md + Mr ? 1 : 2);
+  let curPatch = 0;
+  const tri = (a, b, d, flip) => { (flip ? F.push(d, b, a) : F.push(a, b, d)); PF.push(curPatch); };
   for (const [I, flip] of [[IR, false], [IL, true]]) {
-    for (let i = 0; i < n - 1; i++) for (let m = 0; m < M - 1; m++)
+    for (let i = 0; i < n - 1; i++) for (let m = 0; m < M - 1; m++) {
+      curPatch = patchOf(m);
       tri(I[i * M + m], I[(i + 1) * M + m], I[(i + 1) * M + m + 1], flip);
-    for (let i = 0; i < n - 1; i++) for (let m = 0; m < M - 1; m++)
       tri(I[i * M + m], I[(i + 1) * M + m + 1], I[i * M + m + 1], flip);
+    }
   }
+  curPatch = 3;
   for (let i = 0; i < n - 1; i++) {                      // swallow notch walls
     if (!(yin[i] > 1e-9 && h[i] >= 1e-6)) continue;
     for (const [I, flip] of [[IR, false], [IL, true]]) {
@@ -1158,21 +1224,22 @@ function buildMesh(p, tScale) {
       }
     }
   };
+  curPatch = 4;
   if (h[0] >= 1e-6) cap(0, false);
   if (h[n - 1] >= 1e-6) cap(n - 1, true);
 
-  const idx = [];
+  const idx = [], pat = [];
   for (let f = 0; f < F.length; f += 3) {
     const a = F[f], b = F[f + 1], d = F[f + 2];
-    if (a !== b && b !== d && a !== d) idx.push(a, b, d);
+    if (a !== b && b !== d && a !== d) { idx.push(a, b, d); pat.push(PF[f / 3]); }
   }
-  const faces = Uint32Array.from(idx);
+  const faces = Uint32Array.from(idx), patches = Uint8Array.from(pat);
   let vol = meshVolume(V, faces);
   if (vol < 0) {
     for (let f = 0; f < faces.length; f += 3) { const tmp = faces[f]; faces[f] = faces[f + 2]; faces[f + 2] = tmp; }
     vol = -vol;
   }
-  return { V, F: faces, vol, prof: { x, h, yin, zb, t, Y, Z, M, h0, zb0, foil0, sl, arms } };
+  return { V, F: faces, patches, vol, prof: { x, h, yin, zb, t, Y, Z, M, h0, zb0, foil0, sl, arms } };
 }
 
 function meshVolume(V, F) {
@@ -1225,7 +1292,7 @@ export function buildBoard(input = {}) {
   }
   const board = {
     params: p, warnings, thickness_scale: scale, auto: p._auto,
-    vertices: mesh.V, faces: mesh.F, volume_l: mesh.vol * IN3_TO_L, _profiles: mesh.prof,
+    vertices: mesh.V, faces: mesh.F, patches: mesh.patches, volume_l: mesh.vol * IN3_TO_L, _profiles: mesh.prof,
   };
   board.stats = stats(board);
   board.build_ms = Math.round((performance.now() - t0) * 10) / 10;

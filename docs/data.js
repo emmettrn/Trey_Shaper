@@ -471,6 +471,20 @@ export const GROUPS = [
             "swallow"
           ]
         }
+      },
+      {
+        "key": "swallow_round",
+        "label": "Swallow tip radius",
+        "min": 0,
+        "max": 6,
+        "step": 0.125,
+        "unit": "in",
+        "help": "the deck rounds down toward the rail over this many inches at the swallow's tips (0 = square ends)",
+        "show_if": {
+          "tail_type": [
+            "swallow"
+          ]
+        }
       }
     ]
   },
@@ -525,6 +539,14 @@ export const GROUPS = [
   {
     "name": "Foil",
     "fields": [
+      {
+        "key": "deck_dome",
+        "label": "Deck dome",
+        "min": 0,
+        "max": 1,
+        "step": 0.01,
+        "unit": "frac"
+      },
       {
         "key": "nose_thickness",
         "label": "Nose tip thickness",
@@ -583,14 +605,6 @@ export const GROUPS = [
       {
         "key": "rail_fullness",
         "label": "Rail fullness",
-        "min": 0,
-        "max": 1,
-        "step": 0.01,
-        "unit": "frac"
-      },
-      {
-        "key": "deck_dome",
-        "label": "Deck dome",
         "min": 0,
         "max": 1,
         "step": 0.01,
