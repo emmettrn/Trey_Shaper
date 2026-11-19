@@ -69,6 +69,22 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## Round 5
+
+- **Vee** keeps the stringer on the rocker and lifts the rails (it used to drop the stringer
+  below the rocker, which also made a divot where a vee met a single concave).
+- **Single concave** is one dish across the bottom (the old curve flattened toward the rail and
+  read as two under the bay lights).
+- **Bay lights**: warm lamp on one rail, cool on the other. A concave's colours cross over at the
+  stringer; a vee's or a roll's stay on their own side; flat foam stays dim. The fixed light
+  starts lower (about 10 degrees) so slight contours show.
+- **Concave tools**: edges rounded over 1/10" and a finer mesh (at least 96 points round each
+  section), so edges read crisp without stair-stepping or ripples. An edge dragged past the
+  outline runs the concave off the rail, lifting the rail there (a step in the edge). Ends can run
+  past the nose or tail; straight-edge widths can be wider than the board, so any angle works.
+- **Swallow tip**: selecting the tail end shows two arms, one for the outline and one for the cut.
+- Short arms are drawn at least 16 px out so they can be grabbed.
+
 ## Rails: tuck in inches (round 4)
 
 The old Rail edge sliders (0 to 1) are now **Nose rail tuck** and **Tail rail tuck**, in inches:
