@@ -69,6 +69,29 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## November 18 update (round 3)
+
+- **3D view:** the old orbit control is back. Dragging past straight above or below turns the
+  board over (like Bottom up), so you can still go all the way around.
+- **Photo trace:** finds a swallow cut (depth and width, pointed or rounded tips). On the fix
+  screen the nose and tail end points move (the length follows) and have arms; a swallow's V has
+  two points of its own, and buttons add or remove the cut.
+- **Swallow tips** slider: 0 makes each side of a swallow come to a point.
+- **Nose tip and tail end arms** on the Plan graph: click the square at either tip to shape how
+  the outline leaves it (blunter or more pointed). The 12" widths and the width do not move.
+- **Concave tools:** tear drop and venturi edges are curves through points with arms (click a
+  point for its arms, click an edge to add a point). The tear drop starts rounder.
+- **Deepest spot and blends:** every concave tool and every contour stretch has a "deepest at"
+  box (or drag the small triangle on the Plan graph) and two sliders that ease the depth out toward
+  the nose and toward the tail. Left holds full depth to the end; right eases all the way.
+- **Overlapping contours** combine (each spot takes the stronger of each contour) instead of
+  cutting into each other.
+- **Added measurements** go into the measurement table itself, in order nose to tail.
+- **Hard rails:** past 0.3, Rail edge turns into a tucked edge: the bottom runs flat to a real
+  corner at 1, with a rounded tuck up to the apex. **Edge tuck** (Rails, and per section) sets how
+  far the edge sits in under the apex; in the section editor drag the orange **edge** point. Apex
+  arms now reach the whole side, so a rail can always be rounded right into the apex.
+
 ## Tracing an outline from a photo
 
 **Trace photo** on the Plan graph makes the outline from a photo of a board (or a template on
