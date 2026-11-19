@@ -69,6 +69,25 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## Rails: tuck in inches (round 4)
+
+The old Rail edge sliders (0 to 1) are now **Nose rail tuck** and **Tail rail tuck**, in inches:
+how far in from the rail apex the rail turns under to the flat bottom. 0" drops straight down
+from the apex; 1/2" is a firm rail; 3" is very soft, and the upturn never reaches further in than
+that. **Hard edge (tail)** makes the tail's tuck end in a corner instead of meeting the bottom
+smoothly. **Tail tuck reaches** and **Nose tuck reaches** set how far up the board each end's tuck
+(and the hard edge) holds before blending into the other. In the section editor, **Rail tuck**
+and **Edge** (0 soft, 1 hard) change one section, and the orange edge point drags the tuck in or
+out. Designs saved earlier are converted when they load.
+
+Every cross section is now sampled the same way (the apex and the edge always on the same mesh
+points, the flat bottom evenly), so rails, the stringer line and concave edges no longer ripple.
+Concave tools stay on the flat bottom, clear of the rail's tuck. A concave that runs out the tail
+or nose holds its depth out by default; its blend slider eases it out flat at that end.
+
+The 3D view is back to the original orbit (no flipping at the top or bottom); use Bottom up to
+see the bottom.
+
 ## November 18 update (round 3)
 
 - **3D view:** the old orbit control is back. Dragging past straight above or below turns the

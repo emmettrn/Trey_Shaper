@@ -23,8 +23,8 @@ const ANCHOR_LIMIT = { outline: 6, rocker: 4, thickness: 2, swallow: 3 };   // m
 const ANCHOR_GAP = 0.75;                                         // min spacing between anchors / pinned points
 const GRID = 513;                                                // samples of a slice's deck / bottom offset curve
 // What a cross-section slice may adjust, and by how much at most (added to the board-wide value there)
-const ADJ = { rail_apex: 0.45, rail_apex_in: 1.5, rail_fullness: 1, deck_dome: 1, rail_hardness: 1, concave: 0.5, double: 0.5, vee: 0.5,
-  apex_deck_angle: 80, apex_deck_arm: 0.5, apex_bottom_angle: 80, apex_bottom_arm: 0.5, rail_tuck: 1 };
+const ADJ = { rail_apex: 0.45, rail_apex_in: 1.5, rail_fullness: 1, deck_dome: 1, concave: 0.5, double: 0.5, vee: 0.5,
+  apex_deck_angle: 80, apex_deck_arm: 0.5, apex_bottom_angle: 80, apex_bottom_arm: 0.5, rail_tuck_in: 4, edge: 1 };
 const PINCH_MAX = 80;                                            // apex arm angle, degrees in from upright: 0 = upright, 80 = nearly a knife edge
 const ARM_MAX = 0.5;                                            // apex arm length, fraction of the height that side spans
 // Bottom contour stations: what each type puts into the three channels [single concave, double concave, vee]
@@ -104,6 +104,7 @@ export function paramsFromDict(d = {}) {
   const base = { ...DEFAULTS };
   for (const k of Object.keys(DEFAULTS)) if (k in d) base[k] = d[k];
   base.tools = Array.isArray(d.tools) ? d.tools : [];      // concave tools (newer than the generated defaults)
+  for (const k of ['rail_tuck_nose', 'rail_tuck_tail', 'hard_edge', 'rail_reach_nose', 'rail_reach_tail']) if (k in d) base[k] = d[k];   // rail tucks (newer too)
   const L = base.length;
   const xl = L / 2 + base.rocker_low_point, xt = L / 2 + base.thickness_point_offset;
   for (const [side, nose] of [['nose', true], ['tail', false]]) {
@@ -181,8 +182,10 @@ export function validated(src) {
     clamp(`${side}_thickness_12`, te + span * (1 - u ** P_MIN), te + span * (1 - u ** P_MAX), `thickness 12" from ${side}`);
   }
   clamp('rail_apex', 0.15, 0.6);
-  if (!Number.isFinite(p.rail_tuck)) p.rail_tuck = 0.5;
-  for (const n of ['rail_fullness', 'deck_dome', 'rail_hardness_nose', 'rail_hardness_tail', 'rail_tuck']) clamp(n, 0, 1);
+  railTuckFromOld(p);
+  for (const n of ['rail_fullness', 'deck_dome', 'rail_hardness_nose', 'rail_hardness_tail', 'rail_reach_nose', 'rail_reach_tail']) clamp(n, 0, 1);
+  clamp('rail_tuck_nose', 0, 4); clamp('rail_tuck_tail', 0, 4);
+  p.hard_edge = !!p.hard_edge;
   clamp('concave_depth', 0, 0.4);
   clamp('vee_depth', 0, 0.4);
   clamp('target_volume', 10, 120);
@@ -602,9 +605,9 @@ function sectionShape(p, x, d, t) {
   return {
     ar: p.rail_apex_in !== null ? apexRatio(p.rail_apex_in + g('rail_apex_in'), t) : clip(p.rail_apex + g('rail_apex'), 0.15, 0.6),
     ed: 1.7 + 1.4 * clip(p.rail_fullness + g('rail_fullness'), 0, 1),
-    eb: 2 + 3 * clip(railHardness(p, x) + g('rail_hardness'), 0, 1),     // rounder; past 0.3 it turns into a tucked edge (hardEdge)
-    hard: clip(railHardness(p, x) + g('rail_hardness'), 0, 1),
-    tuck: clip((p.rail_tuck ?? 0.5) + g('rail_tuck'), 0, 1),
+    // the bottom of the rail: tuck (inches in from the apex to the flat bottom) and edge (0 = soft, 1 = a hard corner)
+    tuck: clip(railTuckAt(p, x).w + g('rail_tuck_in'), 0, 4),
+    hard: clip(railTuckAt(p, x).hard + g('edge'), 0, 1),
     dome: clip(p.deck_dome + g('deck_dome'), 0, 1),
     con, dbl, vee: clip(v0 + g('vee'), 0, 0.75),
     // the rail apex arms (slices only): angle in from upright (degrees) and length (fraction of the height that side spans)
@@ -625,8 +628,8 @@ function apexRatio(a, t) {
 export function sectionBase(p, x) {
   const [c0, d0, v0] = bottomAt(p, x);
   return { rail_apex: p.rail_apex, rail_apex_in: p.rail_apex_in ?? 0, rail_fullness: p.rail_fullness, deck_dome: p.deck_dome,
-    rail_hardness: railHardness(p, x), concave: c0, double: d0, vee: v0,
-    apex_deck_angle: 0, apex_deck_arm: 0, apex_bottom_angle: 0, apex_bottom_arm: 0, rail_tuck: p.rail_tuck ?? 0.5 };
+    rail_tuck_in: railTuckAt(p, x).w, edge: railTuckAt(p, x).hard, concave: c0, double: d0, vee: v0,
+    apex_deck_angle: 0, apex_deck_arm: 0, apex_bottom_angle: 0, apex_bottom_arm: 0 };
 }
 const gridAt = (row, eta) => {
   const f = eta * (GRID - 1), i0 = Math.min(Math.floor(f), GRID - 2);
@@ -717,8 +720,27 @@ function foil(p, x) {
   });
 }
 
-const railHardness = (p, x) =>
-  p.rail_hardness_tail + (p.rail_hardness_nose - p.rail_hardness_tail) * smoothstep((x - 0.15 * p.length) / (0.6 * p.length));
+/**
+ * The rail's tuck along the board. Each end has its tuck (inches in from the rail apex to where
+ * the bottom is flat: 0 = the rail drops straight down from the apex, 3" = a very soft rail) and
+ * reach (how far up the board that end's tuck holds, as a share of the length); between the two
+ * reaches it blends. The hard edge (when ticked) belongs to the tail and blends out the same way.
+ */
+function railBlend(p, x) {
+  const L = p.length, a = clip(p.rail_reach_tail ?? 0.15, 0, 1) * L, b = L - clip(p.rail_reach_nose ?? 0.25, 0, 1) * L;
+  if (b - a < 2) { const m = (a + b) / 2; return smoothstep((x - (m - 1)) / 2); }
+  return smoothstep((x - a) / (b - a));                   // 0 = tail settings, 1 = nose settings
+}
+const railTuckAt = (p, x) => { const f = railBlend(p, x); return { w: p.rail_tuck_tail + (p.rail_tuck_nose - p.rail_tuck_tail) * f, hard: p.hard_edge ? 1 - f : 0 }; };
+/** Designs from before rail tucks: Rail edge 0 (soft) .. 1 (hard) becomes a tuck in inches, and a hard tail ticks Hard edge. */
+export function railTuckFromOld(p) {
+  const conv = (H) => Math.round((0.25 + 2.75 * (1 - clip(H, 0, 1)) ** 1.5) * 16) / 16;
+  if (!Number.isFinite(p.rail_tuck_nose)) p.rail_tuck_nose = conv(p.rail_hardness_nose ?? 0.25);
+  if (!Number.isFinite(p.rail_tuck_tail)) p.rail_tuck_tail = conv(p.rail_hardness_tail ?? 0.85);
+  if (typeof p.hard_edge !== 'boolean') p.hard_edge = (p.rail_hardness_tail ?? 0) >= 0.7;
+  if (!Number.isFinite(p.rail_reach_tail)) p.rail_reach_tail = 0.15;
+  if (!Number.isFinite(p.rail_reach_nose)) p.rail_reach_nose = 0.25;
+}
 const concaveAt = (p, x) => p.concave_depth * smoothstep((0.8 * p.length - x) / (0.25 * p.length)) * smoothstep(x / 3);
 const veeAt = (p, x) => p.vee_depth * smoothstep((0.35 * p.length - x) / (0.3 * p.length));
 
@@ -802,7 +824,9 @@ function cleanTools(p) {
     const ridge = Number.isFinite(+t.ridge) ? clip(+t.ridge, 0, W) : 2;
     const tool = { id: t.id ?? null, shape: t.shape, kind: double ? 'double' : 'single', edge: double && t.edge === 'rail' ? 'rail' : 'hard',
       x0, x1, len, depth, start: { pos: +t.start.pos, from: fromOf(t.start.from) }, end: { pos: +t.end.pos, from: fromOf(t.end.from) } };
-    let xdDef = x0 <= 1 ? x0 : (x0 + x1) / 2, bDef = [0.6, x0 <= 1 ? 0 : 0.6];
+    // deepest in the middle by default; one that runs out the tail holds its depth right out (blend toward the tail 0),
+    // and either blend can still ease it out flat at that end
+    let xdDef = (x0 + x1) / 2, bDef = [0.6, x0 <= 1 ? 0 : 0.6];
     if (t.shape === 'straight') {
       tool.w1 = Number.isFinite(+t.w1) ? clip(+t.w1, 0.5, W) : 10;       // at the nose end
       tool.w2 = Number.isFinite(+t.w2) ? clip(+t.w2, 0.5, W) : 10;       // at the tail end
@@ -837,11 +861,11 @@ function toolShapeAt(tool, x) {
 }
 
 /** The tools that reach spot x, each as { lift depth here, outer and inner half widths, single / double, edge }. */
-function toolsAt(p, x, h, t) {
+function toolsAt(p, x, h, t, tuck = 0) {
   const list = [];
   for (const tool of p.tools) {
     if (x < tool.x0 - 1e-9 || x > tool.x1 + 1e-9) continue;
-    const q = toolShapeAt(tool, x), e = Math.min(q.e, h - 0.5);     // stays off the rail
+    const q = toolShapeAt(tool, x), e = Math.min(q.e, h - Math.max(tuck, 0.5) - 0.25);     // stays on the flat bottom, off the rail and its tuck
     const D = Math.min(tool.depth, 0.4 * t) * q.A;
     if (!(D > 1e-6) || !(e > q.r + 0.2)) continue;
     list.push({ D, e, r: q.r, double: tool.kind === 'double', rail: tool.edge === 'rail' });
@@ -855,7 +879,7 @@ export function toolOutline(board, k, n = 80) {
   if (!tool) return null;
   for (let i = 0; i <= n; i++) {
     const x = tool.x1 - (tool.len * i) / n, q = toolShapeAt(tool, x), h = interp(x, pr.x, pr.h);
-    out.push({ x, e: Math.max(0, Math.min(q.e, h - 0.5)), r: q.r, A: q.A });
+    out.push({ x, e: Math.max(0, Math.min(q.e, h - Math.max(railTuckAt(board.params, x).w, 0.5) - 0.25)), r: q.r, A: q.A });
   }
   return { tool, pts: out };
 }
@@ -883,54 +907,11 @@ for (let k = 0; k < K; k++) {
   TH_COS[k] = Math.abs(Math.cos(th)); TH_SIN[k] = Math.abs(Math.sin(th)); TH_DECK[k] = th >= 0 ? 1 : 0;
 }
 
-const KA = K / 2;                                        // deck = samples 0 .. KA-1 (stringer -> rail apex), bottom = KA .. K-1 (apex -> stringer)
+const KA = K / 2;
+const NR = 160, NF = K - KA - NR + 1;                   // bottom: NR samples apex -> edge (the rail), then NF - 1 more edge -> stringer (flat)                                        // deck = samples 0 .. KA-1 (stringer -> rail apex), bottom = KA .. K-1 (apex -> stringer)
 const S_RHO = new Float64Array(K), S_NY = new Float64Array(K), S_NZ = new Float64Array(K);
 const ZERO_ROW = new Float64Array(GRID);
 
-
-/**
- * A hard rail edge. Past 0.3 on the Rail edge range the bottom side of the section blends
- * from the rounded rail into a tucked edge: the bottom runs flat (with its contours) right out to
- * a corner, the edge, set in from the outline by the tuck; from the edge a rounded tuck curves up
- * and out to the rail apex, leaving it straight up and down. At Rail edge 1 the edge is a true
- * corner. Blended sample for sample at the same share of the way round, so nothing crosses.
- */
-const YR = new Float64Array(K), HARD_N = 96, HY = new Float64Array(2 * HARD_N + 1), HZ = new Float64Array(2 * HARD_N + 1), HS = new Float64Array(2 * HARD_N + 1);
-function hardEdge(sh, zApex, tb, yi, hi, tl, Y, Z) {
-  const w = smoothstep((sh.hard - 0.3) / 0.7);
-  if (!(w > 0)) return;
-  const hs = Math.max(hi, 1e-9), map = (yr) => yi + (yr * (hi - yi)) / hs;
-  const cont = (yr) => {
-    const eta = clip(yr / hs, 0, 1);
-    return sh.con * (1 - eta * eta) ** 2 + (sh.dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 - sh.vee * (1 - eta) + (tl ? toolLift(tl, map(yr)) : 0);
-  };
-  const wt = clip(tb * (0.25 + 1.5 * sh.tuck), 0.05, 0.35 * hi), yE = hi - wt;
-  // the tuck: a cubic from the apex (straight down) to the edge, arriving at an angle (the corner)
-  for (let n = 0; n <= HARD_N; n++) {
-    const t = n / HARD_N, u = 1 - t;
-    const yr = u * u * u * hi + 3 * u * u * t * hi + 3 * u * t * t * (hi - wt / 3) + t * t * t * yE;
-    const dz = 3 * u * u * t * (tb / 3) + 3 * u * t * t * ((2 * tb) / 3) + t * t * t * tb;
-    HY[n] = yr; HZ[n] = zApex - dz + cont(yr) * t;
-  }
-  // the bottom, flat from the edge in to the stringer
-  for (let n = 1; n <= HARD_N; n++) { const yr = yE * (1 - n / HARD_N); HY[HARD_N + n] = yr; HZ[HARD_N + n] = zApex - tb + cont(yr); }
-  HS[0] = 0;
-  for (let n = 1; n <= 2 * HARD_N; n++) HS[n] = HS[n - 1] + Math.hypot(HY[n] - HY[n - 1], HZ[n] - HZ[n - 1]);
-  // the rounded rail's share of the way round at each sample, and the same share on the hard edge
-  let tot = 0;
-  for (let k = KA + 1; k < K; k++) tot += Math.hypot(YR[k] - YR[k - 1], Z[k] - Z[k - 1]);
-  let run = 0, n = 0;
-  const hTot = HS[2 * HARD_N];
-  for (let k = KA; k < K; k++) {
-    if (k > KA) run += Math.hypot(YR[k] - YR[k - 1], Z[k] - Z[k - 1]);
-    const target = tot > 0 ? (run / tot) * hTot : 0;
-    while (n < 2 * HARD_N - 1 && HS[n + 1] < target) n++;
-    const f = HS[n + 1] > HS[n] ? clip((target - HS[n]) / (HS[n + 1] - HS[n]), 0, 1) : 0;
-    const yh = HY[n] + f * (HY[n + 1] - HY[n]), zh = HZ[n] + f * (HZ[n + 1] - HZ[n]);
-    Y[k] = map(YR[k] + w * (yh - YR[k]));
-    Z[k] = Z[k] + w * (zh - Z[k]);
-  }
-}
 
 /**
  * The rail apex arms. On each side of the apex (deck above, bottom below) an arm of length
@@ -989,22 +970,34 @@ function pinchRail(sh, zApex, td, tb, yi, hi, Y, Z) {
  */
 function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   const sh = sectionShape(p, xi, d, ti);
-  const { ar, ed, eb, dome, con, dbl, vee } = sh;
+  const { ar, ed, dome, con, dbl, vee } = sh;
   const zApex = zbi + ar * ti, td = (1 - ar) * ti, tb = ar * ti;
   const hs = Math.max(hi, 1e-9);
-  const tl = p.tools && p.tools.length ? toolsAt(p, xi, hi, ti) : null;     // hard-edged concaves at this spot
-  for (let k = 0; k < K; k++) {
-    const deck = TH_DECK[k], e = deck ? ed : eb;
-    const yraw = hi * TH_COS[k] ** (2 / e);
-    const eta = clip(yraw / hs, 0, 1);
-    YR[k] = yraw;
+  const tl = p.tools && p.tools.length ? toolsAt(p, xi, hi, ti, sh.tuck) : null;     // hard-edged concaves at this spot
+  // the deck: from the stringer round to the rail apex (a superellipse, as before)
+  for (let k = 0; k < KA; k++) {
+    const yraw = hi * TH_COS[k] ** (2 / ed), eta = clip(yraw / hs, 0, 1);
     Y[k] = yi + (yraw * (hi - yi)) / hs;
-    Z[k] = deck
-      ? zApex + td * TH_SIN[k] ** (2 / ed) * (1 - 0.7 * dome * eta * eta)
-      : zApex - tb * TH_SIN[k] ** (2 / e) + con * (1 - eta * eta) ** 2 + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 - vee * (1 - eta)
-        + (tl ? toolLift(tl, Y[k]) : 0);
+    Z[k] = zApex + td * TH_SIN[k] ** (2 / ed) * (1 - 0.7 * dome * eta * eta);
   }
-  if (sh.hard > 0.3 && hi > 1e-6 && tb > 1e-6) hardEdge(sh, zApex, tb, yi, hi, tl, Y, Z);
+  // the bottom: from the apex down and in around the rail to the edge (the tuck, w in from the apex),
+  // then the flat bottom (with its contours and concave tools) in to the stringer. Soft: a quarter
+  // ellipse meeting the bottom level; hard: leaves the apex straight down and meets the bottom at a
+  // corner. Always the same samples for the same parts, so nothing shifts from section to section.
+  const w = Math.min(sh.tuck, 0.97 * hi), yE = hi - w, hf = sh.hard;
+  const cont = (yr) => { const eta = clip(yr / hs, 0, 1); return con * (1 - eta * eta) ** 2 + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 - vee * (1 - eta) + (tl ? toolLift(tl, yi + (yr * (hi - yi)) / hs) : 0); };
+  for (let j = 0; j < NR; j++) {
+    const sp = j / (NR - 1), ph = (sp * Math.PI) / 2;
+    const yr = hi - w * ((1 - hf) * (1 - Math.cos(ph)) + hf * sp * sp);
+    const dz = tb * ((1 - hf) * Math.sin(ph) + hf * sp);
+    Y[KA + j] = yi + (yr * (hi - yi)) / hs;
+    Z[KA + j] = zApex - dz + cont(yr) * sp;
+  }
+  for (let j = 1; j <= NF; j++) {
+    const yr = yE * (1 - j / NF);
+    Y[KA + NR - 1 + j] = yi + (yr * (hi - yi)) / hs;
+    Z[KA + NR - 1 + j] = zApex - tb + cont(yr);
+  }
   pinchRail(sh, zApex, td, tb, yi, hi, Y, Z);
   if (!rowD) return sh;
   const RHO = aux ? aux.rho : S_RHO, NY = aux ? aux.ny : S_NY, NZ = aux ? aux.nz : S_NZ;
@@ -1041,34 +1034,32 @@ function sections(p, x, h, yin, t, zb, M, sl) {
     const ti = t[i];
     if (sl) sliceBlend(sl, x[i], d, rowD, rowB);         // blend what the two neighbouring slices change
     sectionDense(p, x[i], h[i], yin[i], ti, zb[i], sl ? d : null, pts ? rowD : null, rowB, Y, Z, null);
-    // resample by arc length plus turning angle so hard rails stay crisp
+    // resample to M points, the same way in every section so nothing ripples along the board: the
+    // deck by arc length plus turning (the rail's roll gets its share), then the rail from the apex
+    // to the edge and the flat bottom evenly, with the apex and the edge always on the same points
+    const base = i * M, Md = Math.round(0.5 * M), Mr = Math.round(0.18 * M), Mf = M - Md - Mr;
     cum[0] = 0;
-    let prevRaw = 0, unwrapped = 0, prevAng = 0;
-    for (let j = 0; j < K - 1; j++) {
-      const dY = Y[j + 1] - Y[j], dZ = Z[j + 1] - Z[j];
-      const raw = Math.atan2(dZ, dY);
-      if (j === 0) unwrapped = raw;
-      else {
-        const d = raw - prevRaw;
-        let dm = ((((d + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) - Math.PI;
-        if (dm === -Math.PI && d > 0) dm = Math.PI;
-        unwrapped += Math.abs(d) < Math.PI ? d : dm;
-      }
-      const dturn = j === 0 ? 0 : Math.abs(unwrapped - prevAng);
-      prevRaw = raw; prevAng = unwrapped;
-      cum[j + 1] = cum[j] + Math.hypot(dY, dZ) + 0.35 * ti * dturn;
+    let prevA = Math.atan2(Z[1] - Z[0], Y[1] - Y[0]);
+    for (let j = 0; j < KA; j++) {                         // deck samples 0 .. KA-1, then the apex (KA)
+      const dY = Y[j + 1] - Y[j], dZ = Z[j + 1] - Z[j], a = Math.atan2(dZ, dY);
+      let da = a - prevA; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+      cum[j + 1] = cum[j] + Math.hypot(dY, dZ) + 0.35 * ti * (j ? Math.abs(da) : 0);
+      prevA = a;
     }
-    const total = cum[K - 1], base = i * M;
-    if (total <= 1e-12) { Yo.fill(Y[0], base, base + M); Zo.fill(Z[0], base, base + M); continue; }
+    const total = cum[KA];
     let j = 0;
-    for (let m = 0; m < M; m++) {
-      const tgt = (total * m) / (M - 1);
-      if (m === M - 1 || tgt >= total) { Yo[base + m] = Y[K - 1]; Zo[base + m] = Z[K - 1]; continue; }
-      while (j < K - 2 && cum[j + 1] <= tgt) j++;
-      const span = cum[j + 1] - cum[j], f = span > 0 ? (tgt - cum[j]) / span : 0;
-      Yo[base + m] = Y[j] + f * (Y[j + 1] - Y[j]);
-      Zo[base + m] = Z[j] + f * (Z[j + 1] - Z[j]);
+    for (let m = 0; m < Md; m++) {
+      const tgt = total > 1e-12 ? (total * m) / Md : 0;
+      while (j < KA - 1 && cum[j + 1] <= tgt) j++;
+      const span = cum[j + 1] - cum[j], f = span > 0 ? clip((tgt - cum[j]) / span, 0, 1) : 0;
+      Yo[base + m] = Y[j] + f * (Y[j + 1] - Y[j]); Zo[base + m] = Z[j] + f * (Z[j + 1] - Z[j]);
     }
+    const take = (m, kf) => { const k0 = Math.min(Math.floor(kf), K - 2), f = kf - k0; Yo[base + m] = Y[k0] + f * (Y[k0 + 1] - Y[k0]); Zo[base + m] = Z[k0] + f * (Z[k0 + 1] - Z[k0]); };
+    take(Md, KA);                                          // the apex
+    for (let m = 1; m < Mr; m++) take(Md + m, KA + ((NR - 1) * m) / Mr);       // round the rail ...
+    take(Md + Mr, KA + NR - 1);                            // ... to the edge
+    for (let m = 1; m < Mf; m++) take(Md + Mr + m, KA + NR - 1 + ((NF - 1) * m) / (Mf - 1));   // then the flat bottom in to the stringer
+    if (Mf > 1) { Yo[base + M - 1] = Y[K - 1]; Zo[base + M - 1] = Z[K - 1]; }
   }
   return [Yo, Zo];
 }
