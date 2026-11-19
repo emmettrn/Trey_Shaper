@@ -1,15 +1,17 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS } from './geometry.js';
-import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES } from './data.js';
+import { buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, toolOutline } from './geometry.js';
+import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js';
+import { traceFrame, traceHalf, tracePoints, fitOutline, pchip } from './trace.js';
 
 const $ = (s) => document.querySelector(s);
 const state = {
   schema: null, params: {}, board: null, fieldEls: {}, cellEls: {}, mirrors: [],
   dirty: false, busy: false, wire: false, stringer: true, fitted: false,
   sel: null,      // id of the cross-section slice being edited, or null while rolling through the board
+  tool: null,     // id of the concave tool being shaped on the Plan graph, or null
   scrub: null,    // where the Sections view is looking, inches from the tail (null = the wide point)
   pt: null,       // the anchor point whose handle arms are showing
   flip: false,    // 3D view: board turned bottom up
@@ -77,7 +79,14 @@ function buildControls() {
     det.open = gi < 2;
     det.innerHTML = `<summary>${g.name}</summary><div class="fields"></div>`;
     g.fields.forEach((f) => det.querySelector('.fields').appendChild(makeField(f)));
-    if (g.name === 'Bottom') det.querySelector('.fields').appendChild(buildBottomBox());
+    if (g.name === 'Bottom') {
+      const note = document.createElement('div');
+      note.className = 'bottom-note';
+      note.innerHTML = 'Three ways to shape the bottom: the <b>contour stations</b> below (blended from spot to spot), the <b>concave tools</b> (hard-edged concaves you lay out on the Plan graph), or by hand on any cross section in the <b>cross section editor</b> (Sections graph, <i>Edit here</i>).';
+      det.querySelector('.fields').prepend(note);
+      det.querySelector('.fields').appendChild(buildBottomBox());
+      det.querySelector('.fields').appendChild(buildToolsBox());
+    }
     root.appendChild(det);
   });
 }
@@ -142,7 +151,19 @@ function buildStationTable() {
 /* Added measurements: width, rocker and / or thickness at any other spot along the board,
    typed like the table above. A blank box is not held there (it shows what the board has). */
 const marksUI = { els: [] };
-const markX = (r, L) => (r.from === 'nose' ? L - r.pos : r.pos);
+const markX = (r, L) => posToX(r, L);
+/* "From" boxes: the nose, the tail, or the center. From the center the number is kept signed
+   (+ toward the nose, - toward the tail) but shown as two choices, ahead of / behind center. */
+const fromKey = (r) => (r.from === 'center' ? (r.pos < 0 ? 'back' : 'fwd') : r.from);
+const showPos = (r) => Math.abs(r.pos);
+/** Set from a "from" box: keep the spot's number, flip its sign for behind center. */
+function setFrom(r, key) {
+  const v = Math.abs(r.pos);
+  if (key === 'fwd' || key === 'back') { r.from = 'center'; r.pos = key === 'back' ? -v : v; } else { r.from = key; r.pos = v; }
+}
+function setPos(r, v) { r.pos = r.from === 'center' && fromKey(r) === 'back' ? -Math.abs(v) : Math.abs(v); }
+const FROM_SHORT = '<option value="nose">nose</option><option value="tail">tail</option><option value="fwd" title="ahead of center (toward the nose)">ctr ▲</option><option value="back" title="behind center (toward the tail)">ctr ▼</option>';
+const FROM_LONG = '<option value="nose">from the nose</option><option value="tail">from the tail</option><option value="fwd">ahead of center</option><option value="back">behind center</option>';
 
 function marksChanged(rebuild) {
   if (rebuild) renderMarks();
@@ -171,20 +192,20 @@ function renderMarks() {
     const el = document.createElement('div');
     el.className = 'mrow';
     el.innerHTML = `<input class="cell pos" type="text" spellcheck="false" aria-label="Position in inches">
-      <select class="from" aria-label="Measured from"><option value="nose">nose</option><option value="tail">tail</option></select>
+      <select class="from" aria-label="Measured from" title="from the nose, the tail, or ahead of (▲) / behind (▼) center">${FROM_SHORT}</select>
       <input class="cell" data-k="width" type="text" spellcheck="false" aria-label="Width">
       <input class="cell" data-k="rocker" type="text" spellcheck="false" aria-label="Rocker">
       <input class="cell" data-k="thickness" type="text" spellcheck="false" aria-label="Thickness">
       <button class="x" title="Remove this measurement" aria-label="Remove">×</button>`;
     const pos = el.querySelector('.pos'), from = el.querySelector('.from');
-    from.value = r.from;
+    from.value = fromKey(r);
     const cells = {};
     for (const inp of el.querySelectorAll('input')) {
       inp.addEventListener('focus', () => inp.select());
       inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
     }
-    pos.addEventListener('change', () => { const v = parseVal(pos.value); if (Number.isFinite(v)) r.pos = clip(v, 1, 143); marksChanged(false); });
-    from.addEventListener('change', () => { r.from = from.value; marksChanged(false); });
+    pos.addEventListener('change', () => { const v = parseVal(pos.value); if (Number.isFinite(v)) setPos(r, clip(Math.abs(v), 0, 143)); marksChanged(false); });
+    from.addEventListener('change', () => { setFrom(r, from.value); marksChanged(false); });
     for (const inp of el.querySelectorAll('[data-k]')) {
       const key = inp.dataset.k;
       cells[key] = inp;
@@ -206,7 +227,7 @@ function syncMarks(data) {
   const pr = data._profiles, L = data.params.length;
   for (const { r, el, pos, cells } of marksUI.els) {
     const x = markX(r, L), live = (inp) => document.activeElement === inp;
-    if (!live(pos)) pos.value = fracIn(r.pos);
+    if (!live(pos)) pos.value = fracIn(showPos(r));
     const now = { width: 2 * lerpAt(pr.x, pr.h, x), rocker: lerpAt(pr.x, pr.zb, x), thickness: lerpAt(pr.x, pr.t, x) };
     for (const [key, inp] of Object.entries(cells)) {
       if (!live(inp)) inp.value = r[key] === null || r[key] === undefined ? '' : fracIn(r[key]);
@@ -236,7 +257,7 @@ function buildBottomBox() {
   bottomUI.help = box.querySelector('#bottom-help');
   box.querySelector('[data-add]').addEventListener('click', () => {
     const P = state.params, L = have('length');
-    const xs = [0, ...P.bottom.map((r) => (r.from === 'nose' ? L - r.pos : r.pos)).sort((p, q) => p - q), L];
+    const xs = [0, ...P.bottom.flatMap((r) => [posToX(r, L), ...(r.to ? [posToX(r.to, L)] : [])]).sort((p, q) => p - q), L];
     let best = 0;
     for (let i = 1; i < xs.length - 1; i++) if (xs[i + 1] - xs[i] > xs[best + 1] - xs[best]) best = i;
     const x = snap((xs[best] + xs[best + 1]) / 2, 1);
@@ -267,18 +288,21 @@ function bottomChanged(rebuild) {
 function renderBottomTable() {
   const P = state.params, L = P.length, box = bottomUI.rows;
   if (!box) return;
-  const xn = (r) => (r.from === 'nose' ? r.pos : L - r.pos);
+  const xn = (r) => L - posToX(r, L);
   P.bottom.sort((p, q) => xn(p) - xn(q));
   box.innerHTML = '';
   for (const r of P.bottom) {
     const el = document.createElement('div');
     el.className = 'brow';
     el.innerHTML = `<input class="cell pos" type="text" spellcheck="false" aria-label="Position in inches">
-      <span>″ from the</span>
-      <select class="from" aria-label="Measured from"><option value="nose">nose</option><option value="tail">tail</option></select>
+      <span>″</span>
+      <select class="from" aria-label="Measured from">${FROM_LONG}</select>
       <button class="x" title="Remove this station" aria-label="Remove">×</button>
+      <div class="line3"><span>until</span><input class="cell pos2" type="text" spellcheck="false" aria-label="Until, inches"><span>″</span>
+        <select class="from2" aria-label="Until, measured from">${FROM_LONG}</select><button class="x x2" title="Just this spot, not a stretch" aria-label="Remove until">×</button></div>
       <div class="line2"><select class="type" aria-label="Contour">${BOTTOM_OPTIONS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
-        <input class="cell d1" type="text" spellcheck="false"><input class="cell d2" type="text" spellcheck="false"></div>`;
+        <input class="cell d1" type="text" spellcheck="false"><input class="cell d2" type="text" spellcheck="false">
+        <button class="ghost until" title="Make this a stretch: the same contour from here until another spot">until…</button></div>`;
     const q = (s) => el.querySelector(s);
     const paint = () => {
       const names = BOTTOM_DEPTHS[r.type];
@@ -287,9 +311,11 @@ function renderBottomTable() {
       q('.d1').value = fracIn(r.depth, 32); q('.d2').value = fracIn(r.depth2, 32);
       q('.d1').title = `${names[0] || ''} depth, inches`; q('.d2').title = `${names[1] || ''} depth, inches`;
       q('.d1').setAttribute('aria-label', q('.d1').title); q('.d2').setAttribute('aria-label', q('.d2').title);
-      q('.pos').value = fracIn(r.pos);
+      q('.pos').value = fracIn(showPos(r));
+      q('.line3').hidden = !r.to; q('.until').hidden = !!r.to;
+      if (r.to) { q('.pos2').value = fracIn(showPos(r.to)); q('.from2').value = fromKey(r.to); }
     };
-    q('.from').value = r.from; q('.type').value = r.type;
+    q('.from').value = fromKey(r); q('.type').value = r.type;
     paint();
     const numeric = (sel, key, lo, hi) => {
       const inp = q(sel);
@@ -301,17 +327,210 @@ function renderBottomTable() {
         paint(); bottomChanged(false);
       });
     };
-    numeric('.pos', 'pos', 0, 240); numeric('.d1', 'depth', 0, 0.75); numeric('.d2', 'depth2', 0, 0.75);
-    q('.from').addEventListener('change', () => { r.from = q('.from').value; bottomChanged(false); });
+    numeric('.d1', 'depth', 0, 0.75); numeric('.d2', 'depth2', 0, 0.75);
+    for (const [sel, get] of [['.pos', () => r], ['.pos2', () => r.to]]) {
+      const inp = q(sel);
+      inp.addEventListener('focus', () => inp.select());
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
+      inp.addEventListener('change', () => { const v = parseVal(inp.value), t = get(); if (t && Number.isFinite(v)) setPos(t, clip(Math.abs(v), 0, 240)); paint(); bottomChanged(false); });
+    }
+    q('.from').addEventListener('change', () => { setFrom(r, q('.from').value); bottomChanged(false); });
+    q('.from2').addEventListener('change', () => { if (r.to) setFrom(r.to, q('.from2').value); bottomChanged(false); });
+    q('.until').addEventListener('click', () => {      // start the stretch a foot toward the tail (or the nose, near the tail)
+      const x = posToX(r, L), x2 = x - 12 >= 2 ? x - 12 : Math.min(L - 2, x + 12);
+      r.to = x2 > L / 2 ? { pos: snap(L - x2, 1), from: 'nose' } : { pos: snap(x2, 1), from: 'tail' };
+      paint(); bottomChanged(false);
+    });
+    q('.x2').addEventListener('click', () => { delete r.to; paint(); bottomChanged(false); });
     q('.type').addEventListener('change', () => { r.type = q('.type').value; paint(); bottomChanged(false); });
     q('.x').addEventListener('click', () => { dropFrom(P.bottom, r); bottomChanged(true); });
     box.appendChild(el);
   }
   bottomUI.help.textContent = P.bottom.length
-    ? 'Blended smoothly from station to station. The nose tip is flat and the station nearest the tail carries out the tail. Depths in inches, fractions OK: 1/16, 3/32, 1/4.'
-    : 'Say what the bottom does at a few spots (for example 1/16″ concave 12″ from the nose, 1/4″ at center, vee 4″ from the tail) and it is blended in between. With no stations, the two sliders above are used.';
+    ? 'Blended smoothly from station to station; a stretch (until…) holds its contour all the way through. The nose tip is flat and the station nearest the tail carries out the tail. Depths in inches, fractions OK: 1/16, 3/32, 1/4.'
+    : 'Say what the bottom does at a few spots (for example 1/16″ concave 12″ from the nose, 1/4″ at center, vee 4″ from the tail) and it is blended in between. A station can be a stretch: until… holds the same contour from one spot to another. With no stations, the two sliders above are used.';
 }
 
+
+/* Concave tools: hard-edged concaves (tear drop, straight edges, venturi), single or double,
+   between two spots on the board. Each has a box here with its numbers; "Shape it" puts it
+   on the Plan graph to drag its ends and edges. */
+const TOOL_COL = '#7ec8ff', TOOL_COL2 = '#b7e0ff';
+const toolsUI = {};
+const rawTool = (id) => state.params.tools?.find((t) => t.id === id);
+function toolsChanged(rebuild) { if (rebuild) renderTools(); saveLocal(); schedule(); }
+function newTool(shape) {
+  const P = state.params, L = have('length'), W = have('width');
+  const id = 1 + Math.max(0, ...(P.tools || []).map((t) => t.id || 0));
+  const r16 = (v) => Math.round(v * 16) / 16;
+  const t = shape === 'teardrop'
+    ? { id, shape, kind: 'single', edge: 'hard', start: { pos: 1, from: 'nose' }, end: { pos: snap(L * 0.33, 1), from: 'nose' }, depth: 0.1875, width: r16(0.62 * W), round: 'nose' }
+    : shape === 'straight'
+      ? { id, shape, kind: 'double', edge: 'hard', start: { pos: 0, from: 'center' }, end: { pos: 0, from: 'tail' }, depth: 0.125, w1: r16(0.55 * W), w2: r16(0.45 * W), ridge: 2 }
+      : { id, shape, kind: 'double', edge: 'rail', start: { pos: snap(L * 0.38, 1), from: 'tail' }, end: { pos: 0, from: 'tail' }, depth: 0.1875,
+        outer: [[0, r16(0.5 * W)], [0.55, r16(0.4 * W)], [1, r16(0.62 * W)]], inner: [[0, 2.5], [1, 3.5]] };
+  (P.tools ||= []).push(t);
+  state.tool = id;
+  if (!prefs.edit) { prefs.edit = true; savePrefs(); syncPanelTools(); }
+  toolsChanged(true);
+}
+function buildToolsBox() {
+  const box = document.createElement('div');
+  box.className = 'tools-box';
+  box.innerHTML = `<div class="bottom-head">Concave tools <small>hard edges</small></div>
+    <div class="tool-cards"></div>
+    <div class="bottom-actions"><button class="ghost" data-shape="teardrop" title="A nose concave for noseriding: round at the nose, tapering toward the tail">+ Tear drop</button><button class="ghost" data-shape="straight" title="Straight hard edges, parallel or converging">+ Straight edges</button><button class="ghost" data-shape="venturi" title="Curved hard edges you shape with points, like a Bonzer's double concaves">+ Venturi</button></div>
+    <div class="help">A tool lays a concave with hard edges over the bottom contours. Shape it on the Plan graph: drag the diamonds to move its ends and the dots to move its edges.</div>`;
+  toolsUI.cards = box.querySelector('.tool-cards');
+  box.querySelectorAll('[data-shape]').forEach((b) => b.addEventListener('click', () => newTool(b.dataset.shape)));
+  return box;
+}
+function renderTools() {
+  const P = state.params, box = toolsUI.cards;
+  if (!box) return;
+  box.innerHTML = '';
+  for (const t of P.tools || []) {
+    const el = document.createElement('div');
+    el.className = 'tcard' + (state.tool === t.id ? ' on' : '');
+    const opt = (o) => Object.entries(o).map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+    el.innerHTML = `<div class="trow top"><select class="shape" aria-label="Shape">${opt(TOOL_SHAPES)}</select><select class="kind" aria-label="Single or double">${opt({ single: 'Single', double: 'Double' })}</select><button class="x" title="Remove this concave" aria-label="Remove">×</button></div>
+      <div class="trow where"><span>from</span><input class="cell p1" spellcheck="false" aria-label="Starts, inches"><span>″</span><select class="f1" aria-label="Measured from">${FROM_LONG}</select></div>
+      <div class="trow where"><span>until</span><input class="cell p2" spellcheck="false" aria-label="Ends, inches"><span>″</span><select class="f2" aria-label="Measured from">${FROM_LONG}</select></div>
+      <div class="trow nums">
+        <label>deep<input class="cell n" data-k="depth" spellcheck="false"></label>
+        <label data-for="teardrop">widest<input class="cell n" data-k="width" spellcheck="false"></label>
+        <label data-for="teardrop">round end<select class="round">${opt({ nose: 'nose', tail: 'tail' })}</select></label>
+        <label data-for="straight">nose end<input class="cell n" data-k="w1" spellcheck="false"></label>
+        <label data-for="straight">tail end<input class="cell n" data-k="w2" spellcheck="false"></label>
+        <label data-for="ridge">ridge<input class="cell n" data-k="ridge" spellcheck="false"></label>
+        <label data-for="double">edges<select class="edge">${opt({ hard: 'hard both sides', rail: 'hard on the rail side' })}</select></label>
+      </div>
+      <div class="trow foot"><button class="ghost edit"></button><span class="angle"></span></div>`;
+    const q = (sel) => el.querySelector(sel);
+    const paint = () => {
+      q('.shape').value = t.shape; q('.kind').value = t.kind; q('.round').value = t.round || 'nose'; q('.edge').value = t.edge || 'hard';
+      q('.p1').value = fracIn(showPos(t.start)); q('.f1').value = fromKey(t.start);
+      q('.p2').value = fracIn(showPos(t.end)); q('.f2').value = fromKey(t.end);
+      for (const inp of el.querySelectorAll('.n')) inp.value = Number.isFinite(t[inp.dataset.k]) ? fracIn(t[inp.dataset.k], inp.dataset.k === 'depth' ? 32 : 16) : '';
+      const dbl = t.kind === 'double';
+      for (const lab of el.querySelectorAll('[data-for]')) {
+        const f = lab.dataset.for;
+        lab.hidden = f === 'double' ? !dbl : f === 'ridge' ? !(dbl && t.shape === 'straight') : f !== t.shape;
+      }
+      q('.edit').textContent = state.tool === t.id ? 'Done shaping' : 'Shape it on the Plan graph';
+      let ang = '';
+      if (t.shape === 'straight' && state.board) {
+        const L = state.board.params.length, len = Math.abs(posToX(t.start, L) - posToX(t.end, L)) || 1;
+        const a1 = posToX(t.start, L) >= posToX(t.end, L), w1 = a1 ? t.w1 : t.w2, w2 = a1 ? t.w2 : t.w1;
+        const deg = (Math.atan(Math.abs(w1 - w2) / 2 / len) * 180) / Math.PI;
+        ang = deg < 0.2 ? 'edges parallel' : `edges ${w1 > w2 ? 'converge' : 'spread'} ${deg.toFixed(1)}° each side toward the tail`;
+      } else if (t.shape === 'venturi') ang = 'curved edges: shape them on the Plan graph';
+      q('.angle').textContent = ang;
+    };
+    paint();
+    for (const inp of el.querySelectorAll('input')) {
+      inp.addEventListener('focus', () => inp.select());
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
+    }
+    const posBox = (sel, end) => q(sel).addEventListener('change', () => { const v = parseVal(q(sel).value); if (Number.isFinite(v)) setPos(t[end], clip(Math.abs(v), 0, 240)); paint(); toolsChanged(false); });
+    posBox('.p1', 'start'); posBox('.p2', 'end');
+    q('.f1').addEventListener('change', () => { setFrom(t.start, q('.f1').value); paint(); toolsChanged(false); });
+    q('.f2').addEventListener('change', () => { setFrom(t.end, q('.f2').value); paint(); toolsChanged(false); });
+    for (const inp of el.querySelectorAll('.n')) inp.addEventListener('change', () => {
+      const v = parseVal(inp.value), k = inp.dataset.k;
+      if (Number.isFinite(v)) t[k] = clip(Math.abs(v), 0, k === 'depth' ? 0.75 : 40);
+      paint(); toolsChanged(false);
+    });
+    q('.shape').addEventListener('change', () => {               // a new shape starts from that shape's own defaults, at the same spot
+      const keep = { id: t.id, kind: t.kind, start: t.start, end: t.end, depth: t.depth, edge: t.edge };
+      const W = have('width'), r16 = (v) => Math.round(v * 16) / 16, sh = q('.shape').value;
+      for (const k of Object.keys(t)) delete t[k];
+      Object.assign(t, keep, { shape: sh }, sh === 'teardrop' ? { width: r16(0.62 * W), round: 'nose' } : sh === 'straight' ? { w1: r16(0.55 * W), w2: r16(0.45 * W), ridge: 2 }
+        : { outer: [[0, r16(0.5 * W)], [0.55, r16(0.4 * W)], [1, r16(0.62 * W)]], inner: [[0, 2.5], [1, 3.5]] });
+      paint(); toolsChanged(false);
+    });
+    q('.kind').addEventListener('change', () => { t.kind = q('.kind').value; paint(); toolsChanged(false); });
+    q('.round').addEventListener('change', () => { t.round = q('.round').value; toolsChanged(false); });
+    q('.edge').addEventListener('change', () => { t.edge = q('.edge').value; toolsChanged(false); });
+    q('.x').addEventListener('click', () => { dropFrom(P.tools, t); if (state.tool === t.id) state.tool = null; toolsChanged(true); });
+    q('.edit').addEventListener('click', () => {
+      state.tool = state.tool === t.id ? null : t.id;
+      if (state.tool && !prefs.edit) { prefs.edit = true; savePrefs(); syncPanelTools(); }
+      renderTools(); drawPanels();
+    });
+    el._paint = paint;
+    box.appendChild(el);
+  }
+}
+/** Keep the boxes' numbers current while shapes are dragged on the graph (without rebuilding them). */
+function syncTools() { toolsUI.cards?.querySelectorAll('.tcard').forEach((c) => { if (!c.contains(document.activeElement)) c._paint?.(); }); }
+
+/** The concave tools on the Plan graph (seen through the board from above). The one being shaped gets handles. */
+function drawTools(v, ctx, data) {
+  const P = state.params, tools = data.params.tools || [], L = data.params.length, W = data.params.width;
+  let editing = null;
+  for (let k = 0; k < tools.length; k++) {
+    const o = toolOutline(data, k); if (!o) continue;
+    const sel = state.tool !== null && o.tool.id === state.tool, pts = o.pts.filter((q) => q.e > 0.05);
+    if (!pts.length) continue;
+    ctx.save();
+    ctx.strokeStyle = TOOL_COL; ctx.lineWidth = sel ? 1.6 : 1; ctx.globalAlpha = state.tool !== null && !sel ? 0.4 : 0.9;
+    if (!sel) ctx.setLineDash([4, 3]);
+    for (const sgn of [1, -1]) {
+      v.path(ctx, pts.map((q) => q.x), pts.map((q) => sgn * q.e)); ctx.stroke();
+      if (o.tool.kind === 'double') { v.path(ctx, pts.map((q) => q.x), pts.map((q) => sgn * q.r)); ctx.stroke(); }
+    }
+    const xs = [...pts.map((q) => q.x), ...[...pts].reverse().map((q) => q.x)];
+    v.path(ctx, xs, [...pts.map((q) => q.e), ...[...pts].reverse().map((q) => (o.tool.kind === 'double' ? q.r : -q.e))], true);
+    ctx.fillStyle = 'rgba(126,200,255,0.10)'; ctx.fill();
+    if (o.tool.kind === 'double') { v.path(ctx, xs, [...pts.map((q) => -q.e), ...[...pts].reverse().map((q) => -q.r)], true); ctx.fill(); }
+    ctx.restore();
+    if (sel) editing = o;
+  }
+  if (!editing || !prefs.edit) return false;
+  const tool = editing.tool, raw = rawTool(tool.id);
+  if (!raw) return false;
+  const frontIsStart = posToX(raw.start, L) >= posToX(raw.end, L);
+  const setX = (end, wx) => { const x = clip(snap(wx, 0.25), 0, L), r = raw[end]; r.pos = r.from === 'nose' ? L - x : r.from === 'center' ? x - L / 2 : x; };
+  const H = [];                                          // this tool's handles
+  const pt = (h) => { v.point(ctx, { ...h, tool: true }); };
+  pt({ x: tool.x1, y: 0, kind: 'slice', color: TOOL_COL, drag: (wx) => setX(frontIsStart ? 'start' : 'end', wx) });
+  pt({ x: tool.x0, y: 0, kind: 'slice', color: TOOL_COL, drag: (wx) => setX(frontIsStart ? 'end' : 'start', wx) });
+  const yOf = (wy) => Math.abs(wy);
+  if (tool.shape === 'teardrop') {
+    const u = tool.round === 'nose' ? 1 / 3 : 2 / 3, x = tool.x1 - u * tool.len;
+    pt({ x, y: lerpAt(editing.pts.map((q) => q.x).reverse(), editing.pts.map((q) => q.e).reverse(), x), kind: 'anchor', color: TOOL_COL, drag: (wx, wy) => { raw.width = clip(2 * yOf(wy), 1, W); } });
+  } else if (tool.shape === 'straight') {
+    const [kf, kb] = frontIsStart ? ['w1', 'w2'] : ['w2', 'w1'];
+    pt({ x: tool.x1, y: tool[frontIsStart ? 'w1' : 'w2'] / 2, kind: 'anchor', color: TOOL_COL, drag: (wx, wy) => { raw[kf] = clip(2 * yOf(wy), 0.5, W); } });
+    pt({ x: tool.x0, y: tool[frontIsStart ? 'w2' : 'w1'] / 2, kind: 'anchor', color: TOOL_COL, drag: (wx, wy) => { raw[kb] = clip(2 * yOf(wy), 0.5, W); } });
+    if (tool.kind === 'double') pt({ x: (tool.x0 + tool.x1) / 2, y: tool.ridge / 2, kind: 'anchor', color: TOOL_COL2, drag: (wx, wy) => { raw.ridge = clip(2 * yOf(wy), 0, W); } });
+  } else {
+    // venturi: points along each edge; t runs 0 at the nose end to 1 at the tail end
+    for (const [key, col, list] of [['outer', TOOL_COL, tool.outer], ...(tool.kind === 'double' ? [['inner', TOOL_COL2, tool.inner]] : [])]) {
+      if (!Array.isArray(raw[key])) raw[key] = list.pts.map((q) => [...q]);
+      const arr = raw[key].sort((a, b) => a[0] - b[0]);
+      arr.forEach((a, i) => {
+        const end = i === 0 || i === arr.length - 1, lo = i > 0 ? arr[i - 1][0] + 0.03 : 0, hi = i < arr.length - 1 ? arr[i + 1][0] - 0.03 : 1;
+        pt({ x: tool.x1 - a[0] * tool.len, y: a[1] / 2, kind: 'anchor', color: col,
+          drag: (wx, wy) => { if (!end) a[0] = clip((tool.x1 - wx) / tool.len, lo, hi); a[1] = clip(2 * yOf(wy), key === 'inner' ? 0 : 0.5, W); },
+          remove: end || arr.length <= 2 ? null : () => dropFrom(arr, a) });
+      });
+      const ys = editing.pts.map((q) => (key === 'outer' ? q.e : q.r)), xs2 = editing.pts.map((q) => q.x);
+      H.push({
+        dist: (wx, wy) => { let best = Infinity; for (let i = 0; i < xs2.length; i++) best = Math.min(best, Math.hypot(v.X(xs2[i]) - v.X(wx), v.Y(ys[i]) - v.Y(Math.abs(wy)))); return best; },
+        add: (wx, wy) => {
+          const a = [clip((tool.x1 - wx) / tool.len, 0.03, 0.97), clip(2 * yOf(wy), 0.5, W)];
+          arr.push(a);
+          return { fn: (x, y) => { a[0] = clip((tool.x1 - x) / tool.len, 0.03, 0.97); a[1] = clip(2 * yOf(y), key === 'inner' ? 0 : 0.5, W); }, undo: () => dropFrom(arr, a) };
+        },
+      });
+    }
+  }
+  v.handles = v.handles.filter((h) => h.tool);           // while a tool is being shaped, only its own handles answer
+  v.curves = H;
+  return true;
+}
 /* Sliders for the cross section picked in the Sections graph. They show that section's own
    deck dome, rails and bottom; moving one changes the board there and blends out toward
    the neighbouring sections and the tips. The board-wide Rails and Bottom sliders still
@@ -537,7 +756,7 @@ function applyParams(p, keepSel = null) {
     for (const key of ['tail12', 'origin', 'nose12']) { const q = hd3(hs[name]?.[key]); if (q) P.handles[name][key] = q; }
   }
   P.marks = (Array.isArray(P.marks) ? P.marks : []).filter((r) => r && Number.isFinite(+r.pos)).map((r) => {      // added measurements
-    const m = { pos: +r.pos, from: r.from === 'nose' ? 'nose' : 'tail', width: num(r.width), rocker: num(r.rocker), thickness: num(r.thickness) };
+    const m = { pos: +r.pos, from: FROM.includes(r.from) ? r.from : 'tail', width: num(r.width), rocker: num(r.rocker), thickness: num(r.thickness) };
     for (const f of ['hw', 'hr', 'ht']) { const q = hd3(r[f]); if (q) m[f] = q; }
     return m;
   });
@@ -555,13 +774,24 @@ function applyParams(p, keepSel = null) {
     return { id, x: s.x, adj, deck: pts(s.deck), bottom: pts(s.bottom), v: s.v === 2 ? 2 : 1 };
   });
   P.bottom = (Array.isArray(P.bottom) ? P.bottom : []).filter((r) => r && Number.isFinite(+r.pos)).map((r) => ({
-    pos: +r.pos, from: r.from === 'nose' ? 'nose' : 'tail', type: BOTTOM_LABELS[r.type] ? r.type : 'flat',
+    pos: +r.pos, from: FROM.includes(r.from) ? r.from : 'tail', type: BOTTOM_LABELS[r.type] ? r.type : 'flat',
+    ...(r.to && Number.isFinite(+r.to.pos) ? { to: { pos: +r.to.pos, from: FROM.includes(r.to.from) ? r.to.from : 'tail' } } : {}),
     depth: clip(+r.depth || 0, 0, 0.75), depth2: clip(+r.depth2 || 0, 0, 0.75) }));
+  const tseen = new Set();
+  P.tools = (Array.isArray(P.tools) ? P.tools : []).filter((t) => t && TOOL_SHAPES[t.shape] && t.start && t.end).map((t) => {
+    let id = Number.isInteger(t.id) && !tseen.has(t.id) ? t.id : 1;
+    while (tseen.has(id)) id++;
+    tseen.add(id);
+    const at = (r) => ({ pos: Number.isFinite(+r.pos) ? +r.pos : 0, from: FROM.includes(r.from) ? r.from : 'tail' });
+    return { ...structuredClone(t), id, start: at(t.start), end: at(t.end) };
+  });
+  if (!P.tools.some((t) => t.id === state.tool)) state.tool = null;
   state.sel = P.slices.some((s) => s.id === keepSel) ? keepSel : null;
   state.pt = null;
   for (const [k, fe] of Object.entries(state.fieldEls)) fe.set(state.params[k]);
   for (const [k, ce] of Object.entries(state.cellEls)) ce.set(state.params[k]);
   renderBottomTable();
+  renderTools();
   renderMarks();
   updateVisibility();
   saveLocal();
@@ -669,9 +899,11 @@ scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
 const camera = new THREE.PerspectiveCamera(32, 1, 0.5, 2000);
 camera.position.set(50, 45, 70);
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
+// Trackball: the board turns freely all the way around in every direction (right side up,
+// bottom up, end over end), not stopping at straight above / below as an orbit would.
+const controls = new TrackballControls(camera, renderer.domElement);
+Object.assign(controls, { rotateSpeed: 2.6, zoomSpeed: 1.1, panSpeed: 0.7, dynamicDampingFactor: 0.14, minDistance: 8, maxDistance: 900 });
+const UP = new THREE.Vector3(0, 1, 0);
 
 // Studio lighting: soft key + fill, glossy glassed board.
 const sun = new THREE.DirectionalLight(0xffffff, 1.6);
@@ -929,8 +1161,8 @@ function setView(name, animate = true) {
   const to = new THREE.Vector3(...views[name]).add(target);
   state.view = name;
   document.querySelectorAll('#views button[data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === name));
-  if (!animate) { camera.position.copy(to); controls.target.copy(target); controls.update(); return; }
-  tween = { t0: performance.now(), dur: 550, fromP: camera.position.clone(), toP: to, fromT: controls.target.clone(), toT: target };
+  if (!animate) { camera.position.copy(to); camera.up.copy(UP); controls.target.copy(target); controls.update(); return; }
+  tween = { t0: performance.now(), dur: 550, fromP: camera.position.clone(), toP: to, fromT: controls.target.clone(), toT: target, fromU: camera.up.clone() };
 }
 
 function animate(now) {
@@ -940,6 +1172,7 @@ function animate(now) {
     const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
     camera.position.lerpVectors(tween.fromP, tween.toP, e);
     controls.target.lerpVectors(tween.fromT, tween.toT, e);
+    camera.up.lerpVectors(tween.fromU, UP, e).normalize();          // a view puts the board upright again
     if (k === 1) tween = null;
   }
   const want = state.flip ? Math.PI : 0;
@@ -959,6 +1192,7 @@ function resize() {
   renderer.setSize(r.width, r.height);
   camera.aspect = r.width / Math.max(r.height, 1);
   camera.updateProjectionMatrix();
+  controls.handleResize();
   if (state.board && !state.userMoved && !tween) setView(state.view || 'threeq', false);   // keep the board framed until they grab it
 }
 controls.addEventListener('start', () => (state.userMoved = true));
@@ -1004,6 +1238,10 @@ class View2D {
     new ResizeObserver(() => this.redraw()).observe(canvas);
   }
   redraw() { if (state.board && this.c.clientWidth > 4) this.drawFn(this, state.board); }
+  /** Points can be edited: Edit points is on, or this view is always for editing (the photo trace). */
+  get editing() { return this.alwaysEdit || prefs.edit; }
+  /** After a change: a view of its own (self) just redraws; the panels rebuild the board. */
+  changed(light) { if (this.self) this.redraw(); else if (light) scrubChanged(); else schedule(); }
 
   /** Size the canvas, set the world -> pixel transform for extent [x0, x1, y0, y1], return the context. */
   begin([x0, x1, y0, y1], vex = 1, pad = 22) {
@@ -1043,7 +1281,7 @@ class View2D {
     ctx.save();
     ctx.lineWidth = 1.5; ctx.strokeStyle = h.color; ctx.fillStyle = h.ghost ? 'transparent' : h.color;
     if (h.ghost) ctx.globalAlpha = 0.45;
-    else if (!prefs.edit && !h.view) ctx.globalAlpha = 0.5;      // looking, not editing
+    else if (!this.editing && !h.view) ctx.globalAlpha = 0.5;      // looking, not editing
     ctx.beginPath();
     const big = COARSE ? 1.45 : 1;
     if (h.kind === 'arm') {                               // handle arm: a line from its anchor to a small ring
@@ -1054,7 +1292,7 @@ class View2D {
       ctx.moveTo(px - 6 * big, py + 9 * big); ctx.lineTo(px + 6 * big, py + 9 * big); ctx.lineTo(px, py + 1); ctx.closePath(); ctx.fill();
     } else if (h.kind === 'anchor') {
       ctx.arc(px, py, 4.5 * big, 0, 7); ctx.fill(); ctx.strokeStyle = '#0e1317'; ctx.stroke();
-      if (h.on && prefs.edit) { ctx.beginPath(); ctx.arc(px, py, 8 * big, 0, 7); ctx.strokeStyle = h.color; ctx.lineWidth = 1; ctx.stroke(); }
+      if (h.on && this.editing) { ctx.beginPath(); ctx.arc(px, py, 8 * big, 0, 7); ctx.strokeStyle = h.color; ctx.lineWidth = 1; ctx.stroke(); }
     }
     else if (h.kind === 'apex') {                         // rail apex: a ring with up / down ticks, it only moves up and down
       ctx.arc(px, py, 5.5 * big, 0, 7); ctx.fillStyle = '#0e1317'; ctx.fill(); ctx.lineWidth = 2; ctx.stroke();
@@ -1066,12 +1304,12 @@ class View2D {
     else if (h.kind === 'slice') { ctx.moveTo(px, py - 6); ctx.lineTo(px + 6, py); ctx.lineTo(px, py + 6); ctx.lineTo(px - 6, py); ctx.closePath(); ctx.fill(); ctx.strokeStyle = '#0e1317'; ctx.stroke(); }
     else {
       ctx.rect(px - 3.5 * big, py - 3.5 * big, 7 * big, 7 * big); if (h.locked) { ctx.fillStyle = '#141b21'; } ctx.fill(); ctx.stroke();
-      if (h.on && prefs.edit) { ctx.beginPath(); ctx.arc(px, py, 8.5 * big, 0, 7); ctx.lineWidth = 1; ctx.stroke(); }
+      if (h.on && this.editing) { ctx.beginPath(); ctx.arc(px, py, 8.5 * big, 0, 7); ctx.lineWidth = 1; ctx.stroke(); }
     }
     ctx.restore();
   }
 
-  hit(px, py, all = prefs.edit) {
+  hit(px, py, all = this.editing) {
     let best = null, bd = this.touch ? 24 : 13;
     for (const h of this.handles) {
       if (!all && !h.view) continue;
@@ -1102,21 +1340,21 @@ class View2D {
     this.touch = e.pointerType !== 'mouse';
     this.ptrs.set(e.pointerId, [px, py]);
     if (this.ptrs.size === 2) {                         // second finger: pinch to zoom, drag to pan
-      if (this.drag?.undo) { this.drag.undo(); schedule(); }   // the first finger was not adding a point after all
+      if (this.drag?.undo) { this.drag.undo(); this.changed(); }   // the first finger was not adding a point after all
       this.drag = null;
       const [a, b] = [...this.ptrs.values()], mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
       this.pinch = { d: Math.max(Math.hypot(a[0] - b[0], a[1] - b[1]), 1), zoom: this.zoom, wx: this.wx(mx), wy: this.wy(my) };
       return;
     }
     const h = this.hit(px, py);
-    if (!prefs.edit) {                                  // looking only: pan, and the few things that are not edits
+    if (!this.editing) {                                // looking only: pan, and the few things that are not edits
       if (h) { h.select?.(); if (h.drag) this.drag = { fn: h.drag, light: h.light }; }
       else {
         if (this.hit(px, py, true)) hintEdit();
         if (this.zoom > 1) this.drag = { pan: [px, py, this.mx, this.my] };
       }
       if (this.drag) { try { this.c.setPointerCapture(e.pointerId); } catch {} e.preventDefault(); }
-      if (h) (h.light ? scrubChanged() : schedule());
+      if (h) this.changed(h.light);
       return;
     }
     if (h && h.locked) {                                // a fixed measurement: it cannot move, but its handle arms can
@@ -1126,7 +1364,7 @@ class View2D {
     }
     if (h && h.remove && this.touch) {                  // double-tap a point to remove it
       const now = performance.now(), t = this.lastTap;
-      if (t && now - t.t < 420 && Math.hypot(t.px - px, t.py - py) < 30) { this.lastTap = null; h.remove(); saveLocal(); schedule(); return; }
+      if (t && now - t.t < 420 && Math.hypot(t.px - px, t.py - py) < 30) { this.lastTap = null; h.remove(); if (!this.self) saveLocal(); this.changed(); return; }
       this.lastTap = { t: now, px, py };
     }
     const had = state.pt;
@@ -1140,7 +1378,8 @@ class View2D {
       }
     }
     if (this.drag) { try { this.c.setPointerCapture(e.pointerId); } catch {} e.preventDefault(); }
-    if (h?.light) scrubChanged();
+    if (this.self) this.redraw();
+    else if (h?.light) scrubChanged();
     else if (this.drag?.fn || h) schedule();
     else if (had !== state.pt) drawPanels();
   }
@@ -1159,7 +1398,7 @@ class View2D {
       if (e.pointerType !== 'mouse') return;
       this.touch = false;
       const h = this.hit(px, py);
-      this.c.style.cursor = h ? (h.locked ? 'not-allowed' : h.kind === 'apex' ? 'ns-resize' : 'grab') : prefs.edit && this.curveHit(px, py) ? 'copy' : this.zoom > 1 ? 'move' : 'default';
+      this.c.style.cursor = h ? (h.locked ? 'not-allowed' : h.kind === 'apex' ? 'ns-resize' : 'grab') : this.editing && this.curveHit(px, py) ? (this.addCursor || 'copy') : this.zoom > 1 ? 'move' : 'default';
       return;
     }
     if (this.drag.pan) {
@@ -1170,16 +1409,16 @@ class View2D {
     }
     this.drag.undo = null;                              // it moved: this really is an edit
     this.drag.fn(this.wx(px), this.wy(py));
-    if (this.drag.light) scrubChanged(); else schedule();
+    this.changed(this.drag.light);
   }
   up(e) {
     if (e) this.ptrs.delete(e.pointerId); else this.ptrs.clear();
     if (this.ptrs.size < 2) this.pinch = null;
-    if (this.drag) { const edit = !this.drag.light && !this.drag.pan; this.drag = null; if (edit) saveLocal(); }
+    if (this.drag) { const edit = !this.drag.light && !this.drag.pan && !this.self; this.drag = null; if (edit) saveLocal(); }
   }
   removeAt(e) {
     const h = this.hit(...this.pos(e));
-    if (h?.remove) { h.remove(); saveLocal(); schedule(); }
+    if (h?.remove) { h.remove(); if (!this.self) saveLocal(); this.changed(); }
   }
   wheel(e) {
     e.preventDefault();
@@ -1268,13 +1507,14 @@ const station = (v, ctx, x, y, color, apply, id = null) =>
   v.point(ctx, { x, y, kind: 'station', color, locked: prefs.fix, drag: prefs.fix ? null : apply,
     on: id !== null && state.pt === id, select: id === null ? null : () => { state.pt = id; } });
 const rawMark = (r) => state.params.marks.find((q) => q.pos === r.pos && q.from === r.from);
-const markPos = (raw, wx) => { const L = state.board.params.length, x = clip(snap(wx, 0.25), 1.25, L - 1.25); raw.pos = raw.from === 'nose' ? L - x : x; };
+const markPos = (raw, wx) => { const L = state.board.params.length, x = clip(snap(wx, 0.25), 1.25, L - 1.25); raw.pos = raw.from === 'nose' ? L - x : raw.from === 'center' ? x - L / 2 : x; };
 
 /* ---- plan: the outline --------------------------------------------------- */
 function drawPlan(v, data) {
   const { x, h, yin } = data.curves.outline, p = data.params, P = state.params;
   const L = p.length, W = data.stats.width_in;
   const ctx = v.begin([0, L, -W / 2 - 1.5, W / 2 + 1.5]);
+  if (state.photo && state.photoOn) drawPhoto(v, ctx, state.photo, 0.32);
 
   ctx.strokeStyle = COLORS.line; ctx.lineWidth = 1;
   for (let gx = 0; gx <= L; gx += 12) { ctx.beginPath(); ctx.moveTo(v.X(gx), v.Y(-W / 2)); ctx.lineTo(v.X(gx), v.Y(W / 2)); ctx.stroke(); }
@@ -1409,6 +1649,12 @@ function drawPlan(v, data) {
 
   v.text(ctx, 'tail', v.X(0), v.h - 6, COLORS.muted, 'left');
   v.text(ctx, 'nose', v.X(L), v.h - 6, COLORS.muted, 'right');
+  if (drawTools(v, ctx, data)) {
+    const long = v.w > 760;
+    tip(v, ctx, long ? 'shaping a concave: drag the diamonds to move its ends, the dots to move its edges' + (rawTool(state.tool)?.shape === 'venturi' ? ' · click an edge to add a point' : '') + ' · Esc when done'
+      : 'diamonds = ends · dots = edges · Esc when done');
+    return;
+  }
   tip(v, ctx, P.anchors.outline.length + P.anchors.swallow.length ? 'drag a point · drag its arms to blend · double-click removes'
     : p.tail_type === 'swallow' ? 'click the outline or the swallow cut to add a point · click a square for its arms' : 'click the outline to add a point · click a square for its arms');
 }
@@ -1546,7 +1792,8 @@ function sectionGuides(v, ctx, s, color) {
 function sectionCaption(v, ctx, data, s, color) {
   const L = data.params.length;
   v.text(ctx, `${whereText(s.x, L)} · ${fracIn(2 * s.h)}″ wide · ${fracIn(s.t)}″ thick`, 4, 12, color, 'left');
-  v.text(ctx, `${shapeText(s.shape)} · rail apex ${fracIn(s.apex_in)}″ up`, 4, 25, COLORS.sand, 'left');
+  const here = (data.params.tools || []).filter((t) => s.x >= t.x0 && s.x <= t.x1).map((t) => `${TOOL_SHAPES[t.shape].toLowerCase()}${t.kind === 'double' ? ' double' : ''} concave`);
+  v.text(ctx, `${shapeText(s.shape)}${here.length ? ' + ' + here.join(' + ') : ''} · rail apex ${fracIn(s.apex_in)}″ up`, 4, 25, COLORS.sand, 'left');
 }
 
 /** A point of a section line at arc-length position rho: where it is, where it was before anchor points, and the frame there. */
@@ -1765,6 +2012,8 @@ function wirePanels() {
     panel.querySelector('.tools').addEventListener('click', (e) => {
       const act = e.target.closest('button')?.dataset.act; if (!act) return;
       if (act === 'max') setFocus(name);
+      if (act === 'trace') openTrace();
+      if (act === 'photo') { state.photoOn = !state.photoOn; syncPhotoButton(); v.redraw(); }
       if (act === 'edit') { prefs.edit = !prefs.edit; if (!prefs.edit) state.pt = null; savePrefs(); syncPanelTools(); drawPanels(); }
       if (act === 'fit') v.fit();
       if (act === 'in') v.zoomBy(1.6);
@@ -1784,8 +2033,9 @@ function wirePanels() {
   });
   $('#t-max').addEventListener('click', () => setFocus('view'));
   document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || !$('#feedback').hidden) return;
-    if (state.sel !== null) exitSection();              // Esc leaves the section being shaped first, then an expanded view
+    if (e.key !== 'Escape' || !$('#feedback').hidden || !$('#trace').hidden) return;
+    if (state.tool != null) { state.tool = null; renderTools(); drawPanels(); }
+    else if (state.sel !== null) exitSection();              // Esc leaves the section being shaped first, then an expanded view
     else if (state.focus) setFocus(state.focus);
   });
   syncPanelTools();
@@ -1820,6 +2070,7 @@ function render(data) {
   if (upgradeSlices(data)) { saveLocal(); schedule(); }
   refreshSectionGroup(data);
   syncMarks(data);
+  syncTools();
   syncClearButtons();
   showRing(data, false);
   const s = data.stats;
@@ -1844,6 +2095,207 @@ function render(data) {
 /* =========================================================================
    Toolbar, presets, save/load, export
    ========================================================================= */
+
+/* =========================================================================
+   Photo trace: a photo of a board -> the outline.
+   1. choose a photo   2. tap the nose tip and the tail end, type the length
+   3. the edge is found on one side (the board is symmetric, so the other side is its mirror)
+   4. "Does this look good?"  yes -> use it, no -> fix the line with points, then use it
+   The straightened photo stays behind the Plan graph (Photo button) until the page is reloaded.
+   ========================================================================= */
+const TR = { step: 'pick', img: null, mark: { nose: null, tail: null }, L: 72, side: 1, frame: null, rect: null, traces: {}, pts: null, auto: null };
+const traceView = new View2D($('#c-trace'), (v) => drawTrace(v));
+Object.assign(traceView, { alwaysEdit: true, self: true });
+const TRACE_COL = '#e8c872';
+
+function openTrace() {
+  TR.step = TR.img ? 'mark' : 'pick';
+  TR.L = state.board?.params.length ?? 72;
+  $('#trace').hidden = false;
+  traceStep(TR.step);
+}
+function closeTrace() { $('#trace').hidden = true; }
+
+function traceStep(step) {
+  TR.step = step;
+  traceView.zoom = 1;
+  $('#tr-pick').hidden = step !== 'pick';
+  const msg = $('#tr-msg'), act = $('#tr-actions');
+  const btn = (label, fn, cls = 'ghost', title = '') => { const b = document.createElement('button'); b.type = 'button'; b.className = cls; b.textContent = label; if (title) b.title = title; b.addEventListener('click', fn); return b; };
+  act.replaceChildren();
+  if (step === 'pick') {
+    msg.textContent = 'Pick a photo of the board. It stays on this device.';
+    act.append(btn('Cancel', closeTrace));
+  } else if (step === 'mark') {
+    const next = !TR.mark.nose ? 'the <b>nose tip</b>' : !TR.mark.tail ? 'the <b>tail end</b> (middle of the tail)' : null;
+    msg.innerHTML = next ? `Tap ${next} on the photo.` : 'Drag the marks to fine-tune, check the length, then trace.';
+    const lab = document.createElement('label');
+    lab.innerHTML = 'Board length <input class="cell" id="tr-len" spellcheck="false">';
+    const len = lab.querySelector('input');
+    len.value = ftin(TR.L);
+    len.addEventListener('change', () => { const v = parseVal(len.value); if (Number.isFinite(v) && v >= 40 && v <= 144) TR.L = v; len.value = ftin(TR.L); });
+    const go = btn('Trace', () => runTrace(), 'primary');
+    go.disabled = !(TR.mark.nose && TR.mark.tail);
+    act.append(btn('Another photo', () => $('#tr-file').click()), btn('Clear marks', () => { TR.mark = { nose: null, tail: null }; traceStep('mark'); }),
+      document.createElement('span'), lab, btn('Cancel', closeTrace), go);
+    act.children[2].className = 'spacer';
+  } else if (step === 'review') {
+    msg.innerHTML = 'Does this look good? The <b>yellow line</b> is the edge it found; the dashed line is its mirror on the other side.';
+    act.append(btn('Back', () => traceStep('mark')), btn('Trace the other side', () => { TR.side = -TR.side; useTrace(); traceStep('review'); }, 'ghost', 'Use the other edge of the board in the photo'),
+      Object.assign(document.createElement('span'), { className: 'spacer' }), btn('No, fix it', () => traceStep('fix')), btn('Yes, use it', applyTrace, 'primary'));
+  } else if (step === 'fix') {
+    msg.innerHTML = 'Drag a point onto the edge of the board, click the line to add a point, double-click a point to remove it.';
+    act.append(btn('Start over', () => { TR.pts = TR.auto.map((p) => [...p]); traceView.redraw(); }, 'ghost', 'Go back to the line it found'),
+      Object.assign(document.createElement('span'), { className: 'spacer' }), btn('Cancel', closeTrace), btn('Use this outline', applyTrace, 'primary'));
+  }
+  requestAnimationFrame(() => traceView.redraw());
+}
+
+function loadTracePhoto(file) {
+  if (!file) return;
+  const url = URL.createObjectURL(file), img = new Image();
+  img.onload = () => {
+    const k = Math.min(1, 2000 / Math.max(img.naturalWidth, img.naturalHeight));      // plenty for a trace, and quick
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    URL.revokeObjectURL(url);
+    TR.img = c; TR.mark = { nose: null, tail: null }; TR.traces = {};
+    traceStep('mark');
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); toast('That file could not be opened as a picture.'); };
+  img.src = url;
+}
+
+/** Straighten the photo onto the stringer (tail on the left, nose on the right) and find the edge on both sides. */
+function runTrace() {
+  const [tx, ty] = TR.mark.tail, [nx, ny] = TR.mark.nose, L = TR.L;
+  const dpx = Math.hypot(nx - tx, ny - ty);
+  if (dpx < 20) { toast('The nose and tail marks are too close together.'); return; }
+  const ppi = Math.min(24, Math.max(6, 1800 / (L + 4)));
+  const f = traceFrame(L, ppi, Math.max(15, 0.2 * L));
+  const e1 = [(nx - tx) / dpx, (ny - ty) / dpx], e2 = [e1[1], -e1[0]], k = (L / dpx) * ppi;    // e2: up in the photo when the nose points right
+  const c = document.createElement('canvas');
+  c.width = f.width; c.height = f.height;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  // photo pixel P -> frame: u = (pad + k/ppi (P - T).e1) ppi,  v = (ymax - k/ppi (P - T).e2) ppi
+  g.setTransform(k * e1[0], -k * e2[0], k * e1[1], -k * e2[1],
+    f.pad * ppi - k * (e1[0] * tx + e1[1] * ty), f.ymax * ppi + k * (e2[0] * tx + e2[1] * ty));
+  g.drawImage(TR.img, 0, 0);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  const data = g.getImageData(0, 0, f.width, f.height);
+  TR.frame = f; TR.rect = c;
+  TR.traces = { 1: traceHalf(data, f, 1), '-1': traceHalf(data, f, -1) };
+  const peak = (t) => Math.max(...t.hw);
+  // start with the side that found a board and stands out more from the floor
+  TR.side = peak(TR.traces[1]) < 2 ? -1 : peak(TR.traces[-1]) < 2 ? 1 : TR.traces[1].contrast >= TR.traces[-1].contrast ? 1 : -1;
+  useTrace();
+  if (peak(TR.traces[TR.side]) < 2) {
+    toast('Could not find the edge of the board. Check the nose and tail marks, or try a photo on a floor that contrasts more.');
+    return;
+  }
+  traceStep('review');
+  if (TR.traces[TR.side].contrast < 45) toast('The board and the floor are close in colour, so check the line carefully.');
+}
+function useTrace() {
+  TR.auto = tracePoints(TR.traces[TR.side], TR.L);
+  TR.pts = TR.auto.map((p) => [...p]);
+}
+
+function applyTrace() {
+  if (!TR.pts) return;
+  const pts = [...TR.pts].sort((a, b) => a[0] - b[0]);
+  const fit = fitOutline(pts, TR.L, state.params, buildBoard, { NOSE_TYPES, TAIL_TYPES });
+  applyParams(fit.params);
+  $('#preset').value = '';
+  state.photo = { canvas: TR.rect, ...TR.frame, flip: TR.side < 0 };
+  state.photoOn = true;
+  syncPhotoButton();
+  closeTrace();
+  const nice = (t) => t.replace(/_/g, ' ');
+  toast(`Outline traced: ${nice(fit.nose)} nose, ${nice(fit.tail)} tail, within ${fracIn(Math.max(fit.error, 1 / 32), 32)}″ of the line. Fine-tune it with Edit points.`);
+}
+function syncPhotoButton() {
+  const b = document.querySelector('.panel[data-panel="plan"] [data-act="photo"]');
+  b.hidden = !state.photo;
+  b.classList.toggle('on', !!state.photoOn);
+}
+/** The straightened photo, faint, behind the Plan graph (world = board inches). */
+function drawPhoto(v, ctx, ph, alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  const x0 = v.X(-ph.pad), w = (ph.L + 2 * ph.pad) * v.s, h = 2 * ph.ymax * v.s * v.vex;
+  if (ph.flip) { ctx.translate(0, v.Y(0)); ctx.scale(1, -1); ctx.translate(0, -v.Y(0)); }    // the traced side drawn on top, like the graph
+  ctx.drawImage(ph.canvas, x0, v.Y(ph.ymax), w, h);
+  ctx.restore();
+}
+
+function drawTrace(v) {
+  if (TR.step === 'pick' || !TR.img) { const ctx = v.begin([0, 1, 0, 1]); return ctx; }
+  if (TR.step === 'mark') {
+    const iw = TR.img.width, ih = TR.img.height;
+    const ctx = v.begin([0, iw, -ih, 0], 1, 12);
+    ctx.drawImage(TR.img, v.X(0), v.Y(0), iw * v.s, ih * v.s);
+    const { nose, tail } = TR.mark;
+    if (nose && tail) {
+      ctx.save(); ctx.setLineDash([6, 5]); ctx.strokeStyle = TRACE_COL; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(v.X(tail[0]), v.Y(-tail[1])); ctx.lineTo(v.X(nose[0]), v.Y(-nose[1])); ctx.stroke(); ctx.restore();
+    }
+    for (const key of ['tail', 'nose']) {
+      const m = TR.mark[key]; if (!m) continue;
+      v.point(ctx, { x: m[0], y: -m[1], kind: 'anchor', color: TRACE_COL, drag: (wx, wy) => { TR.mark[key] = [clip(wx, 0, iw), clip(-wy, 0, ih)]; } });
+      ctx.save(); ctx.font = '600 12px "IBM Plex Sans", sans-serif'; ctx.lineWidth = 3; ctx.strokeStyle = '#0e1317';
+      ctx.strokeText(key, v.X(m[0]) + 10, v.Y(-m[1]) - 8); ctx.fillStyle = TRACE_COL; ctx.fillText(key, v.X(m[0]) + 10, v.Y(-m[1]) - 8); ctx.restore();
+    }
+    v.curves.push({                                     // tapping anywhere places the next mark
+      dist: () => (!TR.mark.nose || !TR.mark.tail ? 0 : Infinity),
+      add: (wx, wy) => {
+        const key = !TR.mark.nose ? 'nose' : 'tail';
+        TR.mark[key] = [clip(wx, 0, iw), clip(-wy, 0, ih)];
+        setTimeout(() => traceStep('mark'));
+        return { fn: (x, y) => { TR.mark[key] = [clip(x, 0, iw), clip(-y, 0, ih)]; } };
+      },
+    });
+    return ctx;
+  }
+  // review / fix: the straightened photo in board inches, the traced edge and its mirror
+  const f = TR.frame, L = TR.L, sd = TR.side;
+  const ctx = v.begin([-f.pad, L + f.pad, -f.ymax * 0.8, f.ymax * 0.8], 1, 14);
+  drawPhoto(v, ctx, { canvas: TR.rect, ...f, flip: sd < 0 }, 0.9);
+  const pts = [...TR.pts].sort((a, b) => a[0] - b[0]), fn = pchip(pts);
+  const xs = []; for (let x = 0; x <= L; x += 0.25) xs.push(x);
+  ctx.save(); ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(14,19,23,.7)';
+  v.path(ctx, xs, xs.map((x) => fn(x))); ctx.stroke();
+  ctx.lineWidth = 1.8; ctx.strokeStyle = TRACE_COL; v.path(ctx, xs, xs.map((x) => fn(x))); ctx.stroke();
+  ctx.setLineDash([5, 5]); ctx.lineWidth = 1.2; v.path(ctx, xs, xs.map((x) => -fn(x))); ctx.stroke();
+  ctx.setLineDash([]); ctx.strokeStyle = 'rgba(232,200,114,.5)'; ctx.beginPath(); ctx.moveTo(v.X(0), v.Y(0)); ctx.lineTo(v.X(L), v.Y(0)); ctx.stroke();
+  ctx.restore();
+  if (TR.step !== 'fix') return ctx;
+  for (const p of TR.pts) {
+    const tip = p[0] >= L - 1e-6;
+    const i = pts.indexOf(p), lo = i > 0 ? pts[i - 1][0] + 0.25 : 0, hi = i < pts.length - 1 ? pts[i + 1][0] - 0.25 : L;
+    const end = p[0] <= 1e-6;
+    v.point(ctx, { x: p[0], y: p[1], kind: 'anchor', color: TRACE_COL, locked: tip,
+      drag: tip ? null : (wx, wy) => { if (!end) p[0] = clip(wx, lo, hi); p[1] = clip(wy, 0, f.ymax); },
+      remove: tip || end ? null : () => dropFrom(TR.pts, p) });
+  }
+  v.curves.push({
+    dist: (wx, wy) => { if (wx < 0 || wx > L) return Infinity; return Math.abs(v.Y(fn(wx)) - v.Y(wy)); },
+    add: (wx, wy) => {
+      const p = [clip(wx, 0.3, L - 0.3), clip(wy, 0, f.ymax)];
+      TR.pts.push(p);
+      return { fn: (x, y) => { p[0] = clip(x, 0.3, L - 0.3); p[1] = clip(y, 0, f.ymax); }, undo: () => dropFrom(TR.pts, p) };
+    },
+  });
+  return ctx;
+}
+
+function wireTrace() {
+  $('#tr-file').addEventListener('change', (e) => { loadTracePhoto(e.target.files[0]); e.target.value = ''; });
+  $('#tr-close').addEventListener('click', closeTrace);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#trace').hidden) { e.stopPropagation(); closeTrace(); } }, true);
+}
+
 /* =========================================================================
    Resizable layout: drag the dividers between the sidebar and the views, between the 3D
    view and the graphs, and between the graphs. Double-click a divider to put it back.
@@ -1907,6 +2359,7 @@ function wireSplitters() {
 }
 
 function wireUI() {
+  wireTrace();
   wireSplitters();
   wireLightPad();
   document.querySelectorAll('#views button[data-view]').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));

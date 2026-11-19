@@ -69,7 +69,48 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
-## 3D view, sections and layout
+## Tracing an outline from a photo
+
+**Trace photo** on the Plan graph makes the outline from a photo of a board (or a template on
+paper). Shoot it from straight above on a floor that contrasts with it. Tap the nose tip and
+the tail end, check the length, then **Trace**. It finds the edge on one side (the board is
+symmetric, so the other side is its mirror; **Trace the other side** uses the other edge) and
+asks *Does this look good?* **Yes** uses it; **No, fix it** shows points on the line to drag
+onto the edge (click the line to add one, double-click to remove one). The design is then
+fitted: width, wide point, the widths 12" from each end, tail block, nose and tail type, and
+outline anchor points for everything in between. The straightened photo stays behind the Plan
+graph (**Photo** turns it on and off) until the page is reloaded. The photo never leaves the
+device. Only the outline comes from a photo; rocker, foil and rails still come from your numbers.
+
+## Positions
+
+Wherever a spot on the board is typed (added measurements, bottom stations, concave tools) it
+can be measured from the nose, from the tail, or ahead of / behind center.
+
+## Bottom: three ways
+
+1. **Contour stations** (blended): say what the bottom does at a few spots and it is blended
+   in between. A station can be a stretch, with **until…**: "single concave 1/8" from 3" off
+   the nose until 1" behind center" holds that contour the whole way, then blends toward the
+   stations either side.
+2. **Concave tools** (hard edges): **+ Tear drop**, **+ Straight edges** or **+ Venturi**, each
+   single or double. The edges of the concave are creases, not blends; a double can be hard on
+   both sides or only on the rail side (blending into the ridge). **Shape it on the Plan graph**
+   puts handles on it: diamonds move its ends, dots move its edges.
+   - *Tear drop*: the noserider nose concave: round at one end (following the rails near the
+     nose), tapering to a point, deepest a third of the way along.
+   - *Straight edges*: set the width at each end: equal widths are parallel, different widths
+     converge or spread (the box shows the angle).
+   - *Venturi*: curved edges you shape with points, like the double concaves of a Bonzer
+     through the tail (pinched in the middle, flaring out the tail).
+3. **By hand** on any cross section (Sections graph, **Edit here**).
+
+## 3D view
+
+The board turns freely all the way around (end over end, past straight above and below), also
+with **Bottom up**. The view buttons set it upright again.
+
+## Sections, light and layout
 
 - **Rail apex point.** While shaping a cross section (Sections graph, **Edit here**), each rail
   apex has a point of its own (a ring with up / down ticks). Drag it up or down to set the apex

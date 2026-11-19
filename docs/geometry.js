@@ -103,6 +103,7 @@ export function paramsFromDict(d = {}) {
   }
   const base = { ...DEFAULTS };
   for (const k of Object.keys(DEFAULTS)) if (k in d) base[k] = d[k];
+  base.tools = Array.isArray(d.tools) ? d.tools : [];      // concave tools (newer than the generated defaults)
   const L = base.length;
   const xl = L / 2 + base.rocker_low_point, xt = L / 2 + base.thickness_point_offset;
   for (const [side, nose] of [['nose', true], ['tail', false]]) {
@@ -193,6 +194,7 @@ export function validated(src) {
   p.slices = cleanSlices(p);
   p.bottom = cleanBottom(p);
   p._bottom = bottomCurves(p);
+  p.tools = cleanTools(p);
   return [p, w];
 }
 
@@ -237,11 +239,21 @@ const handleOf = (hd, mLim) => {
   return v.some((q) => q !== null) ? v : null;
 };
 
+/**
+ * Where a position the shaper typed sits on the board: "pos inches from the nose / tail", or
+ * from the center (pos > 0 toward the nose, < 0 toward the tail). Returns x from the tail.
+ */
+export const FROM = ['nose', 'tail', 'center'];
+export const posToX = (r, L) => (r.from === 'nose' ? L - r.pos : r.from === 'center' ? L / 2 + r.pos : r.pos);
+const fromOf = (f) => (FROM.includes(f) ? f : 'tail');
+/** "3 from nose", "1 behind center": a typed position in words, for the spec sheet. */
+const whereIs = (r) => (r.from === 'center' ? `${fmtIn(Math.abs(r.pos))} ${r.pos < 0 ? 'behind' : 'ahead of'} center` : `${fmtIn(r.pos)} from ${r.from}`);
+
 function cleanMarks(p) {
   const L = p.length, rows = [];
   for (const r of Array.isArray(p.marks) ? p.marks : []) {
     if (!r || !Number.isFinite(r.pos)) continue;
-    const from = r.from === 'nose' ? 'nose' : 'tail', x = from === 'nose' ? L - r.pos : r.pos;
+    const from = fromOf(r.from), x = posToX({ pos: r.pos, from }, L);
     if (x < 1 || x > L - 1) continue;
     rows.push({ pos: r.pos, from, x, width: optNum(r.width, 0.5, p.width), rocker: optNum(r.rocker, -2, 16),
       thickness: optNum(r.thickness, 0.2, p.thickness), hw: handleOf(r.hw, 3), hr: handleOf(r.hr, 3), ht: handleOf(r.ht, 3) });
@@ -422,11 +434,18 @@ function cleanBottom(p) {
   const L = p.length, rows = [];
   for (const r of Array.isArray(p.bottom) ? p.bottom : []) {
     if (!r || !Number.isFinite(r.pos)) continue;
-    const from = r.from === 'nose' ? 'nose' : 'tail';
+    const from = fromOf(r.from);
     const type = Object.prototype.hasOwnProperty.call(BOTTOM_TYPES, r.type) ? r.type : 'flat';
     const depth = Number.isFinite(r.depth) ? clip(r.depth, 0, 0.75) : 0, depth2 = Number.isFinite(r.depth2) ? clip(r.depth2, 0, 0.75) : 0;
     const [c, d, v] = BOTTOM_TYPES[type](depth, depth2);
-    rows.push({ pos: r.pos, from, type, depth, depth2, x: clip(from === 'nose' ? L - r.pos : r.pos, 0, L), c, d, v });
+    const x = clip(posToX({ pos: r.pos, from }, L), 0, L);
+    rows.push({ pos: r.pos, from, type, depth, depth2, x, c, d, v });
+    // a stretch ("single concave from 3 off the nose until 1 behind center"): held at the same
+    // contour from one end to the other, then blended toward the stations either side as usual
+    if (r.to && Number.isFinite(r.to.pos)) {
+      const x2 = clip(posToX({ pos: r.to.pos, from: fromOf(r.to.from) }, L), 0, L);
+      if (Math.abs(x2 - x) >= 0.5) rows.push({ pos: r.to.pos, from: fromOf(r.to.from), type, depth, depth2, x: x2, c, d, v, end: true });
+    }
   }
   rows.sort((a, b) => a.x - b.x);
   const kept = [];
@@ -670,6 +689,116 @@ const railHardness = (p, x) =>
 const concaveAt = (p, x) => p.concave_depth * smoothstep((0.8 * p.length - x) / (0.25 * p.length)) * smoothstep(x / 3);
 const veeAt = (p, x) => p.vee_depth * smoothstep((0.35 * p.length - x) / (0.3 * p.length));
 
+
+/* ---------------------------------------------------------------------------
+   Concave tools: hard-edged concaves laid out on the bottom, on top of the blended
+   contours. Each is an area (tear drop, straight edges, venturi) between two spots along
+   the board, single (one dish across the stringer) or double (a dish each side of a ridge).
+   Across the area the bottom is lifted by depth x g, where g is a parabola across the dish:
+   zero at its edges with a slope there, so each edge is a crease (a hard edge) instead of
+   blending away. "Hard on the rail side" (doubles) keeps the crease at the outer edge and
+   blends into the ridge. Widths are full widths in inches; t runs 0 at the nose end of the
+   tool to 1 at its tail end.
+   --------------------------------------------------------------------------- */
+export const TOOL_SHAPES = { teardrop: 'Tear drop', straight: 'Straight edges', venturi: 'Venturi' };
+const TEAR_K = 1 / ((2 / 3) * Math.sqrt(1 / 3));             // scales (1 - s) sqrt(s) to a peak of 1 (at s = 1/3)
+const tear = (s) => (s <= 0 || s >= 1 ? 0 : TEAR_K * (1 - s) * Math.sqrt(s));
+const smooth01 = (v) => { const q = clip(v, 0, 1); return q * q * (3 - 2 * q); };
+
+function cleanTools(p) {
+  const L = p.length, W = p.width, out = [];
+  const wlist = (list, lo, hi, def) => {
+    const pts = (Array.isArray(list) ? list : []).filter((q) => Array.isArray(q) && Number.isFinite(+q[0]) && Number.isFinite(+q[1]))
+      .map((q) => [clip(+q[0], 0, 1), clip(+q[1], lo, hi)]).sort((a, b) => a[0] - b[0]);
+    const k = [];
+    for (const q of pts) if (!k.length || q[0] - k[k.length - 1][0] > 0.02) k.push(q);
+    const use = k.length >= 2 ? k.slice(0, 12) : def;
+    const xs = use.map((q) => q[0]), ys = use.map((q) => q[1]);
+    return { pts: use, xs, ys, m: pchipSlopes(xs, ys, false, false) };
+  };
+  for (const t of Array.isArray(p.tools) ? p.tools : []) {
+    if (!t || !TOOL_SHAPES[t.shape] || !t.start || !t.end) continue;
+    if (out.length === 8) break;
+    const a = clip(posToX({ pos: +t.start.pos, from: fromOf(t.start.from) }, L), 0, L);
+    const b = clip(posToX({ pos: +t.end.pos, from: fromOf(t.end.from) }, L), 0, L);
+    const x1 = Math.max(a, b), x0 = Math.min(a, b);
+    if (!(x1 - x0 >= 2)) continue;
+    const double = t.kind === 'double', depth = Number.isFinite(+t.depth) ? clip(+t.depth, 0, 0.75) : 0.125;
+    const ridge = Number.isFinite(+t.ridge) ? clip(+t.ridge, 0, W) : 2;
+    const tool = { id: t.id ?? null, shape: t.shape, kind: double ? 'double' : 'single', edge: double && t.edge === 'rail' ? 'rail' : 'hard',
+      x0, x1, len: x1 - x0, depth, start: { pos: +t.start.pos, from: fromOf(t.start.from) }, end: { pos: +t.end.pos, from: fromOf(t.end.from) } };
+    if (t.shape === 'teardrop') {
+      tool.width = Number.isFinite(+t.width) ? clip(+t.width, 1, W) : 0.6 * W;
+      tool.round = t.round === 'tail' ? 'tail' : 'nose';
+    } else if (t.shape === 'straight') {
+      tool.w1 = Number.isFinite(+t.w1) ? clip(+t.w1, 0.5, W) : 10;       // at the nose end
+      tool.w2 = Number.isFinite(+t.w2) ? clip(+t.w2, 0.5, W) : 10;       // at the tail end
+      tool.ridge = ridge;
+    } else {
+      tool.outer = wlist(t.outer, 0.5, W, [[0, 10], [0.5, 8], [1, 12]]);
+      tool.inner = wlist(t.inner, 0, W, [[0, ridge], [1, ridge]]);
+    }
+    out.push(tool);
+  }
+  return out;
+}
+
+/** A tool's edges at spot x: outer and inner half widths (before staying off the rail) and how much of its depth it has there. */
+function toolShapeAt(tool, x) {
+  const u = (tool.x1 - x) / tool.len;                    // 0 at the nose end, 1 at the tail end
+  let e, r = 0, A;
+  if (tool.shape === 'teardrop') {
+    A = tear(tool.round === 'nose' ? u : 1 - u);         // from the round end
+    e = (tool.width / 2) * A;
+    r = 0.18 * e;
+  } else {
+    const Lf = Math.min(6, 0.3 * tool.len);
+    const front = smooth01((tool.x1 - x) / Lf), back = tool.x0 <= 1 ? 1 : smooth01((x - tool.x0) / Lf);
+    A = front * back;                                    // eases in at the nose end; runs out the tail if it reaches it
+    if (tool.shape === 'straight') { e = (tool.w1 + (tool.w2 - tool.w1) * u) / 2; r = tool.ridge / 2; }
+    else { e = hermiteAt(tool.outer.xs, tool.outer.ys, tool.outer.m, u) / 2; r = hermiteAt(tool.inner.xs, tool.inner.ys, tool.inner.m, u) / 2; }
+  }
+  if (tool.kind === 'single') r = 0;
+  return { e, r, A, u };
+}
+
+/** The tools that reach spot x, each as { lift depth here, outer and inner half widths, single / double, edge }. */
+function toolsAt(p, x, h, t) {
+  const list = [];
+  for (const tool of p.tools) {
+    if (x < tool.x0 - 1e-9 || x > tool.x1 + 1e-9) continue;
+    const q = toolShapeAt(tool, x), e = Math.min(q.e, h - 0.5);     // stays off the rail
+    const D = Math.min(tool.depth, 0.4 * t) * q.A;
+    if (!(D > 1e-6) || !(e > q.r + 0.2)) continue;
+    list.push({ D, e, r: q.r, double: tool.kind === 'double', rail: tool.edge === 'rail' });
+  }
+  return list.length ? list : null;
+}
+
+/** For drawing a tool on the Plan graph: its edges along its length, as the board has them (n + 1 spots, nose end first). */
+export function toolOutline(board, k, n = 80) {
+  const tool = board.params.tools[k], pr = board._profiles, out = [];
+  if (!tool) return null;
+  for (let i = 0; i <= n; i++) {
+    const x = tool.x1 - (tool.len * i) / n, q = toolShapeAt(tool, x), h = interp(x, pr.x, pr.h);
+    out.push({ x, e: Math.max(0, Math.min(q.e, h - 0.5)), r: q.r, A: q.A });
+  }
+  return { tool, pts: out };
+}
+
+/** How far the tools lift the bottom at y inches from the stringer. */
+function toolLift(list, y) {
+  let z = 0;
+  for (const q of list) {
+    if (y >= q.e) continue;
+    if (!q.double) { const v = y / q.e; z += q.D * (1 - v * v); continue; }
+    if (y <= q.r) continue;
+    const s = (y - q.r) / (q.e - q.r);
+    z += q.D * (q.rail ? 6.75 * s * s * (1 - s) : 4 * s * (1 - s));
+  }
+  return z;
+}
+
 /* ---------------------------------------------------------------------------
    Cross sections: right half, deck centerline -> rail -> bottom centerline
    --------------------------------------------------------------------------- */
@@ -742,14 +871,16 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   const { ar, ed, eb, dome, con, dbl, vee } = sh;
   const zApex = zbi + ar * ti, td = (1 - ar) * ti, tb = ar * ti;
   const hs = Math.max(hi, 1e-9);
+  const tl = p.tools && p.tools.length ? toolsAt(p, xi, hi, ti) : null;     // hard-edged concaves at this spot
   for (let k = 0; k < K; k++) {
     const deck = TH_DECK[k], e = deck ? ed : eb;
     const yraw = hi * TH_COS[k] ** (2 / e);
     const eta = clip(yraw / hs, 0, 1);
+    Y[k] = yi + (yraw * (hi - yi)) / hs;
     Z[k] = deck
       ? zApex + td * TH_SIN[k] ** (2 / ed) * (1 - 0.7 * dome * eta * eta)
-      : zApex - tb * TH_SIN[k] ** (2 / e) + con * (1 - eta * eta) ** 2 + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 - vee * (1 - eta);
-    Y[k] = yi + (yraw * (hi - yi)) / hs;
+      : zApex - tb * TH_SIN[k] ** (2 / e) + con * (1 - eta * eta) ** 2 + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 - vee * (1 - eta)
+        + (tl ? toolLift(tl, Y[k]) : 0);
   }
   pinchRail(sh, zApex, td, tb, yi, hi, Y, Z);
   if (!rowD) return sh;
@@ -986,7 +1117,7 @@ export function stationTable(board) {
   });
   return [
     ...[['Nose tip', L], ['12" from nose', L - 12], ['Wide point', L / 2 + p.wide_point_offset], ['12" from tail', 12], ['Tail end', 0]].map(([label, xs]) => row(label, xs, false)),
-    ...p.marks.map((r) => row(`${fmtIn(r.pos)} from ${r.from}`, r.x, true)),      // added measurements, after the five standard ones
+    ...p.marks.map((r) => row(whereIs(r), r.x, true)),      // added measurements, after the five standard ones
   ];
 }
 
@@ -1081,8 +1212,10 @@ export function specSheet(board) {
     `rails        apex ${p.rail_apex_in !== null ? `${fmtIn(p.rail_apex_in)} above the bottom` : `${Math.round(p.rail_apex * 100)}% of thickness`}, fullness ${p.rail_fullness.toFixed(2)}, deck dome ${p.deck_dome.toFixed(2)}`,
     ...(p.bottom.length
       ? ['bottom       contours, nose to tail:', ...[...p.bottom].reverse().map((r) =>
-        `             ${fmtIn(r.pos)} from ${r.from}: ${BOTTOM_LABELS[r.type]}${r.type === 'flat' ? '' : ` ${fmtIn(r.depth)}`}${r.type.endsWith('_double') ? ` / ${fmtIn(r.depth2)}` : ''}`)]
+        `             ${whereIs(r)}: ${BOTTOM_LABELS[r.type]}${r.type === 'flat' ? '' : ` ${fmtIn(r.depth)}`}${r.type.endsWith('_double') ? ` / ${fmtIn(r.depth2)}` : ''}${r.end ? ' (end of stretch)' : ''}`)]
       : [`bottom       concave ${fmtIn(p.concave_depth)}, tail vee ${fmtIn(p.vee_depth)}`]),
+    ...p.tools.map((t) => `concave tool ${TOOL_SHAPES[t.shape].toLowerCase()}, ${t.kind}${t.kind === 'double' ? (t.edge === 'rail' ? ', hard on the rail side' : ', hard edges') : ', hard edge'}, ${fmtIn(t.depth)} deep, from ${whereIs(t.start)} until ${whereIs(t.end)}${
+      t.shape === 'teardrop' ? `, ${fmtIn(t.width)} at its widest, round end toward the ${t.round}` : t.shape === 'straight' ? `, ${fmtIn(t.w1)} wide at the nose end to ${fmtIn(t.w2)} at the tail end` : ', curved edges'}`),
     `plan area    ${s.plan_area_in2.toFixed(0)} sq in`,
     '',
     'Inches to the nearest 1/16. Rocker is bottom height above a flat table touching the low point.',

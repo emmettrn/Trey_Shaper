@@ -19,7 +19,7 @@
     {
       "imports": {
         "three": "./three.module.min.js",
-        "three/addons/controls/OrbitControls.js": "./OrbitControls.js",
+        "three/addons/controls/TrackballControls.js": "./TrackballControls.js",
         "three/addons/environments/RoomEnvironment.js": "./RoomEnvironment.js",
         "three/addons/utils/BufferGeometryUtils.js": "./BufferGeometryUtils.js"
       }
@@ -88,7 +88,7 @@
       <div class="panels">
         <figure class="panel" data-panel="plan">
           <figcaption><b>Plan</b><span>outline</span>
-            <span class="tools"><button data-act="edit" title="Switch between looking (zoom and pan only) and editing (drag points, click a line to add one)">Edit points</button><button data-act="clear" hidden title="Remove the anchor points on the outline">Clear points</button><button data-act="in" title="Zoom in (or scroll)">+</button><button data-act="fit" title="Fit to panel">Fit</button><button data-act="max" title="Expand">⤢</button></span>
+            <span class="tools"><button data-act="trace" title="Make the outline from a photo of a board">Trace photo</button><button data-act="photo" hidden title="Show or hide the traced photo behind the outline">Photo</button><button data-act="edit" title="Switch between looking (zoom and pan only) and editing (drag points, click a line to add one)">Edit points</button><button data-act="clear" hidden title="Remove the anchor points on the outline">Clear points</button><button data-act="in" title="Zoom in (or scroll)">+</button><button data-act="fit" title="Fit to panel">Fit</button><button data-act="max" title="Expand">⤢</button></span>
           </figcaption><canvas id="c-plan"></canvas>
         </figure>
         <figure class="panel" data-panel="profile">
@@ -121,6 +121,20 @@
         <button type="submit" class="primary" id="fb-send">Copy feedback</button>
       </div>
     </form>
+  </div>
+  <div class="modal" id="trace" hidden>
+    <div class="sheet trace-sheet">
+      <div class="trace-head"><h2>Trace an outline from a photo</h2><button type="button" class="ghost" id="tr-close" aria-label="Close">✕</button></div>
+      <p id="tr-msg"></p>
+      <div class="trace-stage"><canvas id="c-trace"></canvas>
+        <label class="trace-pick" id="tr-pick">
+          <b>Choose a photo</b>
+          <span>Shoot the board from straight above, flat on a floor that contrasts with it. The whole board should be in the shot. A paper template works too.</span>
+          <input id="tr-file" type="file" accept="image/*" hidden />
+        </label>
+      </div>
+      <div class="trace-actions" id="tr-actions"></div>
+    </div>
   </div>
   <div class="toast" id="toast" hidden></div>
   <div class="install" id="install" hidden>
