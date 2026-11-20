@@ -69,6 +69,31 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## Round 8
+
+- **Anchor points, all the same way.** On the Plan, Profile and thickness graphs every point (measured or
+  anchor) holds its height; its slope is the one you gave it or follows its neighbours; the curve between
+  points is smooth in curvature. No more flat spot at a measured point (the lump between center and T12").
+  Arms now mean fullness on the real curve: drag an arm longer and the curve hugs its line further
+  (fuller); shorter and it falls away sooner. The center's arms stay level but their length now pulls the
+  outline full. Arm angles are calmer to drag. Designs saved before this keep their slopes; their arm
+  lengths go back to automatic once.
+- **Contours that meet end to end cross-fade** (e.g. the single concave into the vee on the 5'10"), so
+  there is no flat trough between them.
+- **Deck contours** work like the bottom contours: from / until, deepest spot, blend sliders. Deck
+  concave and vee have a width; channels are one or two a side, set from the stringer and apart, with
+  a "blend → stringer" slider.
+- **Deck tools** (Foil section): **step deck**, **step tail** and **pocket**, shaped on the Plan graph like
+  the concave tools (tear drop, straight edges, venturi), each stepping down outside its edges (step deck)
+  or inside them (step tail, pocket), with deepest spot and blends (an S-deck is a step deck blended out).
+- **Flat deck** slider (next to Deck dome): flattens the deck across and turns it into the rail later with
+  a slight corner, like a classic fish.
+- **Swallow**: the tip radius thins each half down onto its bottom to a thin tip; the inside rail rolls
+  only the deck. Neither touches the bottom or its edge.
+- **Sections graph**: a mini outline map in the top right shows the sections you have changed (orange)
+  and where you are; click or drag along it to move. The Plan graph is back to plain section marks. The
+  orange sections in the Skeleton view now sit on the board.
+
 ## Round 7
 
 - **Edited cross sections lead.** A setting you change on a cross section is pinned there; the board

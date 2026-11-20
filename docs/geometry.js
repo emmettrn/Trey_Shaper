@@ -105,7 +105,7 @@ export function paramsFromDict(d = {}) {
   const base = { ...DEFAULTS };
   for (const k of Object.keys(DEFAULTS)) if (k in d) base[k] = d[k];
   base.tools = Array.isArray(d.tools) ? d.tools : [];      // concave tools (newer than the generated defaults)
-  for (const k of ['rail_tuck_nose', 'rail_tuck_tail', 'hard_edge', 'rail_reach_nose', 'rail_reach_tail', 'swallow_round', 'swallow_rail', 'deck_contours']) if (k in d) base[k] = d[k];   // rail tucks (newer too)
+  for (const k of ['rail_tuck_nose', 'rail_tuck_tail', 'hard_edge', 'rail_reach_nose', 'rail_reach_tail', 'swallow_round', 'swallow_rail', 'deck_contours', 'curve_v', 'deck_flat']) if (k in d) base[k] = d[k];   // rail tucks (newer too)
   const L = base.length;
   const xl = L / 2 + base.rocker_low_point, xt = L / 2 + base.thickness_point_offset;
   for (const [side, nose] of [['nose', true], ['tail', false]]) {
@@ -186,6 +186,8 @@ export function validated(src) {
   railTuckFromOld(p);
   if (!Number.isFinite(p.swallow_round)) p.swallow_round = 0;
   clamp('swallow_round', 0, 6);
+  if (!Number.isFinite(p.deck_flat)) p.deck_flat = 0;
+  clamp('deck_flat', 0, 1);
   if (!Number.isFinite(p.swallow_rail)) p.swallow_rail = 0;     // older designs: a square wall inside the cut
   clamp('swallow_rail', 0, 1);
   for (const n of ['rail_fullness', 'deck_dome', 'rail_hardness_nose', 'rail_hardness_tail', 'rail_reach_nose', 'rail_reach_tail']) clamp(n, 0, 1);
@@ -200,6 +202,7 @@ export function validated(src) {
   p._auto = auto;
   p.marks = cleanMarks(p);
   p._marks = markKnots(p);
+  if (p.curve_v !== 2) armsToAuto(p);                  // older designs: arm lengths meant something else; keep the slopes
   p.handles = cleanHandles(p);
   p.anchors = cleanAnchors(p);
   p.slices = cleanSlices(p);
@@ -480,6 +483,20 @@ function cleanBottom(p) {
     S.at = (q) => { const f = S.f(q); return [c * f, d * f, v * f]; };
     stretches.push(S);
   }
+  // two stretches that meet end to end (within 3") cross-fade into each other instead of each easing
+  // out to a flat bottom: the one toward the tail fades out while the one toward the nose fades in,
+  // across both their blends (at least 6"), so there is no flat trough between them
+  stretches.sort((a, b) => a.x0 - b.x0);
+  for (const A of stretches) for (const B of stretches) {
+    if (A === B || Math.abs(B.x0 - A.x1) > 3 || B.x0 < A.x0 + 1 || A.x1 > B.x1 - 1) continue;
+    const fA = A.f, fB = B.f;
+    let ws = A.x1 - A.bn * (A.x1 - A.xd), we = B.x0 + B.bt * (B.xd - B.x0);
+    if (we - ws < 6) { const mid = (ws + we) / 2; ws = mid - 3; we = mid + 3; }
+    const a0 = fA(ws), b1 = fB(we);
+    A.f = (q) => (q <= ws ? fA(q) : q >= we ? 0 : a0 * (1 - smoother((q - ws) / (we - ws))));
+    B.f = (q) => (q >= we ? fB(q) : q <= ws ? 0 : b1 * smoother((q - ws) / (we - ws)));
+    A.joinNose = B.joinTail = [ws, we];
+  }
   rows.sort((a, b) => a.x - b.x);
   const kept = [];
   for (const r of rows) {
@@ -522,39 +539,119 @@ function bottomAt(p, x) {
 }
 
 /**
- * Correction for one design curve, evaluated at the stations x.
- * The pinned points split the curve into spans that are solved separately and held level
- * at each pin, so moving an anchor only reshapes its own span (no ripple into the rest of
- * the board). At the tips the slope is left free.
+ * Correction for one design curve, evaluated at the stations x (base: the closed-form curve there,
+ * baseFn(xs) the same curve anywhere). Every point works the same way, measured or anchor:
+ *  - its height is held (measured points: the closed-form curve's own; anchors: their offset),
+ *  - its slope is the one its handle was given, or else follows its neighbours (no flat spot at a
+ *    measured point; the wide / low / thick point stays level so it stays the widest / lowest / thickest),
+ *  - between points the curve is smooth in curvature (C2 within each span between measured points),
+ *  - its arms are fullness on the curve itself: longer than the automatic third of the span, the curve
+ *    hugs the arm's line further (fuller); shorter, it falls away from it sooner.
+ * Moving a point reshapes its own span and, through the slope at the measured points, the next span a little.
  */
-function curveDelta(p, name, x, arms) {
+function curveDelta(p, name, x, arms, baseFn) {
   const out = new Float64Array(x.length);
   const pts = [...p.anchors[name], ...p._marks[name]].sort((a, b) => a[0] - b[0]);
   const L = p.length, pin = pinsFor(p, name), H = p.handles[name];
-  const P = [[0, 'tail']];                               // the tips can carry a handle too: how the curve leaves them
+  const P = [[0, 'tail']];
   if (pin.tail12) P.push([12, 'tail12']);
   P.push([pin.origin, 'origin']);
   if (pin.nose12) P.push([L - 12, 'nose12']);
   P.push([L, 'nose']);
-  // a pinned point as a knot: offset 0, and the slope and arms of its handle if it has been given one
-  const pinKnot = (q) => { const hd = q[1] ? H[q[1]] : null; return hd ? [q[0], 0, hd[0], hd[1], hd[2]] : [q[0], 0, null, null, null]; };
-  if (arms) arms.pins = {};
-  for (let s = 0; s < P.length - 1; s++) {
-    const a = P[s][0], b = P[s + 1][0];
-    const inside = pts.filter((q) => q[0] > a && q[0] < b);
-    const ka = pinKnot(P[s]), kb = pinKnot(P[s + 1]);
-    const live = inside.length > 0 || (ka[2] !== null && ka[2] !== 0) || (kb[2] !== null && kb[2] !== 0);
-    if (!live && !arms) continue;
-    const curve = knotCurve([ka, ...inside, kb], s > 0, s < P.length - 2);
-    if (live) for (let i = 0; i < x.length; i++) if (x[i] > a && x[i] < b) out[i] = curve.at(x[i]);
-    if (arms) {
-      arms.push(...curve.arms.slice(1, -1));
-      const first = curve.arms[0], last = curve.arms[curve.arms.length - 1];
-      if (P[s][1]) (arms.pins[P[s][1]] ??= { x: a, m: first.m }).aR = first.aR;
-      if (P[s + 1][1]) (arms.pins[P[s + 1][1]] ??= { x: b, m: last.m }).aL = last.aL;
-    }
+  // every knot in order: [x, offset, fixed slope or null, left arm, right arm, pin key]
+  const K = [];
+  for (const [px, key] of P) {
+    const hd = H[key];
+    const m = hd && Number.isFinite(hd[0]) ? hd[0] : key === 'origin' ? 0 : null;
+    K.push([px, 0, m, hd ? hd[1] : null, hd ? hd[2] : null, key]);
   }
+  for (const q of pts) if (!K.some((k) => Math.abs(k[0] - q[0]) < 0.05)) K.push([q[0], q[1], Number.isFinite(q[2]) ? q[2] : null, q[3], q[4], null]);
+  K.sort((a, b) => a[0] - b[0]);
+  const n = K.length, xs = K.map((k) => k[0]), ys = K.map((k) => k[1]), m = K.map((k) => k[2]);
+  // measured points between the tips with no slope of their own: the slope through their neighbours (parabola)
+  for (let i = 1; i < n - 1; i++) if (K[i][5] && m[i] === null) {
+    const h0 = xs[i] - xs[i - 1], h1 = xs[i + 1] - xs[i], d0 = (ys[i] - ys[i - 1]) / h0, d1 = (ys[i + 1] - ys[i]) / h1;
+    m[i] = (h1 * d0 + h0 * d1) / (h0 + h1);
+  }
+  // C2 slopes for the rest, span by span between knots with a known slope (the tips are free ends)
+  let a0 = 0;
+  for (let b0 = 1; b0 < n; b0++) {
+    if (m[b0] === null && b0 < n - 1) continue;
+    splineSlopes(xs, ys, m, a0, b0);
+    a0 = b0;
+  }
+  if (!ys.some((v) => v !== 0) && !m.some((v) => v !== 0) && !K.some((k) => Number.isFinite(k[3]) || Number.isFinite(k[4]))) {
+    if (arms) fillArms(arms, K, m);
+    return out;
+  }
+  const curve = knotCurve(K.map((k, i) => [xs[i], ys[i], m[i], null, null]), false, false);
+  for (let i = 0; i < x.length; i++) if (x[i] > 0 && x[i] < L) out[i] = curve.at(x[i]);
+  // fullness: an arm longer or shorter than a third of its span pulls the curve toward, or away from, its line
+  const pulls = [];
+  for (let i = 0; i < n; i++) for (const side of [-1, 1]) {
+    const len = K[i][side < 0 ? 3 : 4], j = i + side;
+    if (!Number.isFinite(len) || j < 0 || j >= n) continue;
+    const span = Math.abs(xs[j] - xs[i]), r = clip(len / (span / 3), 0.1, 3);
+    if (Math.abs(r - 1) < 1e-3) continue;
+    const bx = Float64Array.of(xs[i] - 0.01, xs[i], xs[i] + 0.01), bv = baseFn(bx);
+    const y0 = bv[1] + ys[i], S = (bv[2] - bv[0]) / 0.02 + m[i];
+    pulls.push({ x0: xs[i], x1: xs[j], y0, S, lam: r >= 1 ? Math.min(r - 1, 1) : Math.max(r - 1, -0.5), ex: r > 2 ? r - 1 : 1 });
+  }
+  if (pulls.length) {
+    const bx = Float64Array.from(x), bv = baseFn(bx);
+    const add = new Float64Array(x.length);
+    for (const q of pulls) {
+      const lo = Math.min(q.x0, q.x1), hi = Math.max(q.x0, q.x1);
+      for (let i = 0; i < x.length; i++) {
+        if (x[i] <= lo || x[i] >= hi) continue;
+        const sN = Math.abs(x[i] - q.x0) / (hi - lo), sx = sN ** q.ex, w = q.lam * (1 - sx) * (1 - sx) * (1 + 2 * sx);
+        add[i] += w * (q.y0 + q.S * (x[i] - q.x0) - (bv[i] + out[i]));
+      }
+    }
+    for (let i = 0; i < x.length; i++) out[i] += add[i];
+  }
+  if (arms) fillArms(arms, K, m);
   return out;
+}
+
+/** Older designs (before arms meant fullness): their arm lengths go back to automatic, slopes kept. */
+export function armsToAuto(p) {
+  const clear = (q) => { if (Array.isArray(q)) { q[3] = null; q[4] = null; } };
+  const H = p.handles && typeof p.handles === 'object' ? p.handles : {};
+  for (const name of ['outline', 'rocker', 'thickness']) for (const hd of Object.values(H[name] || {})) if (Array.isArray(hd)) { hd[1] = null; hd[2] = null; }
+  for (const name of ['outline', 'rocker', 'thickness']) for (const q of (p.anchors && p.anchors[name]) || []) clear(q);
+  for (const r of p.marks || []) for (const f of ['hw', 'hr', 'ht']) if (Array.isArray(r[f])) { r[f][1] = null; r[f][2] = null; }
+  p.curve_v = 2;
+}
+
+/** The arms the graphs draw: each point's slope and arm lengths (its own, or a third of the span). */
+function fillArms(arms, K, m) {
+  arms.pins = {};
+  for (let i = 0; i < K.length; i++) {
+    const gl = i > 0 ? (K[i][0] - K[i - 1][0]) / 3 : NaN, gr = i < K.length - 1 ? (K[i + 1][0] - K[i][0]) / 3 : NaN;
+    const r = { x: K[i][0], m: m[i] ?? 0, aL: Number.isFinite(K[i][3]) ? Math.min(K[i][3], 3 * gl) : gl, aR: Number.isFinite(K[i][4]) ? Math.min(K[i][4], 3 * gr) : gr };
+    if (K[i][5]) arms.pins[K[i][5]] = r; else arms.push(r);
+  }
+}
+
+/** Fill the unknown slopes m[a+1..b-1] (and m[a] / m[b] when unknown: free ends) so the curve through them is C2. */
+function splineSlopes(xs, ys, m, a, b) {
+  const idx = [];
+  for (let i = a; i <= b; i++) if (m[i] === null) idx.push(i);
+  if (!idx.length) return;
+  const N = idx.length, A = new Float64Array(N), B = new Float64Array(N), C = new Float64Array(N), D = new Float64Array(N);
+  idx.forEach((i, r) => {
+    const hl = i > a ? xs[i] - xs[i - 1] : 0, hr = i < b ? xs[i + 1] - xs[i] : 0;
+    let rhs = 0, diag = 0;
+    if (hl > 0) { diag += 2 / hl; rhs += (3 * (ys[i] - ys[i - 1])) / (hl * hl); if (m[i - 1] === null) A[r] = 1 / hl; else rhs -= m[i - 1] / hl; }
+    if (hr > 0) { diag += 2 / hr; rhs += (3 * (ys[i + 1] - ys[i])) / (hr * hr); if (m[i + 1] === null) C[r] = 1 / hr; else rhs -= m[i + 1] / hr; }
+    B[r] = diag; D[r] = rhs;
+  });
+  for (let r = 1; r < N; r++) { const w = A[r] / B[r - 1]; B[r] -= w * C[r - 1]; D[r] -= w * D[r - 1]; }
+  const sol = new Float64Array(N);
+  sol[N - 1] = D[N - 1] / B[N - 1];
+  for (let r = N - 2; r >= 0; r--) sol[r] = (D[r] - C[r] * sol[r + 1]) / B[r];
+  idx.forEach((i, r) => { m[i] = sol[r]; });
 }
 
 /**
@@ -802,38 +899,36 @@ const veeAt = (p, x) => p.vee_depth * smoothstep((0.35 * p.length - x) / (0.3 * 
 
 
 /* ---------------------------------------------------------------------------
-   Deck contours: concave, vee, channels, step deck (along the rails) and step tail
-   (across the board). Each runs from one spot to another and eases in over easeTail inches
-   at its tail end and out over easeNose at its nose end (0 = a crisp step). The concave
-   and vee keep the stringer on the thickness typed in: the concave raises the deck toward
-   the rails, the vee lowers it toward them. Channels, the step deck and the step tail cut
-   down into the deck, never through it.
+   Deck contours: concave, vee and channels, laid out like the bottom contours (from / until,
+   deepest spot, blends toward the nose and tail). The concave and vee keep the stringer on the
+   thickness typed in: the concave raises the deck toward the rails out to its width, the vee
+   lowers it away from a ridge on the stringer. Channels (one or two a side) cut down into the deck.
+   Step decks, step tails and pockets are deck tools (params.tools with surface 'deck').
    --------------------------------------------------------------------------- */
-export const DECK_TYPES = { concave: 'Deck concave', vee: 'Deck vee', channels: 'Deck channels', step_rail: 'Step deck', step: 'Step tail' };
-const STEP_EDGE = 0.15;                                    // how wide (inches) a "crisp" step is, so the mesh can follow it
+export const DECK_TYPES = { concave: 'Deck concave', vee: 'Deck vee', channels: 'Deck channels' };
 
 function cleanDeck(p) {
   const L = p.length;
   return (Array.isArray(p.deck_contours) ? p.deck_contours : []).filter((c) => c && DECK_TYPES[c.type] && c.start && c.end).slice(0, 12).map((c) => {
-    const at = (r) => clip(posToX({ pos: Number.isFinite(+r.pos) ? +r.pos : 0, from: FROM.includes(r.from) ? r.from : 'tail' }, L), 0, L);
+    const at = (r) => clip(posToX({ pos: Number.isFinite(+r.pos) ? +r.pos : 0, from: fromOf(r.from) }, L), 0, L);
     const a = at(c.start), b = at(c.end), num = (v, d, lo, hi) => clip(Number.isFinite(+v) ? +v : d, lo, hi);
+    const x0 = Math.min(a, b), x1 = Math.max(a, b);
     return {
-      id: c.id, type: c.type, x0: Math.min(a, b), x1: Math.max(a, b),
-      depth: num(c.depth, 0.125, 0, 1),
-      easeNose: num(c.easeNose, 3, 0, 36), easeTail: num(c.easeTail, c.type === 'step' ? 0 : 3, 0, 36),
-      count: Math.round(num(c.count, 2, 1, 4)), width: num(c.width, 0.75, 0.25, 4), inset: num(c.inset, 1.5, 0.25, 8),
+      id: c.id, type: c.type, x0, x1, xd: c.deep && Number.isFinite(+c.deep.pos) ? clip(at(c.deep), x0, x1) : (x0 + x1) / 2,
+      bn: blendOf(c.blendNose, 0.5), bt: blendOf(c.blendTail, 0.5),
+      depth: num(c.depth, 0.125, 0, 0.75),
+      width: Number.isFinite(+c.width) && +c.width > 0 ? clip(+c.width, 0.25, 40) : null,    // concave / vee: across (blank = follows the outline); channels: each one
+      count: Math.round(num(c.count, 2, 1, 2)), pos: num(c.pos, 3, 0.5, 14), gap: num(c.gap, 2, 0.5, 8), soft: num(c.soft, 0, 0, 1),
     };
   }).filter((c) => c.x1 - c.x0 > 0.25);
 }
 
-/** How much of a deck contour is in at x (0..1): full between its eases, out past its ends. */
+/** How much of a deck contour is in at x (0..1): deepest spot and blends as on the bottom; past a held end it eases out over 6". */
 function deckAlong(c, x, L) {
-  if (x < c.x0 || x > c.x1) return 0;
-  const eT = c.x0 <= 0.25 ? 0 : Math.max(c.easeTail, STEP_EDGE), eN = c.x1 >= L - 0.25 ? 0 : Math.max(c.easeNose, STEP_EDGE);
-  let f = 1;
-  if (eT > 0) f *= smootherAt((x - c.x0) / eT);
-  if (eN > 0) f *= smootherAt((c.x1 - x) / eN);
-  return f;
+  const R = 6;
+  if (x >= c.x0 && x <= c.x1) return depthAlong(x, c.x0, c.x1, c.xd, c.bn, c.bt);
+  if (x > c.x1) return c.x1 >= L - 0.5 ? 1 : depthAlong(c.x1, c.x0, c.x1, c.xd, c.bn, c.bt) * smootherAt(1 - (x - c.x1) / R);
+  return c.x0 <= 0.5 ? 1 : depthAlong(c.x0, c.x0, c.x1, c.xd, c.bn, c.bt) * smootherAt(1 - (c.x0 - x) / R);
 }
 
 /** The deck contours in at x, with their strength there. */
@@ -843,37 +938,40 @@ function deckContoursAt(p, x) {
   return out.length ? out : null;
 }
 
-/** Where the mesh needs stations for the deck contours (crisp steps get several close together). */
+/** Extra mesh stations at the ends of the deck tools (a blend of 0 steps there over 3/4"). */
 function deckStationXs(p) {
   const xs = [], L = p.length;
-  for (const c of p.deck_contours || []) for (const [xe, e, dir] of [[c.x0, c.easeTail, 1], [c.x1, c.easeNose, -1]]) {
+  for (const t of p.tools || []) if (t.surface === 'deck') for (const [xe, dir] of [[t.x0, 1], [t.x1, -1]]) {
     if (xe <= 0.25 || xe >= L - 0.25) continue;
-    const ee = Math.max(e, STEP_EDGE);
-    for (const f of [0, 0.15, 0.35, 0.5, 0.65, 0.85, 1]) xs.push(xe + dir * ee * f);
+    for (const f of [0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 1]) xs.push(xe + dir * f);
   }
   return xs;
 }
 
 /**
- * The deck's height above the rail apex, with the contours in at this spot.
- * H: height before (the domed deck), H0: its height at the stringer, eta: 0 at the stringer to 1 at the apex,
- * y: inches out from the stringer (the outline's half width hi).
+ * The deck's height above the rail apex at one point, with the deck contours and deck tools in here.
+ * H: the domed deck's height, H0: at the stringer, y: inches out from the stringer, hi: the half width.
+ * Concave and vee keep the stringer where it is (the thickness typed in) and fade into the rail's roll.
  */
-function deckShape(dc, H, H0, eta, yraw, hi) {
+function deckShape(dc, dt, H, H0, y, hi) {
   let up = 0, down = 0;
-  for (const [c, a] of dc) {
+  const f = clip(H / Math.max(H0, 1e-9), 0, 1);          // 1 on the flat of the deck, 0 at the rail apex
+  if (dc) for (const [c, a] of dc) {
     const d = c.depth * a;
-    if (c.type === 'concave') up += d * 6.75 * eta * eta * (1 - eta);                     // rises toward the rails, back to the rail's roll at the apex
-    else if (c.type === 'vee') down += Math.min(d, 0.8 * H0) * eta * (H / Math.max(H0, 1e-9));   // a ridge on the stringer
-    else if (c.type === 'channels') {
-      const n = c.count, hw = c.width / 2;
-      for (let i = 0; i < n; i++) {
-        const yc = hi * (n === 1 ? 0.45 : 0.22 + (0.5 * i) / (n - 1)), u = (yraw - yc) / Math.max(hw, 1e-6);
-        if (Math.abs(u) < 1) down += d * Math.cos((u * Math.PI) / 2) ** 2;
+    if (c.type === 'concave' || c.type === 'vee') {
+      const hw = Math.min(c.width ? c.width / 2 : 0.7 * hi, 0.95 * hi), t = clip(y / Math.max(hw, 1e-6), 0, 1);
+      if (c.type === 'concave') up += d * t * t * (3 - 2 * t) * f;                     // a dish from the stringer out to its width, then the rail
+      else down += Math.min(d, 0.8 * H0) * ((t - Math.max(0, t - 0.6) ** 2 / 0.8) / 0.8) * f;   // planes off the stringer, easing level at its width
+    } else if (c.type === 'channels') {
+      const hwc = c.width ? c.width / 2 : 0.375;
+      for (let i = 0; i < c.count; i++) {
+        const yc = c.pos + i * c.gap, u = y - yc;
+        const reach = u >= 0 ? hwc : hwc + c.soft * Math.max(yc - hwc, 0);             // the stringer side can blend out toward the stringer
+        if (Math.abs(u) < reach) down += d * Math.cos((Math.abs(u) / reach) * Math.PI / 2) ** 2;
       }
-    } else if (c.type === 'step_rail') down += d * smootherAt((yraw - (hi - c.inset)) / STEP_EDGE + 0.5);
-    else if (c.type === 'step') down += d;
+    }
   }
+  if (dt) for (const q of dt) down += q.D * smootherAt((q.out ? y - q.e : q.e - y) / 0.15 + 0.5);   // inside the edges (pocket, step tail) or outside (step deck)
   const room = 0.85 * (H + up);
   const cut = down > 0 ? (down * room) / Math.sqrt(down * down + room * room + 1e-12) : 0;   // a soft "no deeper than 85% of the deck"
   return H + up - cut;
@@ -988,6 +1086,9 @@ function cleanTools(p) {
       .map((q) => [clip(+q[0], 0, 1), clip(+q[1], 0, 0.75)]).sort((a, b) => a[0] - b[0]);
     tool.cpts = cp.length >= 2 ? cp.slice(0, 24) : [[0, 0], [0.33, tool.depth], [1, 0]];
     if (tool.center === 'custom' && cp.length < 2) tool.center = 'blend';
+    // deck tools (step deck, step tail, pockets): single, blended center, and which side of the edges steps down
+    tool.surface = t.surface === 'deck' ? 'deck' : 'bottom';
+    if (tool.surface === 'deck') { tool.kind = 'single'; tool.center = 'blend'; tool.step = t.step === 'out' ? 'out' : 'in'; tool.depth = Math.min(tool.depth, 1); }
     out.push(tool);
   }
   return out;
@@ -1030,12 +1131,23 @@ function toolDepth(tool, x, zbAt = tool.zbAt) {
 function toolsAt(p, x, h, t) {
   const list = [];
   for (const tool of p.tools) {
-    if (x < tool.x0 - 1e-9 || x > tool.x1 + 1e-9) continue;
+    if (tool.surface === 'deck' || x < tool.x0 - 1e-9 || x > tool.x1 + 1e-9) continue;
     tool.zbAt = p._zbAt;
     const q = toolShapeAt(tool, x), e = q.e;                 // an edge past the outline runs the concave off the rail (it lifts the rail there)
     const D = Math.min(q.D, 0.4 * t);
     if (!(D > 1e-6) || !(e > q.r + 0.2)) continue;
     list.push({ D, e, r: q.r, double: tool.kind === 'double', rail: tool.edge === 'rail' });
+  }
+  return list.length ? list : null;
+}
+
+/** The deck tools in at x: how deep each steps down there, its edge (inches out from the stringer) and which side drops. */
+function deckToolsAt(p, x) {
+  const list = [];
+  for (const tool of p.tools) {
+    if (tool.surface !== 'deck' || x < tool.x0 - 1e-9 || x > tool.x1 + 1e-9) continue;
+    const q = toolShapeAt(tool, x);
+    if (q.D > 1e-6 && q.e > 0.05) list.push({ D: q.D, e: q.e, out: tool.step === 'out' });
   }
   return list.length ? list : null;
 }
@@ -1114,8 +1226,8 @@ function pinchRail(sh, zApex, td, tb, yi, hi, Y, Z) {
     const l = frac * span;
     if (!(l > 1e-4) || !(span > 1e-4)) continue;
     const step = deck ? -1 : 1, k0 = deck ? KA - 1 : KA, kEnd = deck ? -1 : K;
-    let far = 0;
-    for (let k = k0 + step; k !== kEnd; k += step) far = Math.max(far, Math.abs(Z[k] - zApex));
+    let far = 0;                                          // how far the side climbs before its first dip (a channel or step): the arm reshapes no further
+    for (let k = k0 + step; k !== kEnd; k += step) { const u = Math.abs(Z[k] - zApex); if (u < far - 1e-4) break; far = Math.max(far, u); }
     let R = Math.min(2 * l, 0.97 * far), j = -1;                  // an arm pulled all the way out reshapes the whole side
     for (let k = k0 + step; k !== kEnd; k += step) if (Math.abs(Z[k] - zApex) >= R) { j = k; break; }
     if (j < 0) continue;                                  // the rail never gets that far (cannot happen while 2 l < span)
@@ -1155,27 +1267,37 @@ function pinchRail(sh, zApex, td, tb, yi, hi, Y, Z) {
 function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   const sh = sectionShape(p, xi, d, ti);
   const { ar, ed, dome, con, dbl, vee } = sh;
-  // a swallow's tips: the deck rounds down toward the rail over the last swallow_round inches (a deck-side radius at the tips)
+  // a swallow's tips: over the last swallow_round inches each half thins down onto its bottom on a radius,
+  // to a thin tip (12% of the thickness at the very end). The bottom and its edge stay where they are.
   const sr = TAIL_TYPES[p.tail_type].notch ? p.swallow_round ?? 0 : 0;
-  const tipK = sr > 0 && xi < sr ? Math.sqrt(Math.max(0, 1 - (1 - xi / sr) ** 2)) * 0.95 + 0.05 : 1;
-  const zApex = zbi + ar * ti, td = (1 - ar) * ti * tipK, tb = ar * ti;
+  const tipK = sr > 0 && xi < sr ? 0.12 + 0.88 * Math.sqrt(Math.max(0, 1 - (1 - xi / sr) ** 2)) : 1;
+  const zApex = zbi + ar * ti * tipK, td = (1 - ar) * ti * tipK, tb = ar * ti * tipK;
   const hs = Math.max(hi, 1e-9);
-  // inside a swallow's cut: each half rolls down into its own rail on the inside too (swallow_rail 0 = a
-  // square wall, 1 = deck and bottom meet at the apex height, like the outside rail). It grows in over
-  // the first inch or so down from the crotch of the V, so the crotch stays smooth.
+  // inside a swallow's cut: each half's deck rolls down to its bottom on the inside of the cut (swallow_rail
+  // 0 = a square wall, 1 = the deck comes all the way down to the bottom edge). The bottom is not touched.
+  // It grows in over the first inch or so down from the crotch of the V, so the crotch stays smooth.
   const sd = p.swallow_depth ?? 0, ramp = Math.max(Math.min(1.5, 0.3 * sd), 1e-3);
   const qIn = yi > 1e-9 ? (p.swallow_rail ?? 0) * smootherAt((sd - xi) / ramp) : 0;
-  const Rw = Math.min(0.45 * (hi - yi), 1.5 * ti), Rb = 0.5 * Rw;
+  const Rw = Math.min(0.45 * (hi - yi), 1.5 * ti);
   const inRoll = (y, R) => { const sx = R > 1e-6 ? clip((y - yi) / R, 0, 1) : 1; return Math.sqrt(Math.max(0, 1 - (1 - sx) ** 2)); };
   const tl = p.tools && p.tools.length ? toolsAt(p, xi, hi, ti) : null;     // hard-edged concaves at this spot
+  // contours: a single concave is one dish across the bottom (deepest at the stringer, the same curve all
+  // the way out, so it reads as one concave); a vee keeps the stringer on the rocker and lifts the rails.
+  const contour = (yr) => { const eta = clip(yr / hs, 0, 1); return con * (1 - eta * eta) + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 + vee * eta; };
   // the deck: from the stringer round to the rail apex (a superellipse, as before), then the deck contours
   const dc = p.deck_contours && p.deck_contours.length ? deckContoursAt(p, xi) : null;
+  const dtl = p.tools && p.tools.length ? deckToolsAt(p, xi) : null;
+  // flat deck (deck_flat): the deck's own curve gets boxier, so it stays flat across and turns down into
+  // the rail late, with a slight corner where the flat meets the rail (a classic fish deck)
+  const fl = p.deck_flat ?? 0, gF = 1 + 0.9 * fl, kF = 0.03 + 0.05 * (1 - fl);
+  const flatten = (S) => (fl > 0 ? (1 - fl) * S + fl * -kF * Math.log(Math.exp(-gF * S / kF) + Math.exp(-1 / kF)) : S);   // the rail's curve steepened, capped by a flat deck (soft corner)
   for (let k = 0; k < KA; k++) {
     const yraw = hi * TH_COS[k] ** (2 / ed), eta = clip(yraw / hs, 0, 1);
     Y[k] = yi + (yraw * (hi - yi)) / hs;
-    let H = td * TH_SIN[k] ** (2 / ed) * (1 - 0.7 * dome * eta * eta);
-    if (dc) H = deckShape(dc, H, td, eta, yraw, hi);
-    Z[k] = zApex + H * (qIn ? 1 - qIn * (1 - inRoll(Y[k], Rw)) : 1);
+    let H = td * flatten(TH_SIN[k] ** (2 / ed)) * (1 - 0.7 * dome * eta * eta);
+    if (dc || dtl) H = deckShape(dc, dtl, H, td, Math.abs(Y[k]), hi);
+    if (qIn) { const zf = zApex - tb + contour(yraw); Z[k] = zf + (zApex + H - zf) * (1 - qIn * (1 - inRoll(Y[k], Rw))); }
+    else Z[k] = zApex + H;
   }
   // the bottom: from the apex down and in around the rail to the edge (the tuck, w in from the apex),
   // then the flat bottom (with its contours and concave tools) in to the stringer. Soft: a quarter
@@ -1183,9 +1305,6 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   // corner. Always the same samples for the same parts, so nothing shifts from section to section.
   // near the tips the board gets narrower than the tuck: ease the tuck down smoothly (no sudden cap, so no lump at the ends)
   const w = sh.tuck > 1e-6 ? (sh.tuck ** -4 + (0.85 * hi) ** -4) ** -0.25 : 0, yE = hi - w, hf = sh.hard;
-  // contours: a single concave is one dish across the bottom (deepest at the stringer, the same curve all
-  // the way out, so it reads as one concave); a vee keeps the stringer on the rocker and lifts the rails.
-  const contour = (yr) => { const eta = clip(yr / hs, 0, 1); return con * (1 - eta * eta) + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 + vee * eta; };
   const tool = (yr) => (tl ? toolLift(tl, yi + (yr * (hi - yi)) / hs) : 0);
   for (let j = 0; j < NR; j++) {
     const sp = j / (NR - 1), ph = (sp * Math.PI) / 2;
@@ -1198,7 +1317,6 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
     const yr = yE * (1 - j / NF);
     Y[KA + NR - 1 + j] = yi + (yr * (hi - yi)) / hs;
     Z[KA + NR - 1 + j] = zApex - tb + contour(yr) + Math.min(tool(yr), 0.95 * tb);
-    if (qIn) { const k = KA + NR - 1 + j; Z[k] = Math.min(Z[k] + qIn * tb * (1 - inRoll(Y[k], Rb)), zApex); }
   }
   pinchRail(sh, zApex, td, tb, yi, hi, Y, Z);
   if (!rowD) return sh;
@@ -1299,7 +1417,7 @@ function buildMesh(p, tScale) {
   // base curves, then the anchor-point corrections
   const h0 = halfWidth(p, x), zb0 = rocker(p, x), foil0 = foil(p, x);
   const arms = { outline: [], rocker: [], thickness: [], swallow: [] };
-  const dh = curveDelta(p, 'outline', x, arms.outline), dz = curveDelta(p, 'rocker', x, arms.rocker), dt = curveDelta(p, 'thickness', x, arms.thickness);
+  const dh = curveDelta(p, 'outline', x, arms.outline, (q) => halfWidth(p, q)), dz = curveDelta(p, 'rocker', x, arms.rocker, (q) => rocker(p, q)), dt = curveDelta(p, 'thickness', x, arms.thickness, (q) => foil(p, q));
   const h = Float64Array.from(h0, (v, i) => Math.max(v + dh[i], 0.15 * v));
   const zb = Float64Array.from(zb0, (v, i) => v + dz[i]);
   const t = Float64Array.from(foil0, (v, i) => {
@@ -1554,7 +1672,9 @@ export function specSheet(board) {
           return `             ${whereIs(r)} until ${whereIs(r.to)}: ${what}${blend}`;
         })]
       : [`bottom       concave ${fmtIn(p.concave_depth)}, tail vee ${fmtIn(p.vee_depth)}`]),
-    ...p.tools.map((t) => `concave tool ${TOOL_SHAPES[t.shape].toLowerCase()}, ${t.kind}${t.kind === 'double' ? (t.edge === 'rail' ? ', hard on the rail side' : ', hard edges') : ', hard edge'}, ${fmtIn(t.depth)} deep, from ${whereIs(t.start)} until ${whereIs(t.end)}${
+    ...p.tools.filter((t) => t.surface === 'deck').map((t) => `deck tool    ${TOOL_SHAPES[t.shape].toLowerCase()}, steps down ${fmtIn(t.depth)} ${t.step === 'out' ? 'outside its edges (step deck)' : 'inside its edges'}, from ${whereIs(t.start)} until ${whereIs(t.end)}, blends ${t.blendNose.toFixed(2)} / ${t.blendTail.toFixed(2)}`),
+    ...(p.deck_contours || []).map((c) => `deck         ${DECK_TYPES[c.type].toLowerCase()} ${fmtIn(c.depth)}${c.type === 'channels' ? `, ${c.count} a side from ${fmtIn(c.pos)} out` : c.width ? `, ${fmtIn(c.width)} across` : ''}, ${fmtFtin(L_ - c.x1)} to ${fmtFtin(L_ - c.x0)} from the nose`),
+    ...p.tools.filter((t) => t.surface !== 'deck').map((t) => `concave tool ${TOOL_SHAPES[t.shape].toLowerCase()}, ${t.kind}${t.kind === 'double' ? (t.edge === 'rail' ? ', hard on the rail side' : ', hard edges') : ', hard edge'}, ${fmtIn(t.depth)} deep, from ${whereIs(t.start)} until ${whereIs(t.end)}${
       t.shape === 'teardrop' ? `, ${fmtIn(2 * Math.max(...t.outer.Y))} at its widest, round end toward the ${t.round}` : t.shape === 'straight' ? `, ${fmtIn(t.w1)} wide at the nose end to ${fmtIn(t.w2)} at the tail end` : ', curved edges'}, deepest ${fmtFtin(L_ - t.xd)} from the nose, blends ${t.blendNose.toFixed(2)} / ${t.blendTail.toFixed(2)}`),
     `plan area    ${s.plan_area_in2.toFixed(0)} sq in`,
     '',
