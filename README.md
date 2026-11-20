@@ -69,6 +69,25 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## Round 7
+
+- **Edited cross sections lead.** A setting you change on a cross section is pinned there; the board
+  runs through your edited sections as one smooth curve and the rest of the board is generated
+  around them. A setting you did not touch on a section is not pinned (it follows its neighbours),
+  so lowering the rail apex at T4" no longer snaps back at a T2" section you only changed the tuck
+  on. Past the last edited section the change eases out toward the tip: kept almost whole when the
+  section is near the tip (the apex releases out the tail), faded out within 24" when it is far.
+  Edited sections are orange on the Plan and Profile graphs and in the Skeleton view, and in the
+  section editor the settings you set there are marked orange.
+- **Swallow** sliders are in **Foil**. New **Swallow inside rail**: each half of the swallow rolls into
+  its own rail on the inside of the cut (0 = a square wall, 1 = deck and bottom meet at the apex
+  height), so each half foils like a small tail.
+- **Deck contours** (Foil section): deck concave (the deck rises toward the rails, the stringer stays
+  on your thickness), deck vee (a ridge on the stringer), deck channels (1 to 4 a side), step deck
+  (a band along each rail cut down, with the step a set distance in from the rail) and step tail
+  (the whole deck steps down across the board). Each runs from one spot to another and eases in and
+  out over the inches you set at each end; 0 is a crisp step. They show as bands on the Plan graph.
+
 ## Round 5
 
 - **Vee** keeps the stringer on the rocker and lifts the rails (it used to drop the stringer

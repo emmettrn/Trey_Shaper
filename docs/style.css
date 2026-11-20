@@ -398,3 +398,7 @@ button:disabled { opacity: .35; cursor: default; }
 .stations .mlabel .x { width: 16px; flex: none; padding: 0; border: 0; background: transparent; color: var(--muted); }
 .stations tr.mark.off { opacity: .45; }
 .stations tr.mark .cell::placeholder { color: var(--muted); opacity: .75; }
+.field.pinned label { color: #ffb347; }
+.field.pinned label::after { content: ' ●'; font-size: 0.7em; vertical-align: middle; }
+.dcard { border-left-color: #c9a36a; }
+.dcard .help { margin: 0; }

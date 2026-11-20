@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { railTuckFromOld, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, toolOutline, toolCenterLine } from './geometry.js';
+import { railTuckFromOld, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, toolOutline, toolCenterLine, DECK_TYPES } from './geometry.js';
 import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js';
 import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js';
 
@@ -88,6 +88,7 @@ function buildControls() {
       det.querySelector('.fields').appendChild(buildBottomBox());
       det.querySelector('.fields').appendChild(buildToolsBox());
     }
+    if (g.name === 'Foil') det.querySelector('.fields').appendChild(buildDeckBox());
     root.appendChild(det);
   });
 }
@@ -395,6 +396,93 @@ function wireDeep(q, r, paint, changed) {
   q('.f3').addEventListener('change', () => { if (r.deep) setFrom(r.deep, q('.f3').value); else if (q('.p3').placeholder.startsWith('~')) { r.deep = { pos: parseVal(q('.p3').placeholder.slice(1)), from: 'nose' }; setFrom(r.deep, q('.f3').value); } paint(); changed(); });
   for (const [cls, key] of [['.bn', 'blendNose'], ['.bt', 'blendTail']])
     q(cls).addEventListener('input', () => { r[key] = +q(cls).value; q(cls).style.setProperty('--pct', `${r[key] * 100}%`); changed(); });
+}
+
+/* Deck contours (Foil section): deck concave, deck vee, channels, step deck along the rails and
+   a step tail across the board. Each runs between two spots and eases in and out over a few
+   inches at each end (0 = a crisp step). */
+const deckUI = {};
+const DECK_DEFAULTS = {
+  concave: { start: { pos: 0, from: 'center' }, end: { pos: 14, from: 'nose' }, depth: 0.125, easeNose: 6, easeTail: 6 },
+  vee: { start: { pos: 0, from: 'tail' }, end: { pos: 18, from: 'tail' }, depth: 0.125, easeNose: 8, easeTail: 0 },
+  channels: { start: { pos: 2, from: 'tail' }, end: { pos: 16, from: 'tail' }, depth: 0.125, easeNose: 4, easeTail: 1, count: 2, width: 0.75 },
+  step_rail: { start: { pos: 6, from: 'tail' }, end: { pos: 8, from: 'nose' }, depth: 0.25, easeNose: 6, easeTail: 6, inset: 1.5 },
+  step: { start: { pos: 0, from: 'tail' }, end: { pos: 10, from: 'tail' }, depth: 0.25, easeNose: 0, easeTail: 0 },
+};
+const DECK_HELP = {
+  concave: 'the deck rises toward the rails; the stringer stays on your thickness',
+  vee: 'a ridge on the stringer, the deck falling away toward the rails',
+  channels: 'grooves cut into the deck, evenly spaced out from the stringer',
+  step_rail: 'a band along each rail is cut down, with a step this far in from the rail',
+  step: 'the whole deck steps down across the board (the thickness here drops by the depth)',
+};
+function deckChanged(rebuild) { if (rebuild) renderDeck(); saveLocal(); schedule(); }
+function buildDeckBox() {
+  const box = document.createElement('div');
+  box.className = 'tools-box deck-box';
+  box.innerHTML = `<div class="bottom-head">Deck contours</div><div class="tool-cards"></div>
+    <div class="bottom-actions">${Object.entries(DECK_TYPES).map(([k, l]) => `<button class="ghost" data-type="${k}" title="${DECK_HELP[k]}">+ ${l.replace('Deck ', '')}</button>`).join('')}</div>
+    <div class="help">Each contour runs between two spots and eases in and out over the inches you set at each end; 0 makes a crisp step.</div>`;
+  deckUI.cards = box.querySelector('.tool-cards');
+  box.querySelectorAll('[data-type]').forEach((b) => b.addEventListener('click', () => {
+    const P = state.params, id = 1 + Math.max(0, ...(P.deck_contours || []).map((c) => c.id || 0));
+    (P.deck_contours ||= []).push({ id, type: b.dataset.type, ...structuredClone(DECK_DEFAULTS[b.dataset.type]) });
+    deckChanged(true);
+  }));
+  return box;
+}
+function renderDeck() {
+  const P = state.params, box = deckUI.cards;
+  if (!box) return;
+  box.innerHTML = '';
+  const opt = (o) => Object.entries(o).map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+  for (const c of P.deck_contours || []) {
+    const el = document.createElement('div');
+    el.className = 'tcard dcard';
+    el.innerHTML = `<div class="trow top"><select class="type" aria-label="Kind">${opt(DECK_TYPES)}</select><button class="x" title="Remove" aria-label="Remove">×</button></div>
+      <div class="trow where"><span>from</span><input class="cell p1" spellcheck="false" aria-label="Starts, inches"><span>″</span><select class="f1" aria-label="Measured from">${FROM_LONG}</select></div>
+      <div class="trow where"><span>until</span><input class="cell p2" spellcheck="false" aria-label="Ends, inches"><span>″</span><select class="f2" aria-label="Measured from">${FROM_LONG}</select></div>
+      <div class="trow nums">
+        <label>${c.type === 'concave' ? 'rise' : 'deep'}<input class="cell n" data-k="depth" spellcheck="false"></label>
+        <label data-for="channels">how many<select class="count">${opt({ 1: '1 a side', 2: '2 a side', 3: '3 a side', 4: '4 a side' })}</select></label>
+        <label data-for="channels">wide<input class="cell n" data-k="width" spellcheck="false"></label>
+        <label data-for="step_rail">in from rail<input class="cell n" data-k="inset" spellcheck="false"></label>
+      </div>
+      <div class="trow nums"><label title="Inches it takes to come in at the nose end (0 = a crisp step)">ease → nose<input class="cell n" data-k="easeNose" spellcheck="false"></label>
+        <label title="Inches it takes to come in at the tail end (0 = a crisp step)">ease → tail<input class="cell n" data-k="easeTail" spellcheck="false"></label></div>
+      <div class="help">${DECK_HELP[c.type]}</div>`;
+    const q = (sel) => el.querySelector(sel);
+    const paint = () => {
+      q('.type').value = c.type; q('.count').value = String(c.count ?? 2);
+      q('.p1').value = fracIn(showPos(c.start)); q('.f1').value = fromKey(c.start);
+      q('.p2').value = fracIn(showPos(c.end)); q('.f2').value = fromKey(c.end);
+      for (const inp of el.querySelectorAll('.n')) { const v = c[inp.dataset.k]; inp.value = Number.isFinite(v) ? fracIn(v, inp.dataset.k === 'depth' ? 32 : 16) : ''; }
+      for (const lab of el.querySelectorAll('[data-for]')) lab.hidden = lab.dataset.for !== c.type;
+    };
+    paint();
+    for (const inp of el.querySelectorAll('input')) {
+      inp.addEventListener('focus', () => inp.select());
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
+    }
+    const posBox = (sel, end) => q(sel).addEventListener('change', () => { const v = parseVal(q(sel).value); if (Number.isFinite(v)) setPos(c[end], clip(Math.abs(v), 0, 240)); paint(); deckChanged(false); });
+    posBox('.p1', 'start'); posBox('.p2', 'end');
+    q('.f1').addEventListener('change', () => { setFrom(c.start, q('.f1').value); paint(); deckChanged(false); });
+    q('.f2').addEventListener('change', () => { setFrom(c.end, q('.f2').value); paint(); deckChanged(false); });
+    const LIM = { depth: 1, width: 4, inset: 8, easeNose: 36, easeTail: 36 };
+    for (const inp of el.querySelectorAll('.n')) inp.addEventListener('change', () => {
+      const v = parseVal(inp.value);
+      if (Number.isFinite(v)) c[inp.dataset.k] = clip(Math.abs(v), 0, LIM[inp.dataset.k]);
+      paint(); deckChanged(false);
+    });
+    q('.count').addEventListener('change', () => { c.count = +q('.count').value; deckChanged(false); });
+    q('.type').addEventListener('change', () => {
+      const t = q('.type').value, d = DECK_DEFAULTS[t];
+      Object.assign(c, { type: t, depth: d.depth, easeNose: d.easeNose, easeTail: d.easeTail }, t === 'channels' ? { count: c.count ?? d.count, width: c.width ?? d.width } : {}, t === 'step_rail' ? { inset: c.inset ?? d.inset } : {});
+      deckChanged(true);
+    });
+    q('.x').addEventListener('click', () => { dropFrom(P.deck_contours, c); deckChanged(true); });
+    box.appendChild(el);
+  }
 }
 /* Concave tools: hard-edged concaves (tear drop, straight edges, venturi), single or double,
    between two spots on the board. Each has a box here with its numbers; "Shape it" puts it
@@ -750,10 +838,13 @@ function refreshSectionGroup(data) {
   det.hidden = k < 0;
   if (k < 0) { sectionUI.shown = null; return; }
   const s = sliceInfo(data, k), L = data.params.length;
-  $('#sec-title').textContent = `${s.x > L / 2 ? `${fracIn(L - s.x)}″ from the nose` : `${fracIn(s.x)}″ from the tail`}: ${fracIn(2 * s.h)}″ wide, ${fracIn(s.t)}″ thick. These sliders shape the board here and blend out toward the next sections and the tips.`;
+  $('#sec-title').textContent = `${s.x > L / 2 ? `${fracIn(L - s.x)}″ from the nose` : `${fracIn(s.x)}″ from the tail`}: ${fracIn(2 * s.h)}″ wide, ${fracIn(s.t)}″ thick. Settings you change here (marked orange) lead: the board runs smoothly through them to your other edited sections and eases out toward the tips. The rest follow.`;
   sectionUI.pos.range.max = L - 2;
   sectionUI.pos.set(s.x);
-  for (const [key, , min, max] of SECTION_SLIDERS) sectionUI.rows[key].set(Math.min(Math.max(s.base[key] + s.adj[key], min), max));
+  for (const [key, , min, max] of SECTION_SLIDERS) {
+    sectionUI.rows[key].set(Math.min(Math.max(s.base[key] + s.adj[key], min), max));
+    sectionUI.rows[key].el.classList.toggle('pinned', s.set.includes(key));   // set here (leads); the rest follow the sections around it
+  }
   if (sectionUI.shown !== s.id) { sectionUI.shown = s.id; det.open = true; det.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
 }
 
@@ -944,12 +1035,21 @@ function applyParams(p, keepSel = null) {
     return { ...structuredClone(t), id, start: at(t.start), end: at(t.end) };
   });
   if (!P.tools.some((t) => t.id === state.tool)) state.tool = null;
+  const dseen = new Set();
+  P.deck_contours = (Array.isArray(P.deck_contours) ? P.deck_contours : []).filter((c) => c && DECK_TYPES[c.type] && c.start && c.end).map((c) => {
+    let id = Number.isInteger(c.id) && !dseen.has(c.id) ? c.id : 1;
+    while (dseen.has(id)) id++;
+    dseen.add(id);
+    const at = (r) => ({ pos: Number.isFinite(+r.pos) ? +r.pos : 0, from: FROM.includes(r.from) ? r.from : 'tail' });
+    return { ...structuredClone(c), id, start: at(c.start), end: at(c.end) };
+  });
   state.sel = P.slices.some((s) => s.id === keepSel) ? keepSel : null;
   state.pt = null;
   for (const [k, fe] of Object.entries(state.fieldEls)) fe.set(state.params[k]);
   for (const [k, ce] of Object.entries(state.cellEls)) ce.set(state.params[k]);
   renderBottomTable();
   renderTools();
+  renderDeck();
   renderMarks();
   updateVisibility();
   saveLocal();
@@ -1146,6 +1246,8 @@ wireMesh.visible = false;
 // Skeleton view: the board as ribs (a cross section every 6") on its stringer and rail lines, like a boat frame
 const ribs = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x7fe6d6, transparent: true, opacity: 0.95 }));
 ribs.visible = false;
+const editedRibs = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffb347 }));
+ribs.add(editedRibs);                                   // the sections the shaper changed, in their own colour
 
 function buildRibs(data) {
   const { x, h, Y, Z, M } = data._profiles, L = data.params.length, seg = [];
@@ -1172,6 +1274,15 @@ function buildRibs(data) {
   }
   ribs.geometry.dispose();
   ribs.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(seg), 3));
+  const ed = [];
+  for (const sl of data.params.slices) {
+    if (!sl.edited) continue;
+    const q = sectionAt(data, sl.x), X0 = sl.x - L / 2;
+    for (const part of [q.deck, q.bottom]) for (const side of [1, -1])
+      for (let j = 0; j < part.y.length - 1; j++) ed.push(X0, part.z[j], -side * part.y[j], X0, part.z[j + 1], -side * part.y[j + 1]);
+  }
+  editedRibs.geometry.dispose();
+  editedRibs.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(ed), 3));
 }
 
 function setWire() {
@@ -1630,7 +1741,7 @@ class View2D {
 }
 
 /* ---- shared helpers for the three panels -------------------------------- */
-const SLICE_COLOR = '#b48cff';
+const SLICE_COLOR = '#b48cff', EDITED_COLOR = '#ffb347';   // a section the shaper has changed leads the shape around it
 const dropFrom = (list, item) => { const i = list.indexOf(item); if (i >= 0) list.splice(i, 1); };
 const sliceIndex = (board) => (state.sel === null ? -1 : board.params.slices.findIndex((s) => s.id === state.sel));
 const tip = (v, ctx, msg) => {
@@ -1761,15 +1872,31 @@ function drawPlan(v, data) {
       drag: (wx) => { state.scrub = clip(snap(wx, 0.25), 0.5, state.board.params.length - 0.5); } });
   }
 
+  // deck contours: a light band where each one is, its channels or step line drawn in
+  for (const c of p.deck_contours || []) {
+    const xs = [], hs = [];
+    for (let i = 0; i <= 40; i++) { const xx = c.x0 + ((c.x1 - c.x0) * i) / 40; xs.push(xx); hs.push(lerpAt(x, h, xx)); }
+    ctx.save(); ctx.fillStyle = 'rgba(201,163,106,0.10)'; ctx.strokeStyle = 'rgba(201,163,106,0.75)'; ctx.lineWidth = 1;
+    v.path(ctx, [...xs, ...[...xs].reverse()], [...hs, ...[...hs].reverse().map((q) => -q)], true); ctx.fill();
+    ctx.setLineDash([3, 3]);
+    const lines = c.type === 'channels' ? Array.from({ length: c.count }, (_, i) => (q) => q * (c.count === 1 ? 0.45 : 0.22 + (0.5 * i) / (c.count - 1)))
+      : c.type === 'step_rail' ? [(q) => Math.max(q - c.inset, 0)] : [];
+    for (const f of lines) for (const sg of [1, -1]) { v.path(ctx, xs, hs.map((q) => sg * f(q))); ctx.stroke(); }
+    if (c.type === 'step') for (const xe of [c.x0, c.x1]) if (xe > 0.3 && xe < L - 0.3) { const q = lerpAt(x, h, xe); ctx.beginPath(); ctx.moveTo(v.X(xe), v.Y(-q)); ctx.lineTo(v.X(xe), v.Y(q)); ctx.stroke(); }
+    ctx.restore();
+  }
+
   // cross-section slices
   for (const sl of p.slices) {
     const raw = P.slices.find((q) => q.id === sl.id);
     const half = lerpAt(x, h, sl.x), on = sl.id === state.sel;
-    ctx.strokeStyle = SLICE_COLOR; ctx.globalAlpha = on ? 1 : 0.55; ctx.setLineDash(on ? [] : [2, 3]);
+    const col = sl.edited ? EDITED_COLOR : SLICE_COLOR;
+    ctx.strokeStyle = col; ctx.globalAlpha = on ? 1 : sl.edited ? 0.85 : 0.55; ctx.setLineDash(on || sl.edited ? [] : [2, 3]);
+    ctx.lineWidth = sl.edited ? 1.6 : 1;
     ctx.beginPath(); ctx.moveTo(v.X(sl.x), v.Y(-half)); ctx.lineTo(v.X(sl.x), v.Y(half)); ctx.stroke();
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = 1; ctx.lineWidth = 1;
     if (raw) v.point(ctx, {
-      x: sl.x, y: 0, kind: 'slice', color: SLICE_COLOR, view: true,
+      x: sl.x, y: 0, kind: 'slice', color: col, view: true,
       select: () => { state.sel = sl.id; state.pt = null; },
       drag: prefs.edit ? (wx) => { raw.x = clip(snap(wx, 0.25), 2, state.board.params.length - 2); } : null,
     });
@@ -1893,7 +2020,7 @@ function drawProfile(v, data) {
     ctx.beginPath(); ctx.moveTo(v.X(sx), v.Y(zb(sx))); ctx.lineTo(v.X(sx), v.Y(dk(sx))); ctx.stroke(); ctx.setLineDash([]);
   }
   for (const sl of p.slices) {
-    ctx.strokeStyle = SLICE_COLOR; ctx.globalAlpha = sl.id === state.sel ? 1 : 0.5;
+    ctx.strokeStyle = sl.edited ? EDITED_COLOR : SLICE_COLOR; ctx.globalAlpha = sl.id === state.sel ? 1 : sl.edited ? 0.85 : 0.5;
     ctx.beginPath(); ctx.moveTo(v.X(sl.x), v.Y(zb(sl.x))); ctx.lineTo(v.X(sl.x), v.Y(dk(sl.x))); ctx.stroke(); ctx.globalAlpha = 1;
   }
   if (state.sel === null) {                             // where the Sections view is looking
