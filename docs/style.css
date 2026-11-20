@@ -402,3 +402,7 @@ button:disabled { opacity: .35; cursor: default; }
 .field.pinned label::after { content: ' ●'; font-size: 0.7em; vertical-align: middle; }
 .dcard { border-left-color: #c9a36a; }
 .dcard .help { margin: 0; }
+.tcard.dtool { border-left-color: #c9a36a; }
+.tcard.dtool.on { border-color: #e4bf86; box-shadow: 0 0 0 1px rgba(228,191,134,.25); }
+.deck-box .bottom-head + .tool-cards:empty { display: none; }
+.trow [hidden], .trow.nums label[data-two][hidden] { display: none; }

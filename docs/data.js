@@ -536,6 +536,15 @@ export const GROUPS = [
         "unit": "frac"
       },
       {
+        "key": "deck_flat",
+        "label": "Flat deck",
+        "min": 0,
+        "max": 1,
+        "step": 0.05,
+        "unit": "frac",
+        "help": "flattens the deck across and turns it into the rail later, with a slight corner (a classic fish deck)"
+      },
+      {
         "key": "swallow_rail",
         "label": "Swallow inside rail",
         "min": 0,

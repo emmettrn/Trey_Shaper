@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { railTuckFromOld, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, toolOutline, toolCenterLine, DECK_TYPES } from './geometry.js';
+import { railTuckFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, toolOutline, toolCenterLine, DECK_TYPES } from './geometry.js';
 import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js';
 import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js';
 
@@ -398,36 +398,42 @@ function wireDeep(q, r, paint, changed) {
     q(cls).addEventListener('input', () => { r[key] = +q(cls).value; q(cls).style.setProperty('--pct', `${r[key] * 100}%`); changed(); });
 }
 
-/* Deck contours (Foil section): deck concave, deck vee, channels, step deck along the rails and
-   a step tail across the board. Each runs between two spots and eases in and out over a few
-   inches at each end (0 = a crisp step). */
+/* Deck contours (Foil section): deck concave, deck vee and channels, laid out like the bottom
+   contours (from / until, deepest spot, blends). Below them, deck tools: step deck, step tail and
+   pockets, shaped on the Plan graph like the concave tools. */
 const deckUI = {};
 const DECK_DEFAULTS = {
-  concave: { start: { pos: 0, from: 'center' }, end: { pos: 14, from: 'nose' }, depth: 0.125, easeNose: 6, easeTail: 6 },
-  vee: { start: { pos: 0, from: 'tail' }, end: { pos: 18, from: 'tail' }, depth: 0.125, easeNose: 8, easeTail: 0 },
-  channels: { start: { pos: 2, from: 'tail' }, end: { pos: 16, from: 'tail' }, depth: 0.125, easeNose: 4, easeTail: 1, count: 2, width: 0.75 },
-  step_rail: { start: { pos: 6, from: 'tail' }, end: { pos: 8, from: 'nose' }, depth: 0.25, easeNose: 6, easeTail: 6, inset: 1.5 },
-  step: { start: { pos: 0, from: 'tail' }, end: { pos: 10, from: 'tail' }, depth: 0.25, easeNose: 0, easeTail: 0 },
+  concave: { start: { pos: 0, from: 'center' }, end: { pos: 14, from: 'nose' }, depth: 0.125, blendNose: 0.5, blendTail: 0.5 },
+  vee: { start: { pos: 0, from: 'tail' }, end: { pos: 18, from: 'tail' }, depth: 0.125, blendNose: 0.8, blendTail: 0 },
+  channels: { start: { pos: 2, from: 'tail' }, end: { pos: 16, from: 'tail' }, depth: 0.125, blendNose: 0.4, blendTail: 0.1, count: 2, pos: 3, gap: 2, width: 0.75, soft: 0 },
 };
 const DECK_HELP = {
-  concave: 'the deck rises toward the rails; the stringer stays on your thickness',
-  vee: 'a ridge on the stringer, the deck falling away toward the rails',
-  channels: 'grooves cut into the deck, evenly spaced out from the stringer',
-  step_rail: 'a band along each rail is cut down, with a step this far in from the rail',
-  step: 'the whole deck steps down across the board (the thickness here drops by the depth)',
+  concave: 'the deck rises toward the rails out to its width; the stringer stays on your thickness',
+  vee: 'a ridge on the stringer, the deck falling away toward the rails out to its width',
+  channels: 'grooves cut into the deck, one or two a side',
 };
 function deckChanged(rebuild) { if (rebuild) renderDeck(); saveLocal(); schedule(); }
 function buildDeckBox() {
   const box = document.createElement('div');
   box.className = 'tools-box deck-box';
-  box.innerHTML = `<div class="bottom-head">Deck contours</div><div class="tool-cards"></div>
+  box.innerHTML = `<div class="bottom-head">Deck contours</div><div class="tool-cards dc-cards"></div>
     <div class="bottom-actions">${Object.entries(DECK_TYPES).map(([k, l]) => `<button class="ghost" data-type="${k}" title="${DECK_HELP[k]}">+ ${l.replace('Deck ', '')}</button>`).join('')}</div>
-    <div class="help">Each contour runs between two spots and eases in and out over the inches you set at each end; 0 makes a crisp step.</div>`;
-  deckUI.cards = box.querySelector('.tool-cards');
+    <div class="bottom-head">Deck tools <small>step deck, step tail, pockets</small></div><div class="tool-cards dt-cards"></div>
+    <div class="bottom-actions"><button class="ghost" data-dt="stepdeck" title="A raised strip down the middle: the deck steps down outside its edges">+ Step deck</button><button class="ghost" data-dt="steptail" title="The deck steps down across the board toward the tail">+ Step tail</button><button class="ghost" data-dt="pocket" title="A tear drop pocket in the deck, like a nose concave on a noserider deck">+ Pocket</button></div>
+    <div class="help">Deck tools are shaped on the Plan graph like the concave tools. The blends ease each one in and out along the board (an S-deck is a step deck blended out toward the nose).</div>`;
+  deckUI.cards = box.querySelector('.dc-cards');
+  deckUI.tools = box.querySelector('.dt-cards');
   box.querySelectorAll('[data-type]').forEach((b) => b.addEventListener('click', () => {
     const P = state.params, id = 1 + Math.max(0, ...(P.deck_contours || []).map((c) => c.id || 0));
     (P.deck_contours ||= []).push({ id, type: b.dataset.type, ...structuredClone(DECK_DEFAULTS[b.dataset.type]) });
     deckChanged(true);
+  }));
+  const W = () => have('width'), r16 = (v) => Math.round(v * 16) / 16;
+  box.querySelectorAll('[data-dt]').forEach((b) => b.addEventListener('click', () => {
+    const k = b.dataset.dt;
+    if (k === 'stepdeck') newTool('straight', { step: 'out', start: { pos: 8, from: 'tail' }, end: { pos: 14, from: 'nose' }, depth: 0.25, w1: 6, w2: 6, blendNose: 0.25, blendTail: 0.25 });
+    else if (k === 'steptail') newTool('straight', { step: 'in', start: { pos: 0, from: 'tail' }, end: { pos: 12, from: 'tail' }, depth: 0.25, w1: r16(2 * W()), w2: r16(2 * W()), blendNose: 0, blendTail: 0 });
+    else newTool('teardrop', { step: 'in', start: { pos: 3, from: 'nose' }, end: { pos: 20, from: 'nose' }, depth: 0.25, width: r16(0.45 * W()), round: 'nose', blendNose: 0.3, blendTail: 0.6 });
   }));
   return box;
 }
@@ -439,45 +445,60 @@ function renderDeck() {
   for (const c of P.deck_contours || []) {
     const el = document.createElement('div');
     el.className = 'tcard dcard';
+    const ch = c.type === 'channels';
     el.innerHTML = `<div class="trow top"><select class="type" aria-label="Kind">${opt(DECK_TYPES)}</select><button class="x" title="Remove" aria-label="Remove">×</button></div>
       <div class="trow where"><span>from</span><input class="cell p1" spellcheck="false" aria-label="Starts, inches"><span>″</span><select class="f1" aria-label="Measured from">${FROM_LONG}</select></div>
       <div class="trow where"><span>until</span><input class="cell p2" spellcheck="false" aria-label="Ends, inches"><span>″</span><select class="f2" aria-label="Measured from">${FROM_LONG}</select></div>
+      <div class="trow where"><span>deepest</span><input class="cell p3" spellcheck="false" aria-label="Deepest at, inches"><span>″</span><select class="f3" aria-label="Measured from">${FROM_LONG}</select></div>
+      <div class="trow blends">${BLEND_ROW}</div>
       <div class="trow nums">
         <label>${c.type === 'concave' ? 'rise' : 'deep'}<input class="cell n" data-k="depth" spellcheck="false"></label>
-        <label data-for="channels">how many<select class="count">${opt({ 1: '1 a side', 2: '2 a side', 3: '3 a side', 4: '4 a side' })}</select></label>
-        <label data-for="channels">wide<input class="cell n" data-k="width" spellcheck="false"></label>
-        <label data-for="step_rail">in from rail<input class="cell n" data-k="inset" spellcheck="false"></label>
+        <label title="${ch ? 'each channel, inches' : 'how far across it reaches (blank = follows the outline)'}">wide<input class="cell n" data-k="width" spellcheck="false" placeholder="${ch ? '3/4' : 'auto'}"></label>
+        ${ch ? `<label>how many<select class="count">${opt({ 1: '1 a side', 2: '2 a side' })}</select></label>
+        <label title="from the stringer to the (first) channel, inches">from stringer<input class="cell n" data-k="pos" spellcheck="false"></label>
+        <label data-two title="between the two channels, inches">apart<input class="cell n" data-k="gap" spellcheck="false"></label>` : ''}
       </div>
-      <div class="trow nums"><label title="Inches it takes to come in at the nose end (0 = a crisp step)">ease → nose<input class="cell n" data-k="easeNose" spellcheck="false"></label>
-        <label title="Inches it takes to come in at the tail end (0 = a crisp step)">ease → tail<input class="cell n" data-k="easeTail" spellcheck="false"></label></div>
+      ${ch ? `<div class="trow blends"><label title="0 = a groove with two walls; 1 = the stringer side blends all the way out to the stringer">blend → stringer<input type="range" class="soft" min="0" max="1" step="0.05"></label></div>` : ''}
       <div class="help">${DECK_HELP[c.type]}</div>`;
     const q = (sel) => el.querySelector(sel);
     const paint = () => {
-      q('.type').value = c.type; q('.count').value = String(c.count ?? 2);
+      const made = state.board?.params.deck_contours?.find((m) => m.id === c.id);
+      q('.type').value = c.type;
+      paintDeep(q, c, made, state.board?.params.length);
       q('.p1').value = fracIn(showPos(c.start)); q('.f1').value = fromKey(c.start);
       q('.p2').value = fracIn(showPos(c.end)); q('.f2').value = fromKey(c.end);
-      for (const inp of el.querySelectorAll('.n')) { const v = c[inp.dataset.k]; inp.value = Number.isFinite(v) ? fracIn(v, inp.dataset.k === 'depth' ? 32 : 16) : ''; }
-      for (const lab of el.querySelectorAll('[data-for]')) lab.hidden = lab.dataset.for !== c.type;
+      for (const inp of el.querySelectorAll('.n')) { const v = c[inp.dataset.k]; if (document.activeElement !== inp) inp.value = Number.isFinite(v) && v > 0 ? fracIn(v, inp.dataset.k === 'depth' ? 32 : 16) : ''; }
+      if (ch) {
+        q('.count').value = String(c.count === 1 ? 1 : 2);
+        el.querySelector('[data-two]').hidden = c.count === 1;
+        const v = Number.isFinite(c.soft) ? c.soft : 0; q('.soft').value = v; q('.soft').style.setProperty('--pct', `${v * 100}%`);
+      }
     };
     paint();
     for (const inp of el.querySelectorAll('input')) {
-      inp.addEventListener('focus', () => inp.select());
+      inp.addEventListener('focus', () => inp.select?.());
       inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
     }
     const posBox = (sel, end) => q(sel).addEventListener('change', () => { const v = parseVal(q(sel).value); if (Number.isFinite(v)) setPos(c[end], clip(Math.abs(v), 0, 240)); paint(); deckChanged(false); });
     posBox('.p1', 'start'); posBox('.p2', 'end');
     q('.f1').addEventListener('change', () => { setFrom(c.start, q('.f1').value); paint(); deckChanged(false); });
     q('.f2').addEventListener('change', () => { setFrom(c.end, q('.f2').value); paint(); deckChanged(false); });
-    const LIM = { depth: 1, width: 4, inset: 8, easeNose: 36, easeTail: 36 };
+    wireDeep(q, c, paint, () => deckChanged(false));
+    const LIM = { depth: 0.75, width: 40, pos: 14, gap: 8 };
     for (const inp of el.querySelectorAll('.n')) inp.addEventListener('change', () => {
-      const v = parseVal(inp.value);
-      if (Number.isFinite(v)) c[inp.dataset.k] = clip(Math.abs(v), 0, LIM[inp.dataset.k]);
+      const v = parseVal(inp.value), k = inp.dataset.k;
+      if (inp.value.trim() === '' && k === 'width') delete c.width;
+      else if (Number.isFinite(v)) c[k] = clip(Math.abs(v), 0, LIM[k]);
       paint(); deckChanged(false);
     });
-    q('.count').addEventListener('change', () => { c.count = +q('.count').value; deckChanged(false); });
+    if (ch) {
+      q('.count').addEventListener('change', () => { c.count = +q('.count').value; paint(); deckChanged(false); });
+      q('.soft').addEventListener('input', () => { c.soft = +q('.soft').value; q('.soft').style.setProperty('--pct', `${c.soft * 100}%`); deckChanged(false); });
+    }
     q('.type').addEventListener('change', () => {
       const t = q('.type').value, d = DECK_DEFAULTS[t];
-      Object.assign(c, { type: t, depth: d.depth, easeNose: d.easeNose, easeTail: d.easeTail }, t === 'channels' ? { count: c.count ?? d.count, width: c.width ?? d.width } : {}, t === 'step_rail' ? { inset: c.inset ?? d.inset } : {});
+      for (const k of ['count', 'pos', 'gap', 'soft', 'width']) delete c[k];
+      Object.assign(c, { type: t, depth: d.depth }, t === 'channels' ? { count: d.count, pos: d.pos, gap: d.gap, width: d.width, soft: d.soft } : {});
       deckChanged(true);
     });
     q('.x').addEventListener('click', () => { dropFrom(P.deck_contours, c); deckChanged(true); });
@@ -491,7 +512,7 @@ const TOOL_COL = '#7ec8ff', TOOL_COL2 = '#b7e0ff';
 const toolsUI = {};
 const rawTool = (id) => state.params.tools?.find((t) => t.id === id);
 function toolsChanged(rebuild) { if (rebuild) renderTools(); saveLocal(); schedule(); }
-function newTool(shape) {
+function newTool(shape, deck = null) {
   const P = state.params, L = have('length'), W = have('width');
   const id = 1 + Math.max(0, ...(P.tools || []).map((t) => t.id || 0));
   const r16 = (v) => Math.round(v * 16) / 16;
@@ -501,6 +522,9 @@ function newTool(shape) {
       ? { id, shape, kind: 'double', edge: 'hard', start: { pos: 0, from: 'center' }, end: { pos: 0, from: 'tail' }, depth: 0.125, w1: r16(0.55 * W), w2: r16(0.45 * W), ridge: 2 }
       : { id, shape, kind: 'double', edge: 'rail', start: { pos: snap(L * 0.38, 1), from: 'tail' }, end: { pos: 0, from: 'tail' }, depth: 0.1875,
         outer: [[0, r16(0.5 * W)], [0.55, r16(0.4 * W)], [1, r16(0.62 * W)]], inner: [[0, 2.5], [1, 3.5]] };
+  if (deck) {                                             // a deck tool: step deck, step tail or pocket
+    Object.assign(t, { surface: 'deck', kind: 'single', edge: 'hard' }, deck);
+  }
   (P.tools ||= []).push(t);
   state.tool = id;
   if (!prefs.edit) { prefs.edit = true; savePrefs(); syncPanelTools(); }
@@ -518,12 +542,15 @@ function buildToolsBox() {
   return box;
 }
 function renderTools() {
-  const P = state.params, box = toolsUI.cards;
-  if (!box) return;
-  box.innerHTML = '';
+  const P = state.params;
+  if (!toolsUI.cards) return;
+  toolsUI.cards.innerHTML = '';
+  if (deckUI.tools) deckUI.tools.innerHTML = '';
   for (const t of P.tools || []) {
+    const onDeck = t.surface === 'deck', box = onDeck ? deckUI.tools : toolsUI.cards;
+    if (!box) continue;
     const el = document.createElement('div');
-    el.className = 'tcard' + (state.tool === t.id ? ' on' : '');
+    el.className = 'tcard' + (onDeck ? ' dtool' : '') + (state.tool === t.id ? ' on' : '');
     const opt = (o) => Object.entries(o).map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
     el.innerHTML = `<div class="trow top"><select class="shape" aria-label="Shape">${opt(TOOL_SHAPES)}</select><select class="kind" aria-label="Single or double">${opt({ single: 'Single', double: 'Double' })}</select><button class="x" title="Remove this concave" aria-label="Remove">×</button></div>
       <div class="trow where"><span>from</span><input class="cell p1" spellcheck="false" aria-label="Starts, inches"><span>″</span><select class="f1" aria-label="Measured from">${FROM_LONG}</select></div>
@@ -537,7 +564,8 @@ function renderTools() {
         <label data-for="ridge">ridge<input class="cell n" data-k="ridge" spellcheck="false"></label>
         <label data-for="double">edges<select class="edge">${opt({ hard: 'hard both sides', rail: 'hard on the rail side' })}</select></label>
       </div>
-      <div class="trow where"><span>center</span><select class="center" aria-label="Center line" title="How deep the concave is along the stringer">${opt({ blend: 'blended: deepest spot + blends', flat: 'flat: straight from end to end', custom: 'custom: points on the Profile graph' })}</select></div>
+      <div class="trow where deckonly"><span>steps down</span><select class="step" aria-label="Which side steps down">${opt({ out: 'outside the edges (step deck)', in: 'inside the edges (pocket, step tail)' })}</select></div>
+      <div class="trow where bottomonly"><span>center</span><select class="center" aria-label="Center line" title="How deep the concave is along the stringer">${opt({ blend: 'blended: deepest spot + blends', flat: 'flat: straight from end to end', custom: 'custom: points on the Profile graph' })}</select></div>
       <div class="trow where blendonly"><span>deepest</span><input class="cell p3" spellcheck="false" aria-label="Deepest at, inches"><span>″</span><select class="f3" aria-label="Measured from">${FROM_LONG}</select></div>
       <div class="trow blends blendonly">${BLEND_ROW}</div>
       <div class="trow foot"><button class="ghost edit"></button><span class="angle"></span></div>`;
@@ -547,7 +575,11 @@ function renderTools() {
       q('.shape').value = t.shape; q('.kind').value = t.kind; q('.round').value = t.round || 'nose'; q('.edge').value = t.edge || 'hard';
       paintDeep(q, t, made, state.board?.params.length);
       q('.center').value = t.center || 'blend';
-      for (const el2 of el.querySelectorAll('.blendonly')) el2.hidden = (t.center || 'blend') !== 'blend';
+      for (const el2 of el.querySelectorAll('.blendonly')) el2.hidden = !onDeck && (t.center || 'blend') !== 'blend';
+      for (const el2 of el.querySelectorAll('.deckonly')) el2.hidden = !onDeck;
+      for (const el2 of el.querySelectorAll('.bottomonly')) el2.hidden = onDeck;
+      q('.kind').hidden = onDeck;
+      q('.step').value = t.step === 'out' ? 'out' : 'in';
       q('.p1').value = fracIn(showPos(t.start)); q('.f1').value = fromKey(t.start);
       q('.p2').value = fracIn(showPos(t.end)); q('.f2').value = fromKey(t.end);
       for (const inp of el.querySelectorAll('.n')) inp.value = Number.isFinite(t[inp.dataset.k]) ? fracIn(t[inp.dataset.k], inp.dataset.k === 'depth' ? 32 : 16) : '';
@@ -555,7 +587,7 @@ function renderTools() {
       const dbl = t.kind === 'double';
       for (const lab of el.querySelectorAll('[data-for]')) {
         const f = lab.dataset.for;
-        lab.hidden = f === 'double' ? !dbl : f === 'ridge' ? !(dbl && t.shape === 'straight') : f !== t.shape;
+        lab.hidden = f === 'double' ? !dbl || onDeck : f === 'ridge' ? !(dbl && t.shape === 'straight') || onDeck : f !== t.shape;
       }
       q('.edit').textContent = state.tool === t.id ? 'Done shaping' : 'Shape it on the Plan graph';
       let ang = '';
@@ -589,7 +621,7 @@ function renderTools() {
     });
     wireDeep(q, t, paint, () => toolsChanged(false));
     q('.shape').addEventListener('change', () => {               // a new shape starts from that shape's own defaults, at the same spot
-      const keep = { id: t.id, kind: t.kind, start: t.start, end: t.end, depth: t.depth, edge: t.edge };
+      const keep = { id: t.id, kind: t.kind, start: t.start, end: t.end, depth: t.depth, edge: t.edge, surface: t.surface, step: t.step };
       const W = have('width'), r16 = (v) => Math.round(v * 16) / 16, sh = q('.shape').value;
       for (const k of Object.keys(t)) delete t[k];
       Object.assign(t, keep, { shape: sh }, sh === 'teardrop' ? { width: r16(0.62 * W), round: 'nose' } : sh === 'straight' ? { w1: r16(0.55 * W), w2: r16(0.45 * W), ridge: 2 }
@@ -598,6 +630,7 @@ function renderTools() {
       paint(); toolsChanged(false);
     });
     q('.kind').addEventListener('change', () => { t.kind = q('.kind').value; paint(); toolsChanged(false); });
+    q('.step').addEventListener('change', () => { t.step = q('.step').value; paint(); toolsChanged(false); });
     q('.center').addEventListener('change', () => {
       const c = q('.center').value, k = state.board?.params.tools.findIndex((m) => m.id === t.id);
       if (c === 'custom' && !(Array.isArray(t.cpts) && t.cpts.length >= 2) && k >= 0) {      // start from the line it has now
@@ -637,7 +670,8 @@ function drawTools(v, ctx, data) {
     const sel = state.tool !== null && o.tool.id === state.tool, pts = o.pts.filter((q) => q.e > 0.05);
     if (!pts.length) continue;
     ctx.save();
-    ctx.strokeStyle = TOOL_COL; ctx.lineWidth = sel ? 1.6 : 1; ctx.globalAlpha = state.tool !== null && !sel ? 0.4 : 0.9;
+    const deckT = o.tool.surface === 'deck';                // deck tools in sand, bottom tools in blue
+    ctx.strokeStyle = deckT ? '#e4bf86' : TOOL_COL; ctx.lineWidth = sel ? 1.6 : 1; ctx.globalAlpha = state.tool !== null && !sel ? 0.4 : 0.9;
     if (!sel) ctx.setLineDash([4, 3]);
     for (const sgn of [1, -1]) {
       v.path(ctx, pts.map((q) => q.x), pts.map((q) => sgn * q.e)); ctx.stroke();
@@ -645,7 +679,7 @@ function drawTools(v, ctx, data) {
     }
     const xs = [...pts.map((q) => q.x), ...[...pts].reverse().map((q) => q.x)];
     v.path(ctx, xs, [...pts.map((q) => q.e), ...[...pts].reverse().map((q) => (o.tool.kind === 'double' ? q.r : -q.e))], true);
-    ctx.fillStyle = 'rgba(126,200,255,0.10)'; ctx.fill();
+    ctx.fillStyle = deckT ? 'rgba(228,191,134,0.10)' : 'rgba(126,200,255,0.10)'; ctx.fill();
     if (o.tool.kind === 'double') { v.path(ctx, xs, [...pts.map((q) => -q.e), ...[...pts].reverse().map((q) => -q.r)], true); ctx.fill(); }
     ctx.restore();
     if (sel) editing = o;
@@ -736,6 +770,7 @@ function drawToolCenters(v, ctx, data) {
   const tools = data.params.tools || [];
   let shaping = null;
   for (let k = 0; k < tools.length; k++) {
+    if (tools[k].surface === 'deck') continue;              // deck tools have no center line on the rocker
     const cl = toolCenterLine(data, k); if (!cl || !cl.pts.length) continue;
     const sel = state.tool !== null && cl.tool.id === state.tool;
     ctx.save(); ctx.strokeStyle = TOOL_COL; ctx.lineWidth = sel ? 1.6 : 1; ctx.globalAlpha = sel ? 1 : 0.6;
@@ -986,6 +1021,7 @@ function applyParams(p, keepSel = null) {
   state.params = structuredClone({ ...state.schema.defaults, ...p });
   const P = state.params, a = P.anchors && typeof P.anchors === 'object' ? P.anchors : {};
   railTuckFromOld(P);                                    // designs from before rail tucks (Rail edge 0..1) get tucks in inches
+  if (P.curve_v !== 2) armsToAuto(P);                    // designs from before arms meant fullness: arm lengths back to automatic
   const num = (v) => (Number.isFinite(v) ? v : null);
   // an anchor is [position, offset] plus, once its handle has been moved, [slope, left arm, right arm]
   const pts = (l) => (Array.isArray(l) ? l : []).filter((q) => Array.isArray(q) && Number.isFinite(+q[0]) && Number.isFinite(+q[1]))
@@ -1277,9 +1313,9 @@ function buildRibs(data) {
   const ed = [];
   for (const sl of data.params.slices) {
     if (!sl.edited) continue;
-    const q = sectionAt(data, sl.x), X0 = sl.x - L / 2;
+    const q = sectionAt(data, sl.x), X0 = sl.x - L / 2, z0 = lerpAt(x, data._profiles.zb, sl.x);   // the section sits on the rocker there
     for (const part of [q.deck, q.bottom]) for (const side of [1, -1])
-      for (let j = 0; j < part.y.length - 1; j++) ed.push(X0, part.z[j], -side * part.y[j], X0, part.z[j + 1], -side * part.y[j + 1]);
+      for (let j = 0; j < part.y.length - 1; j++) ed.push(X0, z0 + part.z[j], -side * part.y[j], X0, z0 + part.z[j + 1], -side * part.y[j + 1]);
   }
   editedRibs.geometry.dispose();
   editedRibs.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(ed), 3));
@@ -1565,7 +1601,7 @@ class View2D {
     this.s0 = Math.max(1e-6, Math.min((r.width - 2 * pad) / (x1 - x0), (r.height - 2 * pad) / ((y1 - y0) * vex)));
     if (this.zoom <= 1) { this.zoom = 1; this.mx = (x0 + x1) / 2; this.my = (y0 + y1) / 2; }
     this.s = this.s0 * this.zoom;
-    this.handles = []; this.curves = [];
+    this.handles = []; this.curves = []; this.onPress = null;
     return ctx;
   }
   X(x) { return this.w / 2 + (x - this.mx) * this.s; }
@@ -1645,6 +1681,7 @@ class View2D {
   down(e) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     const [px, py] = this.pos(e);
+    if (this.onPress && this.onPress(px, py)) { e.preventDefault(); return; }   // something drawn in screen space (the mini map) took it
     this.touch = e.pointerType !== 'mouse';
     this.ptrs.set(e.pointerId, [px, py]);
     if (this.ptrs.size === 2) {                         // second finger: pinch to zoom, drag to pan
@@ -1806,7 +1843,8 @@ function drawArms(v, ctx, H, x0, y0, res, { S0, k, kx = 1, color, mMax = 3, aMin
       drag: (wx, wy) => {
         const along = (wx - x0) * T[0] + (wy - y0) * T[1], across = (wx - x0) * N[0] + (wy - y0) * N[1];
         const d = Math.max((side * along) / kx, aMin);
-        H.set(level ? null : clip(((side * across) / d - S0) / k, -mMax, mMax), side, clip(d, aMin, aMax));
+        const dS = Math.max(d, 48 / (v.s * Math.max(kx, 1e-6)));      // the angle is read at least ~48 px out, so a short arm is not touchy
+        H.set(level ? null : clip(((side * across) / dS - S0) / k, -mMax, mMax), side, clip(d, aMin, aMax));
       },
       remove: () => H.reset(),                          // double-click: back to the automatic handle
     });
@@ -1879,10 +1917,9 @@ function drawPlan(v, data) {
     ctx.save(); ctx.fillStyle = 'rgba(201,163,106,0.10)'; ctx.strokeStyle = 'rgba(201,163,106,0.75)'; ctx.lineWidth = 1;
     v.path(ctx, [...xs, ...[...xs].reverse()], [...hs, ...[...hs].reverse().map((q) => -q)], true); ctx.fill();
     ctx.setLineDash([3, 3]);
-    const lines = c.type === 'channels' ? Array.from({ length: c.count }, (_, i) => (q) => q * (c.count === 1 ? 0.45 : 0.22 + (0.5 * i) / (c.count - 1)))
-      : c.type === 'step_rail' ? [(q) => Math.max(q - c.inset, 0)] : [];
+    const lines = c.type === 'channels' ? Array.from({ length: c.count }, (_, i) => (q) => Math.min(c.pos + i * c.gap, 0.95 * q))
+      : c.width ? [(q) => Math.min(c.width / 2, 0.95 * q)] : [];
     for (const f of lines) for (const sg of [1, -1]) { v.path(ctx, xs, hs.map((q) => sg * f(q))); ctx.stroke(); }
-    if (c.type === 'step') for (const xe of [c.x0, c.x1]) if (xe > 0.3 && xe < L - 0.3) { const q = lerpAt(x, h, xe); ctx.beginPath(); ctx.moveTo(v.X(xe), v.Y(-q)); ctx.lineTo(v.X(xe), v.Y(q)); ctx.stroke(); }
     ctx.restore();
   }
 
@@ -1890,9 +1927,9 @@ function drawPlan(v, data) {
   for (const sl of p.slices) {
     const raw = P.slices.find((q) => q.id === sl.id);
     const half = lerpAt(x, h, sl.x), on = sl.id === state.sel;
-    const col = sl.edited ? EDITED_COLOR : SLICE_COLOR;
-    ctx.strokeStyle = col; ctx.globalAlpha = on ? 1 : sl.edited ? 0.85 : 0.55; ctx.setLineDash(on || sl.edited ? [] : [2, 3]);
-    ctx.lineWidth = sl.edited ? 1.6 : 1;
+    const col = SLICE_COLOR;
+    ctx.strokeStyle = col; ctx.globalAlpha = on ? 1 : 0.55; ctx.setLineDash(on ? [] : [2, 3]);
+    ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(v.X(sl.x), v.Y(-half)); ctx.lineTo(v.X(sl.x), v.Y(half)); ctx.stroke();
     ctx.globalAlpha = 1; ctx.lineWidth = 1;
     if (raw) v.point(ctx, {
@@ -2133,7 +2170,7 @@ function sectionGuides(v, ctx, s, color) {
 function sectionCaption(v, ctx, data, s, color) {
   const L = data.params.length;
   v.text(ctx, `${whereText(s.x, L)} · ${fracIn(2 * s.h)}″ wide · ${fracIn(s.t)}″ thick`, 4, 12, color, 'left');
-  const here = (data.params.tools || []).filter((t) => s.x >= t.x0 && s.x <= t.x1).map((t) => `${TOOL_SHAPES[t.shape].toLowerCase()}${t.kind === 'double' ? ' double' : ''} concave`);
+  const here = (data.params.tools || []).filter((t) => s.x >= t.x0 && s.x <= t.x1).map((t) => (t.surface === 'deck' ? (t.step === 'out' ? 'step deck' : 'deck step / pocket') : `${TOOL_SHAPES[t.shape].toLowerCase()}${t.kind === 'double' ? ' double' : ''} concave`));
   v.text(ctx, `${shapeText(s.shape)}${here.length ? ' + ' + here.join(' + ') : ''} · rail apex ${fracIn(s.apex_in)}″ up`, 4, 25, COLORS.sand, 'left');
 }
 
@@ -2152,6 +2189,47 @@ function nearestOnLine(ln, wy, wz) {
   return { rho: ln.rho[bi], off: (wy - ln.y0[bi]) * ln.ny[bi] + (wz - ln.z0[bi]) * ln.nz[bi] };
 }
 
+/**
+ * The mini outline map in the top right of the Sections graph: the board from above, the
+ * sections you have changed in orange (the others faint), and where this section is. While
+ * rolling through the board, click or drag along it to move there.
+ */
+function miniMap(v, ctx, data, xNow, live) {
+  const { x, h } = data.curves.outline, L = data.params.length, W = data.stats.width_in;
+  const mw = Math.min(290, Math.max(120, 0.42 * v.w)), mh = Math.max(30, Math.min(64, (mw * W) / L * 1.15));
+  const x0 = v.w - mw - 8, y0 = 34, X = (q) => x0 + 6 + (q / L) * (mw - 12), Y = (q) => y0 + mh / 2 - (q / (W / 2)) * (mh / 2 - 4);   // tail on the left, like the Plan graph
+  ctx.save();
+  ctx.fillStyle = 'rgba(14,19,23,0.82)'; ctx.strokeStyle = COLORS.line; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.roundRect?.(x0, y0, mw, mh, 5) ?? ctx.rect(x0, y0, mw, mh); ctx.fill(); ctx.stroke();
+  ctx.beginPath();
+  for (let i = 0; i < x.length; i++) (i ? ctx.lineTo(X(x[i]), Y(h[i])) : ctx.moveTo(X(x[i]), Y(h[i])));
+  for (let i = x.length - 1; i >= 0; i--) ctx.lineTo(X(x[i]), Y(-h[i]));
+  ctx.closePath(); ctx.fillStyle = 'rgba(243,239,230,0.07)'; ctx.fill(); ctx.strokeStyle = 'rgba(243,239,230,0.55)'; ctx.stroke();
+  for (const sl of data.params.slices) {
+    const q = lerpAt(x, h, sl.x);
+    ctx.strokeStyle = sl.edited ? EDITED_COLOR : 'rgba(180,140,255,0.45)'; ctx.lineWidth = sl.edited ? 1.6 : 1;
+    ctx.beginPath(); ctx.moveTo(X(sl.x), Y(-q)); ctx.lineTo(X(sl.x), Y(q)); ctx.stroke();
+  }
+  const q = lerpAt(x, h, xNow);
+  ctx.strokeStyle = SLICE_COLOR; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(X(xNow), Y(-q) + 3); ctx.lineTo(X(xNow), Y(q) - 3); ctx.stroke();
+  ctx.fillStyle = SLICE_COLOR; ctx.beginPath(); ctx.moveTo(X(xNow) - 4, y0 + mh + 6); ctx.lineTo(X(xNow) + 4, y0 + mh + 6); ctx.lineTo(X(xNow), y0 + mh); ctx.closePath(); ctx.fill();
+  ctx.font = '9px "IBM Plex Mono", monospace'; ctx.fillStyle = COLORS.muted; ctx.textAlign = 'left'; ctx.fillText('tail', x0 + 4, y0 + mh + 11);
+  ctx.textAlign = 'right'; ctx.fillText('nose', x0 + mw - 4, y0 + mh + 11);
+  if (data.params.slices.some((sl) => sl.edited)) { ctx.fillStyle = EDITED_COLOR; ctx.textAlign = 'center'; ctx.fillText('edited', x0 + mw / 2, y0 + mh + 11); }
+  ctx.restore();
+  if (!live) return;
+  const toX = (px) => clip(snap(((px - x0 - 6) / (mw - 12)) * L, 0.25), 0.5, L - 0.5);
+  v.onPress = (px, py) => {
+    if (px < x0 || px > x0 + mw || py < y0 || py > y0 + mh + 8) return false;
+    state.scrub = toX(px); scrubChanged();
+    const mv = (e) => { const [qx] = v.pos(e); state.scrub = toX(qx); scrubChanged(); };
+    const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); };
+    addEventListener('pointermove', mv); addEventListener('pointerup', up);
+    return true;
+  };
+}
+
 function drawSections(v, data) {
   const k = sliceIndex(data), P = state.params;
   const W = data.stats.width_in, T = data.stats.thickness_in;
@@ -2167,6 +2245,7 @@ function drawSections(v, data) {
     ctx.fillStyle = 'rgba(180,140,255,0.08)'; ctx.fill();
     ctx.strokeStyle = SLICE_COLOR; ctx.lineWidth = 1.8; ctx.stroke();
     sectionCaption(v, ctx, data, s, SLICE_COLOR);
+    miniMap(v, ctx, data, s.x, true);
     if (v.w > 300) v.text(ctx, 'slide to roll through the board · Edit here to shape this section', v.w / 2, v.h - 6, 'rgba(132,148,159,.8)', 'center');
     return;
   }
@@ -2184,6 +2263,7 @@ function drawSections(v, data) {
   v.path(ctx, cur.X, cur.Z, true);
   ctx.fillStyle = 'rgba(180,140,255,0.08)'; ctx.fill();
   ctx.strokeStyle = SLICE_COLOR; ctx.lineWidth = 1.8; ctx.stroke();
+  miniMap(v, ctx, data, s.x, false);
 
   // Anchor points sit anywhere along the deck or bottom line, right around the rail. A point is kept as
   // [how far along the line, how far the surface is moved along its normal there (fraction of thickness)].
