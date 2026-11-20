@@ -69,6 +69,24 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## Round 12
+
+- **Nose finish**: pointed and semi-pointed noses now finish into a point at an angle over the last 1.5-2",
+  like Shape3D, instead of a rounded end, and the tip keeps its thickness to a small rounded nub (no hump
+  in the deck right at the nose). Round and blunt noses are unchanged.
+- **Beak nose** (Foil): tick Beak nose and set where it starts (1/4" to 5" back): the deck turns down into
+  a beak toward the tip; the bottom stays.
+- **Flat deck** (Foil): the deck runs flat across to a corner, then bevels down and rounds into the rail.
+  **Flat deck corner** moves the corner in toward the stringer: further in = a longer bevel and a softer,
+  thinner rail (the foam comes out of the corners).
+- **Swallow inside rail**: each half rolls into its own rail on the inside of the cut over a wider span,
+  and the roll carries on past the crotch as a soft valley down the stringer, so the halves blend into it.
+- **Nose tuck**: a wide soft tuck under a low apex turns up a little sooner right before the apex, so the
+  rail stays round instead of pinched.
+- **Contour blends at an end**: a contour that is deepest right at one end (a spiral vee deepest at the
+  tail) now blends out to flat at that end with its blend slider (over up to 12").
+- **Default fish** is the owner's updated fish. The Bottom section note says two ways to shape it.
+
 ## Round 11
 
 - **Load a Shape3D design** (.s3dx): Load takes Shape3D X files as well as Trey Shaper designs. It reads the

@@ -84,7 +84,7 @@ function buildControls() {
     if (g.name === 'Bottom') {
       const note = document.createElement('div');
       note.className = 'bottom-note';
-      note.innerHTML = 'Three ways to shape the bottom: the <b>contour stations</b> below (blended from spot to spot), the <b>concave tools</b> (hard-edged concaves you lay out on the Plan graph), or by hand on any cross section in the <b>cross section editor</b> (Sections graph, <i>Edit here</i>).';
+      note.innerHTML = 'Two ways to shape the bottom: the <b>contours</b> below (blended from spot to spot) and the <b>concave tools</b> (hard-edged concaves and channels you lay out on the Plan graph). To fine-tune one spot, edit its cross section by hand in the <b>cross section editor</b> (Sections graph, <i>Edit here</i>).';
       det.querySelector('.fields').prepend(note);
       det.querySelector('.fields').appendChild(buildBottomBox());
       det.querySelector('.fields').appendChild(buildToolsBox());
@@ -1054,6 +1054,8 @@ function applyParams(p, keepSel = null) {
   const P = state.params, a = P.anchors && typeof P.anchors === 'object' ? P.anchors : {};
   railTuckFromOld(P);                                    // designs from before rail tucks (Rail edge 0..1) get tucks in inches
   if (P.curve_v !== 2) armsToAuto(P);
+  if (!Number.isFinite(P.deck_flat_corner)) P.deck_flat_corner = 0.8;   // newer settings: show their real starting values
+  if (!Number.isFinite(P.nose_beak_pos)) P.nose_beak_pos = 2;
   // the old single concave / tail vee sliders are gone: their shape becomes two bottom contours you can edit
   // (they only shaped the bottom when there were no contours, so with contours they are simply dropped)
   if (!(Array.isArray(P.bottom) && P.bottom.length) && (P.concave_depth > 0 || P.vee_depth > 0)) {
