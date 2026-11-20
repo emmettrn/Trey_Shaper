@@ -570,6 +570,7 @@ function curveDelta(p, name, x, arms, baseFn) {
   for (const q of pts) if (!K.some((k) => Math.abs(k[0] - q[0]) < 0.05)) K.push([q[0], q[1], Number.isFinite(q[2]) ? q[2] : null, q[3], q[4], null]);
   K.sort((a, b) => a[0] - b[0]);
   const n = K.length, xs = K.map((k) => k[0]), ys = K.map((k) => k[1]), m = K.map((k) => k[2]);
+  const tip = (i) => K[i][5] === 'tail' || K[i][5] === 'nose';       // the nose and tail points work as they did before: their arms are Bezier arms
   // measured points between the tips with no slope of their own: the slope through their neighbours (parabola)
   for (let i = 1; i < n - 1; i++) if (K[i][5] && m[i] === null) {
     const h0 = xs[i] - xs[i - 1], h1 = xs[i + 1] - xs[i], d0 = (ys[i] - ys[i - 1]) / h0, d1 = (ys[i + 1] - ys[i]) / h1;
@@ -583,14 +584,15 @@ function curveDelta(p, name, x, arms, baseFn) {
     a0 = b0;
   }
   if (!ys.some((v) => v !== 0) && !m.some((v) => v !== 0) && !K.some((k) => Number.isFinite(k[3]) || Number.isFinite(k[4]))) {
-    if (arms) fillArms(arms, K, m);
+    if (arms) fillArms(arms, K, m, null);
     return out;
   }
-  const curve = knotCurve(K.map((k, i) => [xs[i], ys[i], m[i], null, null]), false, false);
+  const curve = knotCurve(K.map((k, i) => (tip(i) ? [xs[i], ys[i], k[2], k[3], k[4]] : [xs[i], ys[i], m[i], null, null])), false, false);
   for (let i = 0; i < x.length; i++) if (x[i] > 0 && x[i] < L) out[i] = curve.at(x[i]);
   // fullness: an arm longer or shorter than a third of its span pulls the curve toward, or away from, its line
   const pulls = [];
   for (let i = 0; i < n; i++) for (const side of [-1, 1]) {
+    if (tip(i)) continue;
     const len = K[i][side < 0 ? 3 : 4], j = i + side;
     if (!Number.isFinite(len) || j < 0 || j >= n) continue;
     const span = Math.abs(xs[j] - xs[i]), r = clip(len / (span / 3), 0.1, 3);
@@ -612,7 +614,7 @@ function curveDelta(p, name, x, arms, baseFn) {
     }
     for (let i = 0; i < x.length; i++) out[i] += add[i];
   }
-  if (arms) fillArms(arms, K, m);
+  if (arms) fillArms(arms, K, m, curve);
   return out;
 }
 
@@ -620,16 +622,17 @@ function curveDelta(p, name, x, arms, baseFn) {
 export function armsToAuto(p) {
   const clear = (q) => { if (Array.isArray(q)) { q[3] = null; q[4] = null; } };
   const H = p.handles && typeof p.handles === 'object' ? p.handles : {};
-  for (const name of ['outline', 'rocker', 'thickness']) for (const hd of Object.values(H[name] || {})) if (Array.isArray(hd)) { hd[1] = null; hd[2] = null; }
+  for (const name of ['outline', 'rocker', 'thickness']) for (const [key, hd] of Object.entries(H[name] || {})) if (Array.isArray(hd) && key !== 'tail' && key !== 'nose') { hd[1] = null; hd[2] = null; }
   for (const name of ['outline', 'rocker', 'thickness']) for (const q of (p.anchors && p.anchors[name]) || []) clear(q);
   for (const r of p.marks || []) for (const f of ['hw', 'hr', 'ht']) if (Array.isArray(r[f])) { r[f][1] = null; r[f][2] = null; }
   p.curve_v = 2;
 }
 
 /** The arms the graphs draw: each point's slope and arm lengths (its own, or a third of the span). */
-function fillArms(arms, K, m) {
+function fillArms(arms, K, m, curve) {
   arms.pins = {};
   for (let i = 0; i < K.length; i++) {
+    if (curve && (K[i][5] === 'tail' || K[i][5] === 'nose')) { arms.pins[K[i][5]] = curve.arms[i]; continue; }   // the tips: their Bezier arms, as before
     const gl = i > 0 ? (K[i][0] - K[i - 1][0]) / 3 : NaN, gr = i < K.length - 1 ? (K[i + 1][0] - K[i][0]) / 3 : NaN;
     const r = { x: K[i][0], m: m[i] ?? 0, aL: Number.isFinite(K[i][3]) ? Math.min(K[i][3], 3 * gl) : gl, aR: Number.isFinite(K[i][4]) ? Math.min(K[i][4], 3 * gr) : gr };
     if (K[i][5]) arms.pins[K[i][5]] = r; else arms.push(r);
@@ -1166,7 +1169,7 @@ function toolsAt(p, x, h, t) {
     tool.zbAt = p._zbAt;
     const q = toolShapeAt(tool, x), e = q.e;                 // an edge past the outline runs the concave off the rail (it lifts the rail there)
     const D = Math.min(q.D, 0.4 * t);
-    if (tool.shape === 'channel') { if (D > 1e-6 && e > 0.1) list.push({ D, e, gw: tool.gw, chan: true }); continue; }
+    if (tool.shape === 'channel') { if (D > 1e-6 && e > 0.1) list.push({ D, e, gw: tool.gw, soft: tool.soft, chan: true }); continue; }
     if (!(D > 1e-6) || !(e > q.r + 0.2)) continue;
     list.push({ D, e, r: q.r, double: tool.kind === 'double', rail: tool.edge === 'rail' });
   }
@@ -1225,7 +1228,7 @@ function groove(y, e, gw, sf) {
 function toolLift(list, y) {
   let z = 0;
   for (const q of list) {
-    if (q.chan) { z += q.D * groove(y, q.e, q.gw, 0); continue; }
+    if (q.chan) { z += q.D * groove(y, q.e, q.gw, q.soft); continue; }
     const so = soft(q.e - y);                             // in from the outer edge
     if (so < 1e-5) continue;
     if (!q.double) { const v = Math.max(q.e - so, 0) / q.e; z += q.D * (1 - v * v); continue; }
@@ -1426,7 +1429,25 @@ function sections(p, x, h, yin, t, zb, M, sl) {
     take(Md, KA);                                          // the apex
     for (let m = 1; m < Mr; m++) take(Md + m, KA + ((NR - 1) * m) / Mr);       // round the rail ...
     take(Md + Mr, KA + NR - 1);                            // ... to the edge
-    for (let m = 1; m < Mf; m++) take(Md + Mr + m, KA + NR - 1 + ((NF - 1) * m) / (Mf - 1));   // then the flat bottom in to the stringer
+    if (p._chanB) {                                        // bottom channels: the flat by arc length plus turning too, so points sit on the groove walls and follow them smoothly
+      const k0 = KA + NR - 1;
+      cum[0] = 0;
+      let pa = Math.atan2(Z[k0 + 1] - Z[k0], Y[k0 + 1] - Y[k0]);
+      for (let q = 0; q < NF - 1; q++) {
+        const dY = Y[k0 + q + 1] - Y[k0 + q], dZ = Z[k0 + q + 1] - Z[k0 + q], a = Math.atan2(dZ, dY);
+        let da = a - pa; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+        cum[q + 1] = cum[q] + Math.hypot(dY, dZ) + 0.6 * (q ? Math.abs(da) : 0);
+        pa = a;
+      }
+      const tot = cum[NF - 1];
+      let q = 0;
+      for (let m = 1; m < Mf; m++) {
+        const tgt = (tot * m) / (Mf - 1);
+        while (q < NF - 2 && cum[q + 1] <= tgt) q++;
+        const span = cum[q + 1] - cum[q], f = span > 0 ? clip((tgt - cum[q]) / span, 0, 1) : 0;
+        take(Md + Mr + m, k0 + q + f);
+      }
+    } else for (let m = 1; m < Mf; m++) take(Md + Mr + m, KA + NR - 1 + ((NF - 1) * m) / (Mf - 1));   // then the flat bottom in to the stringer
     if (Mf > 1) { Yo[base + M - 1] = Y[K - 1]; Zo[base + M - 1] = Z[K - 1]; }
   }
   return [Yo, Zo];
@@ -1457,7 +1478,8 @@ function stationXs(p) {
 }
 
 function buildMesh(p, tScale) {
-  const x = stationXs(p), n = x.length, M = p.section_points;
+  const chan = (p.tools || []).some((t) => t.shape === 'channel');
+  const x = stationXs(p), n = x.length, M = chan ? Math.max(p.section_points, 160) : p.section_points;   // channels: narrow hard walls need more points across
   // base curves, then the anchor-point corrections
   const h0 = halfWidth(p, x), zb0 = rocker(p, x), foil0 = foil(p, x);
   const arms = { outline: [], rocker: [], thickness: [], swallow: [] };
@@ -1473,6 +1495,7 @@ function buildMesh(p, tScale) {
   const yin = Float64Array.from(notch, (v, i) => Math.min(v, h[i] * keep));
   const sl = sliceTables(p);
   p._zbAt = (xq) => interp(clip(xq, x[0], x[n - 1]), x, zb);     // the rocker, for concave tools with a flat center line
+  p._chanB = (p.tools || []).some((t) => t.shape === 'channel' && t.surface !== 'deck');   // bottom channels: resample the flat by turning too
   const [Y, Z] = sections(p, x, h, yin, t, zb, M, sl);
 
   let nv = 0;

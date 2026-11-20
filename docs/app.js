@@ -569,7 +569,7 @@ function renderTools() {
         <label data-for="ridge">ridge<input class="cell n" data-k="ridge" spellcheck="false"></label>
         <label data-for="double">edges<select class="edge">${opt({ hard: 'hard both sides', rail: 'hard on the rail side' })}</select></label>
       </div>
-      ${onDeck && ch ? `<div class="trow blends"><label title="0 = a groove with two walls; 1 = the stringer side blends all the way out to the stringer">blend → stringer<input type="range" class="soft" min="0" max="1" step="0.05"></label></div>` : ''}
+      ${ch ? `<div class="trow blends"><label title="0 = a groove with two walls; 1 = the stringer side blends all the way out to the stringer">blend → stringer<input type="range" class="soft" min="0" max="1" step="0.05"></label></div>` : ''}
       <div class="trow where bottomonly"><span>center</span><select class="center" aria-label="Center line" title="How deep the concave is along the stringer">${opt({ blend: 'blended: deepest spot + blends', flat: 'flat: straight from end to end', custom: 'custom: points on the Profile graph' })}</select></div>
       <div class="trow where blendonly"><span>deepest</span><input class="cell p3" spellcheck="false" aria-label="Deepest at, inches"><span>″</span><select class="f3" aria-label="Measured from">${FROM_LONG}</select></div>
       <div class="trow blends blendonly">${BLEND_ROW}</div>
@@ -1052,7 +1052,18 @@ function applyParams(p, keepSel = null) {
   state.params = structuredClone({ ...state.schema.defaults, ...p });
   const P = state.params, a = P.anchors && typeof P.anchors === 'object' ? P.anchors : {};
   railTuckFromOld(P);                                    // designs from before rail tucks (Rail edge 0..1) get tucks in inches
-  if (P.curve_v !== 2) armsToAuto(P);                    // designs from before arms meant fullness: arm lengths back to automatic
+  if (P.curve_v !== 2) armsToAuto(P);
+  // the old single concave / tail vee sliders are gone: their shape becomes two bottom contours you can edit
+  // (they only shaped the bottom when there were no contours, so with contours they are simply dropped)
+  if (!(Array.isArray(P.bottom) && P.bottom.length) && (P.concave_depth > 0 || P.vee_depth > 0)) {
+    const L = P.length || 72, r = (v) => Math.round(v * 4) / 4;
+    P.bottom = [];
+    if (P.concave_depth > 0) P.bottom.push({ pos: 0, from: 'tail', type: 'concave', to: { pos: r(0.2 * L), from: 'nose' }, deep: { pos: r(0.3 * L), from: 'tail' },
+      blendNose: 0.5, blendTail: +Math.min(1, 3 / (0.3 * L)).toFixed(2), depth: +P.concave_depth.toFixed(4), depth2: 0.0625 });
+    if (P.vee_depth > 0) P.bottom.push({ pos: 0, from: 'tail', type: 'vee', to: { pos: r(0.35 * L), from: 'tail' }, deep: { pos: r(0.05 * L), from: 'tail' },
+      blendNose: 1, blendTail: 0, depth: +P.vee_depth.toFixed(4), depth2: 0.0625 });
+  }
+  P.concave_depth = 0; P.vee_depth = 0;                    // designs from before arms meant fullness: arm lengths back to automatic
   const num = (v) => (Number.isFinite(v) ? v : null);
   // an anchor is [position, offset] plus, once its handle has been moved, [slope, left arm, right arm]
   const pts = (l) => (Array.isArray(l) ? l : []).filter((q) => Array.isArray(q) && Number.isFinite(+q[0]) && Number.isFinite(+q[1]))
@@ -2689,6 +2700,7 @@ function applyTrace() {
   state.photoOn = true;
   syncPhotoButton();
   closeTrace();
+  TR.pts = null; TR.arms = { tail: null, nose: null };                          // the trace's own points are done with: the outline has its few anchor points now
   const nice = (t) => t.replace(/_/g, ' ');
   toast(`Outline traced: ${nice(fit.nose)} nose, ${nice(fit.tail)} tail, within ${fracIn(Math.max(fit.error, 1 / 32), 32)}″ of the line. Fine-tune it with Edit points.`);
 }

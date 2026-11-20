@@ -705,24 +705,7 @@ export const GROUPS = [
   },
   {
     "name": "Bottom",
-    "fields": [
-      {
-        "key": "concave_depth",
-        "label": "Single concave",
-        "min": 0,
-        "max": 0.4,
-        "step": 0.01,
-        "unit": "in"
-      },
-      {
-        "key": "vee_depth",
-        "label": "Tail vee",
-        "min": 0,
-        "max": 0.4,
-        "step": 0.01,
-        "unit": "in"
-      }
-    ]
+    "fields": []
   }
 ];
 
