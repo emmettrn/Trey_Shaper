@@ -106,7 +106,7 @@ export function paramsFromDict(d = {}) {
   const base = { ...DEFAULTS };
   for (const k of Object.keys(DEFAULTS)) if (k in d) base[k] = d[k];
   base.tools = Array.isArray(d.tools) ? d.tools : [];      // concave tools (newer than the generated defaults)
-  for (const k of ['rail_tuck_nose', 'rail_tuck_tail', 'hard_edge', 'rail_reach_nose', 'rail_reach_tail', 'swallow_round', 'swallow_rail', 'deck_contours', 'curve_v', 'deck_flat', 'diamond_depth', 'deck_flat_corner', 'nose_beak', 'nose_beak_pos']) if (k in d) base[k] = d[k];   // rail tucks (newer too)
+  for (const k of ['rail_tuck_nose', 'rail_tuck_tail', 'hard_edge', 'rail_reach_nose', 'rail_reach_tail', 'swallow_round', 'swallow_rail', 'deck_contours', 'curve_v', 'deck_flat', 'diamond_depth', 'deck_flat_corner', 'deck_flat_in', 'nose_beak', 'nose_beak_pos']) if (k in d) base[k] = d[k];   // rail tucks (newer too)
   const L = base.length;
   const xl = L / 2 + base.rocker_low_point, xt = L / 2 + base.thickness_point_offset;
   for (const [side, nose] of [['nose', true], ['tail', false]]) {
@@ -189,8 +189,8 @@ export function validated(src) {
   clamp('swallow_round', 0, 6);
   if (!Number.isFinite(p.diamond_depth)) p.diamond_depth = 2.5;
   clamp('diamond_depth', 0.5, Math.min(8, 0.3 * p.length));
-  if (!Number.isFinite(p.deck_flat_corner)) p.deck_flat_corner = 0.8;
-  clamp('deck_flat_corner', 0.3, 0.95);
+  deckFlatFromOld(p);
+  clamp('deck_flat_in', 0.25, 8);
   p.nose_beak = p.nose_beak === true;
   if (!Number.isFinite(p.nose_beak_pos)) p.nose_beak_pos = 2;
   clamp('nose_beak_pos', 0.25, 5);
@@ -488,7 +488,8 @@ function cleanBottom(p) {
       if (q > x1) return x1 >= L - 0.5 ? 1 : depthAlong(x1, x0, x1, xd, bn, bt) * smoother(1 - (q - x1) / R);
       return x0 <= 0.5 ? 1 : depthAlong(x0, x0, x1, xd, bn, bt) * smoother(1 - (x0 - q) / R);
     };
-    S.at = (q) => { const f = S.f(q); return [c * f, d * f, v * f]; };
+    S.vs = 1;                                            // a vee deeper than the rail can take is scaled down as a whole (see buildMesh)
+    S.at = (q) => { const f = S.f(q); return [c * f, d * f, v * S.vs * f]; };
     stretches.push(S);
   }
   // two stretches that meet end to end (within 3") cross-fade into each other instead of each easing
@@ -757,6 +758,10 @@ function sliceBlend(sl, x, d, rowD, rowB) {
  * adjustment d (or none). The rail apex is a height in inches above the flat bottom line
  * when rail_apex_in is set (older designs give it as a fraction of thickness instead).
  */
+/** v, but never past cap: eases into it (no corner along the board where a vee meets its limit). */
+/** The smaller of a and b without a corner (rounded over about 1/64"): a tool's lift where it runs into its limit. */
+const sMin = (a, b) => { const k = Math.min(0.015, 0.3 * b); if (!(k > 1e-6)) return Math.min(a, b); const z = (b - a) / k; return b - (z > 30 ? b - a : k * Math.log1p(Math.exp(z))); };
+const softCap = (v, cap) => (v > 0 && cap > 0 ? (v ** -8 + cap ** -8) ** -0.125 : Math.max(Math.min(v, cap), 0));
 function sectionShape(p, x, d, t) {
   const g = (k) => (d ? d[k] : 0);
   const [c0, d0, v0] = bottomAt(p, x);
@@ -770,7 +775,7 @@ function sectionShape(p, x, d, t) {
     tuck: clip(railTuckAt(p, x).w + g('rail_tuck_in'), 0, 4),
     hard: clip(railTuckAt(p, x).hard + g('edge'), 0, 1),
     dome: clip(p.deck_dome + g('deck_dome'), 0, 1),
-    con, dbl, vee: Math.min(clip(v0 + g('vee'), 0, 0.75), 0.6 * t * (p.rail_apex_in !== null ? apexRatio(p.rail_apex_in + g('rail_apex_in'), t) : clip(p.rail_apex + g('rail_apex'), 0.15, 0.6))),   // never lifts the rail past its apex
+    con, dbl, vee: softCap(clip(v0 + g('vee'), 0, 0.75), 0.6 * t * (p.rail_apex_in !== null ? apexRatio(p.rail_apex_in + g('rail_apex_in'), t) : clip(p.rail_apex + g('rail_apex'), 0.15, 0.6))),   // never lifts the rail past its apex
     // the rail apex arms (slices only): angle in from upright (degrees) and length (fraction of the height that side spans)
     pd: clip(g('apex_deck_angle'), 0, PINCH_MAX), ld: clip(g('apex_deck_arm'), 0, ARM_MAX),
     pb: clip(g('apex_bottom_angle'), 0, PINCH_MAX), lb: clip(g('apex_bottom_arm'), 0, ARM_MAX),
@@ -919,6 +924,14 @@ function railBlend(p, x) {
 }
 const railTuckAt = (p, x) => { const f = railBlend(p, x); return { w: p.rail_tuck_tail + (p.rail_tuck_nose - p.rail_tuck_tail) * f, hard: p.hard_edge ? 1 - f : 0 }; };
 /** Designs from before rail tucks: Rail edge 0 (soft) .. 1 (hard) becomes a tuck in inches, and a hard tail ticks Hard edge. */
+/** Designs from before the flat deck corner was in inches (a fraction of the half width out from the stringer) get it in inches in from the rail. */
+export function deckFlatFromOld(p) {
+  if (!Number.isFinite(p.deck_flat_in)) {
+    const fc = Number.isFinite(p.deck_flat_corner) ? clip(p.deck_flat_corner, 0.3, 0.95) : null;
+    p.deck_flat_in = fc === null ? 2 : Math.max(0.25, Math.round((1 - fc) * (p.width || 20) / 2 * 16) / 16);
+  }
+  delete p.deck_flat_corner;
+}
 export function railTuckFromOld(p) {
   const conv = (H) => Math.round((0.25 + 2.75 * (1 - clip(H, 0, 1)) ** 1.5) * 16) / 16;
   if (!Number.isFinite(p.rail_tuck_nose)) p.rail_tuck_nose = conv(p.rail_hardness_nose ?? 0.25);
@@ -1192,7 +1205,7 @@ function toolsAt(p, x, h, t) {
     if (tool.surface === 'deck' || x < tool.x0 - 1e-9 || x > tool.x1 + 1e-9) continue;
     tool.zbAt = p._zbAt;
     const q = toolShapeAt(tool, x), e = q.e;                 // an edge past the outline runs the concave off the rail (it lifts the rail there)
-    const D = Math.min(q.D, 0.4 * t);
+    const D = softCap(q.D, 0.4 * t);
     if (tool.shape === 'channel') { if (D > 1e-6 && e > 0.1) list.push({ D, e, gw: tool.gw, soft: tool.soft, chan: true }); continue; }
     if (!(D > 1e-6) || !(e > q.r + 0.2)) continue;
     list.push({ D, e, r: q.r, double: tool.kind === 'double', rail: tool.edge === 'rail' });
@@ -1302,7 +1315,7 @@ const BZ = 48, BZY = new Float64Array(BZ + 1), BZU = new Float64Array(BZ + 1);
 function edgeArms(sh, zApex, tb, yi, hi, hs, yE, Y, Z, contour, tool) {
   const n0 = KA, nE = KA + NR - 1, Wt = hi - yE;
   const toY = (yr) => yi + (yr * (hi - yi)) / hs;
-  const base = (yr, u) => zApex - tb + u + contour(yr) * (1 - u / Math.max(tb, 1e-9)) + Math.min(tool(yr), 0.95 * Math.max(tb - u, 0));
+  const base = (yr, u) => zApex - tb + u + contour(yr) * (1 - u / Math.max(tb, 1e-9)) + sMin(tool(yr), 0.95 * Math.max(tb - u, 0));
   const a = (sh.ea * Math.PI) / 180, dAE = Math.hypot(Wt, tb);
   // the rail arm stays inside the rail (below 85% of the apex height, in from the apex), and the apex's own
   // control sits above the arm's tip, so the tuck never hooks back on itself
@@ -1402,26 +1415,46 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   const tipK = sr > 0 && xi < sr ? 0.12 + 0.88 * Math.sqrt(Math.max(0, 1 - (1 - xi / sr) ** 2)) : 1;
   const zApex = zbi + ar * ti * tipK, td = (1 - ar) * ti * tipK, tb = ar * ti * tipK;
   const hs = Math.max(hi, 1e-9);
-  // inside a swallow's cut: each half's deck rolls down to its bottom on the inside of the cut (swallow_rail
-  // 0 = a square wall, 1 = the deck comes all the way down to the bottom edge). The bottom is not touched.
-  // It grows in over the first inch or so down from the crotch of the V, so the crotch stays smooth.
-  const sd = TAIL_TYPES[p.tail_type].notch ? p.swallow_depth ?? 0 : 0, Lb = Math.max(3, 0.8 * sd);
-  // the roll carries on past the crotch as a soft valley down the stringer, easing out over Lb, so the two halves
-  // blend into the stringer instead of meeting the full deck at the crotch
-  const qIn = sd > 0 && (p.swallow_rail ?? 0) > 0 ? (p.swallow_rail ?? 0) * (xi <= sd ? 1 : smootherAt(1 - (xi - sd) / Lb)) : 0;
-  const Rw = Math.min(0.55 * (hi - yi), 2 * ti);
-  const inRoll = (y, R) => { const sx = R > 1e-6 ? clip((y - yi) / R, 0, 1) : 1; return Math.sqrt(Math.max(0, 1 - (1 - sx) ** 2)); };
-  const tl = p.tools && p.tools.length ? toolsAt(p, xi, hi, ti) : null;     // hard-edged concaves at this spot
+  // inside a swallow's cut: a rounded rail bevel down the inside of each half (swallow_rail 0 = a square wall,
+  // 1 = the deck comes all the way down to the bottom edge). It runs along the cut's outline at the same width
+  // (measured square to the cut), and past the crotch the two bevels carry on along the lines of the cut until they
+  // meet on the stringer and close in a point: the inside rails converge cleanly at the stringer. The bottom is not touched.
+  const sd = TAIL_TYPES[p.tail_type].notch ? p.swallow_depth ?? 0 : 0, qIn = sd > 0 ? p.swallow_rail ?? 0 : 0;
+  let bevel = null;
+  if (qIn > 0 && p._yinAt) {
+    const Rw = Math.min(0.55 * (hi - Math.max(yi, 0)), 1.25 * ti);
+    // the cut's direction: its own slope here inside the cut, the slope it arrives at the crotch with past it
+    const xs = Math.min(xi, sd), sl = (p._yinAt(xs) - p._yinAt(xs - 0.5)) / 0.5, cs = 1 / Math.hypot(1, sl);
+    const yl = xi <= sd ? yi : sl * (xi - sd);              // the cut's line (past the crotch: carried on across the stringer)
+    if (Rw > 1e-3 && (xi <= sd || -yl * cs < Rw)) bevel = (y) => { const u = clip(((y - yl) * cs) / Rw, 0, 1); return qIn * (1 - Math.sqrt(Math.max(0, 1 - (1 - u) ** 2))); };
+  }
+  const tl = p.tools && p.tools.length ? toolsAt(p, xi, hi, ti * tipK) : null;     // hard-edged concaves at this spot (shallower where a swallow's tips thin out)
   // contours: a single concave is one dish across the bottom (deepest at the stringer, the same curve all
   // the way out, so it reads as one concave); a vee keeps the stringer on the rocker and lifts the rails.
-  const contour = (yr) => { const eta = clip(yr / hs, 0, 1); return con * (1 - eta * eta) + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 + vee * eta; };
+  // Always across the whole board from the stringer: a swallow's halves are cut out of the same bottom
+  const contour = (yr) => { const eta = clip((yi + (yr * (hi - yi)) / hs) / hs, 0, 1); return con * (1 - eta * eta) + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 + vee * eta; };
   // the deck: from the stringer round to the rail apex (a superellipse, as before), then the deck contours
   const dc = p.deck_contours && p.deck_contours.length ? deckContoursAt(p, xi) : null;
   const dtl = p.tools && p.tools.length ? deckToolsAt(p, xi) : null;
-  // flat deck (deck_flat): the deck runs flat across to a corner (deck_flat_corner, a fraction of the half width out
-  // from the stringer), then bevels down and rounds into the rail. A corner further in makes a longer bevel and a
-  // lower, softer rail (foam comes out of the corners); deck_flat mixes this with the usual curve. (a classic fish deck)
-  const fl = p.deck_flat ?? 0, fc = p.deck_flat_corner ?? 0.8, rF = 1.25 + 0.5 * (sh.ed - 1.7) / 1.4, kF = 0.025 + 0.04 * (1 - fl);
+  // flat deck (deck_flat): the deck runs flat across to a corner deck_flat_in in from the rail, then bevels down and
+  // rounds into the rail. The corner follows the outline at that distance, out through the tail (and each half of a
+  // swallow); near the nose, where the board gets narrow, it closes in with the outline to the tip, or with a beak
+  // nose, in to the stringer where the beak starts (the flat fades into the beak's usual deck there). A corner further
+  // in makes a longer bevel and a lower, softer rail (foam comes out of the corners); deck_flat mixes this with the
+  // usual curve. (a classic fish deck)
+  let fl = p.deck_flat ?? 0, fc = 0;
+  const rF = 1.25 + 0.5 * (sh.ed - 1.7) / 1.4;
+  if (fl > 0) {
+    const wq = Math.max(hi - yi, 1e-6), c = p.deck_flat_in ?? 2, k = 0.6;
+    const cE = (c ** -4 + (k * wq) ** -4) ** -0.25;       // c inches in from the rail; no more than 60% of the way in where it is narrow
+    fc = clip(1 - cE / wq, 0, 0.98);
+    if (p.nose_beak) {
+      const xb = p.length - p.nose_beak_pos;
+      fc *= smoother((xb - xi) / Math.max(8, 2 * p.nose_beak_pos));
+      fl *= smoother((xb - xi) / 3);
+    }
+  }
+  const kF = 0.025 + 0.04 * (1 - fl);
   const flatDeck = (eta) => { const u = (eta - fc) / (1 - fc), pr = Math.max(1 - u, 0) ** (1 / rF); return -kF * Math.log(Math.exp(-pr / kF) + Math.exp(-1 / kF)); };
   for (let k = 0; k < KA; k++) {
     const yraw = hi * TH_COS[k] ** (2 / ed), eta = clip(yraw / hs, 0, 1);
@@ -1429,7 +1462,7 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
     const S0 = TH_SIN[k] ** (2 / ed);
     let H = td * (fl > 0 ? (1 - fl) * S0 + fl * Math.min(flatDeck(eta), 1) : S0) * (1 - 0.7 * dome * eta * eta);
     if (dc || dtl) H = deckShape(dc, dtl, H, td, Math.abs(Y[k]), hi);
-    if (qIn) { const zf = zApex - tb + contour(yraw); Z[k] = zf + (zApex + H - zf) * (1 - qIn * (1 - inRoll(Y[k], Rw))); }
+    if (bevel) { const zf = zApex - tb + contour(yraw); Z[k] = zApex + H - (zApex + H - zf) * bevel(Y[k]); }
     else Z[k] = zApex + H;
   }
   // the bottom: from the apex down and in around the rail to the edge (the tuck, w in from the apex),
@@ -1437,7 +1470,14 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   // ellipse meeting the bottom level; hard: leaves the apex straight down and meets the bottom at a
   // corner. Always the same samples for the same parts, so nothing shifts from section to section.
   // near the tips the board gets narrower than the tuck: ease the tuck down smoothly (no sudden cap, so no lump at the ends)
-  const w = sh.tuck > 1e-6 ? (sh.tuck ** -4 + (0.85 * hi) ** -4) ** -0.25 : 0, yE = hi - w, hf = sh.hard;
+  // a pointed or semi-pointed nose: the tuck blends down into the point over the last few inches (a 1" tuck is only
+  // about 1/8" a quarter inch from the tip), so the rail runs cleanly out into the point instead of a tuck crowding it
+  let tk = sh.tuck, cw = 0.85;
+  if (NOSE_TYPES[p.nose_type] < 1.9) {
+    const Lt = clip(0.08 * p.length, 4, 6), s = smoother(clip((p.length - xi) / Lt, 0, 1));
+    tk *= 0.15 + 0.85 * s; cw *= 0.4 + 0.6 * s;         // and it takes less and less of the width, so the edge runs out into the point
+  }
+  const w = tk > 1e-6 ? (tk ** -4 + (cw * hi) ** -4) ** -0.25 : 0, yE = hi - w, hf = sh.hard;
   const tool = (yr) => (tl ? toolLift(tl, yi + (yr * (hi - yi)) / hs) : 0);
   // a wide soft tuck under a low apex (a nose tuck) would make the quarter ellipse turn up in a tiny radius right
   // at the apex (a pinched rail): there it gets boxier (a superellipse), so it turns up sooner and the rail stays round
@@ -1447,12 +1487,12 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
     const yr = hi - w * ((1 - hf) * (1 - Math.cos(ph) ** (2 / nT)) + hf * sp * sp);
     const dz = tb * ((1 - hf) * Math.sin(ph) ** (2 / nT) + hf * sp);
     Y[KA + j] = yi + (yr * (hi - yi)) / hs;
-    Z[KA + j] = zApex - dz + contour(yr) * sp + Math.min(tool(yr), 0.95 * dz);   // a concave run off the rail lifts the rail too (never past the apex)
+    Z[KA + j] = zApex - dz + contour(yr) * sp + sMin(tool(yr), 0.95 * dz);   // a concave run off the rail lifts the rail too (never past the apex)
   }
   for (let j = 1; j <= NF; j++) {
     const yr = yE * (1 - j / NF);
     Y[KA + NR - 1 + j] = yi + (yr * (hi - yi)) / hs;
-    Z[KA + NR - 1 + j] = zApex - tb + contour(yr) + Math.min(tool(yr), 0.95 * tb);
+    Z[KA + NR - 1 + j] = zApex - tb + contour(yr) + sMin(tool(yr), 0.95 * tb);
   }
   if (sh.ew > 1e-4 && w > 1e-3) edgeArms(sh, zApex, tb, yi, hi, hs, yE, Y, Z, contour, tool);
   pinchRail(sh, zApex, td, tb, yi, hi, Y, Z);
@@ -1486,6 +1526,32 @@ const smootherAt = (t) => { t = clip(t, 0, 1); return t * t * t * (t * (6 * t - 
 /** How the M points of a section are shared: Md round the deck to the apex, Mr round the rail to the edge, the rest across the flat bottom. */
 const sampleSplit = (M) => ({ Md: Math.round(0.45 * M), Mr: Math.round(0.15 * M) });
 
+/** Where the bottom channels' walls are at x (inches out from the stringer) and how many extra points each gets:
+ *  [y, weight, y, weight, ...]. A channel's walls are counted from 3" before it starts to 3" past its end, easing in
+ *  and out over those 3", so the points are already in place before the groove deepens. */
+const CH_SIG = 0.04, SQ2PI = Math.sqrt(2 * Math.PI), CG = 800, CC = new Float64Array(CG + 1);
+/** The standard normal's cumulative distribution (Abramowitz & Stegun 7.1.26, to about 1e-7). */
+function normCdf(z) {
+  const x = Math.abs(z) / Math.SQRT2, t = 1 / (1 + 0.3275911 * x);
+  const e = 1 - (((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t) * Math.exp(-x * x);
+  return z >= 0 ? 0.5 * (1 + e) : 0.5 * (1 - e);
+}
+function chanWalls(p, x) {
+  const out = [];
+  for (const tool of p.tools || []) {
+    if (tool.shape !== 'channel' || tool.surface === 'deck') continue;
+    const wx = smootherAt((x - tool.x0 + 3) / 3) * smootherAt((tool.x1 + 3 - x) / 3);
+    if (!(wx > 0)) continue;
+    // a hard wall turns over two rounded corners, TOOL_ROUND either side of it: points gather on each corner
+    const e = tool.outer.at(clip(tool.x1 - x, 0, tool.len)), hw = tool.gw / 2, A = wx * 0.45;
+    out.push(e + hw - TOOL_ROUND, A, e + hw + TOOL_ROUND, A);
+    const reach = hw + tool.soft * Math.max(e - hw, 0);
+    if (reach - hw < 2 * TOOL_ROUND) out.push(e - hw - TOOL_ROUND, A, e - hw + TOOL_ROUND, A);
+    else out.push(e - hw, 0.4 * A);                   // the floor easing out toward the stringer: a softer turn
+  }
+  return out;
+}
+
 function sections(p, x, h, yin, t, zb, M, sl) {
   const n = x.length;
   const Yo = new Float64Array(n * M), Zo = new Float64Array(n * M);
@@ -1518,25 +1584,48 @@ function sections(p, x, h, yin, t, zb, M, sl) {
     }
     const take = (m, kf) => { const k0 = Math.min(Math.floor(kf), K - 2), f = kf - k0; Yo[base + m] = Y[k0] + f * (Y[k0 + 1] - Y[k0]); Zo[base + m] = Z[k0] + f * (Z[k0 + 1] - Z[k0]); };
     take(Md, KA);                                          // the apex
-    for (let m = 1; m < Mr; m++) take(Md + m, KA + ((NR - 1) * m) / Mr);       // round the rail ...
-    take(Md + Mr, KA + NR - 1);                            // ... to the edge
-    if (p._chanB) {                                        // bottom channels: the flat by arc length plus turning too, so points sit on the groove walls and follow them smoothly
-      const k0 = KA + NR - 1;
+    const walls = p._chanB ? chanWalls(p, x[i]) : null;
+    if (walls) {
+      // bottom channels: round the rail by arc length, denser where a channel's walls cross it (one running off the rail), so they don't alias
       cum[0] = 0;
-      let pa = Math.atan2(Z[k0 + 1] - Z[k0], Y[k0 + 1] - Y[k0]);
-      for (let q = 0; q < NF - 1; q++) {
-        const dY = Y[k0 + q + 1] - Y[k0 + q], dZ = Z[k0 + q + 1] - Z[k0 + q], a = Math.atan2(dZ, dY);
-        let da = a - pa; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
-        cum[q + 1] = cum[q] + Math.hypot(dY, dZ) + 0.6 * (q ? Math.abs(da) : 0);
-        pa = a;
+      for (let q = 0; q < NR - 1; q++) {
+        const k = KA + q, ym = 0.5 * (Y[k] + Y[k + 1]);
+        let rho = 1;
+        for (let w = 0; w < walls.length; w += 2) { const u = (ym - walls[w]) / CH_SIG; if (u * u < 25) rho += (0.5 * walls[w + 1] * Math.exp(-0.5 * u * u)) / (CH_SIG * SQ2PI); }
+        cum[q + 1] = cum[q] + rho * Math.hypot(Y[k + 1] - Y[k], Z[k + 1] - Z[k]) + 1e-9;
       }
-      const tot = cum[NF - 1];
+      const tot = cum[NR - 1];
       let q = 0;
-      for (let m = 1; m < Mf; m++) {
-        const tgt = (tot * m) / (Mf - 1);
-        while (q < NF - 2 && cum[q + 1] <= tgt) q++;
+      for (let m = 1; m < Mr; m++) {
+        const tgt = (tot * m) / Mr;
+        while (q < NR - 2 && cum[q + 1] <= tgt) q++;
         const span = cum[q + 1] - cum[q], f = span > 0 ? clip((tgt - cum[q]) / span, 0, 1) : 0;
-        take(Md + Mr + m, k0 + q + f);
+        take(Md + m, KA + q + f);
+      }
+    } else for (let m = 1; m < Mr; m++) take(Md + m, KA + ((NR - 1) * m) / Mr);       // round the rail ...
+    take(Md + Mr, KA + NR - 1);                            // ... to the edge
+    if (p._chanB) {                                        // bottom channels: more points on the groove walls
+      // the flat by a density that is higher on each channel wall's corners, wherever the channel's line runs (not how
+      // deep it is here), measured out from the stringer the same way in every section (a swallow's cut just takes the
+      // points it cuts away, gathered against the cut), so each point keeps riding the same corner from section to
+      // section: no wrinkles or saw teeth where a groove fades in or out, crosses a swallow's cut or runs off the rail
+      const k0 = KA + NR - 1, yE = Y[k0], yI = Y[K - 1];
+      for (let g = 0; g <= CG; g++) {
+        const y = (yE * g) / CG;
+        let c = y;
+        for (let w = 0; w < walls.length; w += 2) { const z = (y - walls[w]) / CH_SIG; c += walls[w + 1] * (z > 6 ? 1 : z < -6 ? 0 : normCdf(z)); }
+        CC[g] = c;
+      }
+      const T = CC[CG] - CC[0];
+      let g = CG, q = 0;
+      for (let m = 1; m < Mf; m++) {
+        const c = CC[CG] - (T * m) / (Mf - 1);
+        while (g > 1 && CC[g - 1] > c) g--;
+        const yA = (yE * (g - 1 + clip((c - CC[g - 1]) / Math.max(CC[g] - CC[g - 1], 1e-12), 0, 1))) / CG;
+        const u = (yA - yI) / 0.04, y = Math.min(yI + (u > 30 ? yA - yI : 0.04 * Math.log1p(Math.exp(u))), yE);
+        while (q < NF - 2 && Y[k0 + q + 1] >= y) q++;
+        const span = Y[k0 + q] - Y[k0 + q + 1];
+        take(Md + Mr + m, k0 + q + (span > 1e-12 ? clip((Y[k0 + q] - y) / span, 0, 1) : 0));
       }
     } else for (let m = 1; m < Mf; m++) take(Md + Mr + m, KA + NR - 1 + ((NF - 1) * m) / (Mf - 1));   // then the flat bottom in to the stringer
     if (Mf > 1) { Yo[base + M - 1] = Y[K - 1]; Zo[base + M - 1] = Z[K - 1]; }
@@ -1559,6 +1648,7 @@ function stationXs(p) {
   if (tail.notch) for (let j = 1; j <= 8; j++) xs.push((p.swallow_depth * j) / 8);     // the cut can be curved
   if (tail.corner > 0) for (const f of [0.04, 0.15, 0.35, 0.6, 1]) xs.push(tail.corner * f);   // round the tail corners properly
   if (tail.point) for (const f of [0.25, 0.5, 0.75, 0.97, 1, 1.03]) xs.push(p.diamond_depth * f);   // the diamond's corners stay crisp
+  if (NOSE_TYPES[p.nose_type] < 1.9) for (const d of [0.02, 0.05, 0.1, 0.16, 0.24, 0.34, 0.46, 0.62, 0.8, 1.05, 1.35]) xs.push(L - d);   // a pointed nose finishes cleanly into its point
   for (const s of p.slices) xs.push(s.x);
   for (const r of p.marks) xs.push(r.x);
   for (const v of deckStationXs(p)) xs.push(v);
@@ -1570,7 +1660,7 @@ function stationXs(p) {
 
 function buildMesh(p, tScale) {
   const chan = (p.tools || []).some((t) => t.shape === 'channel');
-  const x = stationXs(p), n = x.length, M = chan ? Math.max(p.section_points, 160) : p.section_points;   // channels: narrow hard walls need more points across
+  const x = stationXs(p), n = x.length, M = chan ? Math.max(p.section_points, 200) : p.section_points;   // channels: narrow hard walls need more points across
   // base curves, then the anchor-point corrections
   const h0 = halfWidth(p, x), zb0 = rocker(p, x), foil0 = foil(p, x);
   const arms = { outline: [], rocker: [], thickness: [], swallow: [] };
@@ -1588,7 +1678,24 @@ function buildMesh(p, tScale) {
   const keep = TAIL_TYPES[p.tail_type].notch ? 0.95 + 0.046 * (1 - (p.swallow_tip ?? 1)) : 0.95;   // pointed swallow tips: the cut runs right out
   const yin = Float64Array.from(notch, (v, i) => Math.min(v, h[i] * keep));
   const sl = sliceTables(p);
-  p._zbAt = (xq) => interp(clip(xq, x[0], x[n - 1]), x, zb);     // the rocker, for concave tools with a flat center line
+  // a vee stretch deeper than the rail can take somewhere along it (60% of the rail apex height there, with any slice's
+  // apex) is scaled down as a whole, so it keeps its shape along the board (deepest where it says, easing out as its
+  // blends say) instead of following that limit, which rises and falls with the thickness and the apex and would put
+  // humps and dips in the rail line. The last inch and a half at either end of the board is left to the limit itself.
+  const vS = (p.bottom.stretches || []).filter((S) => S.v > 0);
+  if (vS.length) {
+    const dq = {}, rD = new Float64Array(GRID), rB = new Float64Array(GRID);
+    for (const S of vS) S.vs = 1;
+    for (let i = 0; i < n; i++) {
+      if (x[i] < 1.5 || x[i] > p.length - 1.5) continue;
+      if (sl) sliceBlend(sl, x[i], dq, rD, rB);
+      const ti = t[i], ga = sl ? dq.rail_apex_in ?? 0 : 0, gr = sl ? dq.rail_apex ?? 0 : 0;
+      const cap = 0.6 * ti * (p.rail_apex_in !== null ? apexRatio(p.rail_apex_in + ga, ti) : clip(p.rail_apex + gr, 0.15, 0.6));
+      for (const S of vS) { const f = S.f(x[i]); if (f > 0.02) S.vs = Math.min(S.vs, cap / (S.v * f)); }
+    }
+  }
+  p._zbAt = (xq) => interp(clip(xq, x[0], x[n - 1]), x, zb);
+  p._yinAt = (xq) => interp(clip(xq, x[0], x[n - 1]), x, yin);   // the swallow's cut, for its inside rail     // the rocker, for concave tools with a flat center line
   p._chanB = (p.tools || []).some((t) => t.shape === 'channel' && t.surface !== 'deck');   // bottom channels: resample the flat by turning too
   const [Y, Z] = sections(p, x, h, yin, t, zb, M, sl);
 

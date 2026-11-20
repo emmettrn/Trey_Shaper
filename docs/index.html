@@ -14,7 +14,7 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 40 16%22%3E%3Cpath d=%22M2 8C8 1 30 1 38 8 30 15 8 15 2 8Z%22 fill=%22%233cc8b4%22/%3E%3C/svg%3E" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=20" />
+  <link rel="stylesheet" href="style.css?v=21" />
   <script type="importmap">
     {
       "imports": {
@@ -73,6 +73,7 @@
           </div>
           <div class="seg">
             <button id="t-light" title="Shaping-bay lighting on a matte blank, to show the foil and contours">Bay lights</button><input type="range" id="bay-gain" min="0" max="1" step="0.05" title="How hard the bay lights pick out contours: left is true to scale, right exaggerates every tilt" aria-label="Bay light strength"><button id="t-fixed" title="On: the light stays put and the board moves through it as you turn it, as in Shape3D. Off: lights along both rails that turn with the board.">Fixed light</button>
+            <button id="t-bg" title="Background: dark, or light blue like a shaping bay's walls">Blue walls</button>
             <button id="t-wire" title="Show the board as a frame: a cross section every 6 inches on its stringer and rail lines">Skeleton</button>
             <button id="t-stringer" class="on">Stringer</button>
             <button id="t-max" data-act="max" title="Expand">⤢</button>
@@ -142,6 +143,6 @@
     <button id="install-x" aria-label="Dismiss">Got it</button>
   </div>
 
-  <script type="module" src="app.js?v=20"></script>
+  <script type="module" src="app.js?v=21"></script>
 </body>
 </html>
