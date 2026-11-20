@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=22';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;

@@ -5,7 +5,7 @@
  *     straight away) and fall back to the saved copy when there isn't
  * Bump CACHE when the list of files changes.
  */
-const CACHE = 'surfboard-designer-v21';
+const CACHE = 'surfboard-designer-v22';
 const FILES = [
   './', 'index.html', 'style.css', 'app.js', 'geometry.js', 'trace.js', 's3dx.js', 'data.js', 'manifest.webmanifest',
   'icon-180.png', 'icon-192.png', 'icon-512.png',
@@ -16,7 +16,8 @@ const FILES = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  // fetch fresh copies (not the browser's 10-minute ones), so the offline copy is never a mix of old and new files
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
