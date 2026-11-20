@@ -69,6 +69,23 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## Round 9
+
+- **Diamond tail** (Outline > Tail): the outline runs to the corners as usual (the tail block width is
+  across them, and the 12" tail width stays exact), then straight in to a point. **Diamond depth** sets how
+  far the point sticks out past the corners; anchor points can curve the diamond's sides.
+- **Bottom channels**: + Channel in the concave tools. Each channel is a groove each side of the stringer
+  (up to 4 a side), its line shaped on the Plan graph with dots and arms like a venturi edge (angle it,
+  curve it). Run its line past the outline and it steps the rail's hard edge, like a venturi off the rail.
+  Width and depth on its card, with deepest spot and blends along the board.
+- **Deck tools** are now **step decks** and **channels**. A step deck is a tear drop pocket with a hard
+  edge and a dished floor, like the tear drop concave, at the nose or the tail (round end either way).
+  Deck channels are channel tools too (up to 2 a side), shaped on the Plan graph, with "blend → stringer".
+  The old step deck (raised strip) and step tail are gone; deck channels saved as a deck contour become
+  channel tools when the design loads.
+- **Sections**: the mini outline map is to scale and only shows in the expanded Sections graph. Cross
+  sections are no longer drawn on the Plan graph.
+
 ## Round 8
 
 - **Anchor points, all the same way.** On the Plan, Profile and thickness graphs every point (measured or
