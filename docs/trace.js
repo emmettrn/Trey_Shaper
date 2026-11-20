@@ -255,17 +255,25 @@ export function fitOutline(pts, L, current, build, types, notch = null, curve = 
     if (!closes) base.tail_block_width = block;
   }
   base.tail_type = tail;
-  // anchor points: the trace's offset from the closed-form curve, at the traced points away from
-  // the measurements (they are held exactly already)
-  const plain = build({ ...base, marks: [] }), pr = plain._profiles;
-  const hAt = (x) => { let i = 0; while (i < pr.x.length - 2 && pr.x[i + 1] < x) i++; const t = (x - pr.x[i]) / (pr.x[i + 1] - pr.x[i]); return pr.h[i] + t * (pr.h[i + 1] - pr.h[i]); };
+  // anchor points: as few as possible. Start with none, then add one where the design strays most from
+  // the traced line (away from the measurements, which are held exactly already), until it is within
+  // 1/16" everywhere or 10 points have been placed. Each point holds the trace's offset from the
+  // closed-form curve; the curve between points is smooth, so a few go a long way.
+  const plain = build({ ...base, marks: [], anchors: { ...base.anchors, outline: [] } }), pr = plain._profiles;
+  const hAt = (q, x) => { let i = 0; while (i < q.x.length - 2 && q.x[i + 1] < x) i++; const t = (x - q.x[i]) / (q.x[i + 1] - q.x[i]); return q.h[i] + t * (q.h[i + 1] - q.h[i]); };
   const fixed = [0, L, half + base.wide_point_offset, 12, L - 12];
-  const anchors = [];
-  for (const [x] of pts) {
-    if (fixed.some((q) => Math.abs(q - x) < 1.25)) continue;
-    if (anchors.length && x - anchors[anchors.length - 1][0] < 1.25) continue;
-    const off = f(x) - hAt(x);
-    if (Math.abs(off) > 1 / 64) anchors.push([+x.toFixed(3), +off.toFixed(4)]);
+  const anchors = [], TOL = 1 / 16;
+  for (let round = 0; round < 10; round++) {
+    const q = build({ ...base, marks: [], anchors: { ...base.anchors, outline: anchors } })._profiles;
+    let worst = 0, wx = null;
+    for (let x = 1.5; x <= L - 1.5; x += 0.25) {
+      if (fixed.some((v) => Math.abs(v - x) < 1.25) || anchors.some((a) => Math.abs(a[0] - x) < 2)) continue;
+      const d = Math.abs(f(x) - hAt(q, x));
+      if (d > worst) { worst = d; wx = x; }
+    }
+    if (wx === null || worst < TOL) break;
+    anchors.push([+wx.toFixed(3), +(f(wx) - hAt(pr, wx)).toFixed(4)]);
+    anchors.sort((a, b) => a[0] - b[0]);
   }
   base.anchors.outline = anchors;
   const fin = build(base), q = fin._profiles;

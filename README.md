@@ -69,6 +69,18 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## Round 10
+
+- **Nose and tail anchor points** on the graphs work as they did before round 8 again: their arms are plain
+  Bezier arms (the "fullness" pull now only applies to the points between the tips). Fixes the spiky
+  "T" at the nose or tail when its arm was dragged.
+- **Single concave / Tail vee sliders are gone** from the Bottom section. A design that used them (all the
+  presets did) gets the same shape as two bottom contours you can edit.
+- **Channels**: bottom channels get "blend → stringer" too. Boards with channels are meshed finer and
+  the bottom is spaced to follow the channel walls, so channels read clean instead of wrinkled.
+- **Photo trace**: the traced outline is built with as few anchor points as it needs (usually 1 to 3,
+  within 1/16" of the traced line), and the trace's own points are cleared once it is applied.
+
 ## Round 9
 
 - **Diamond tail** (Outline > Tail): the outline runs to the corners as usual (the tail block width is
