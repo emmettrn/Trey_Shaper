@@ -24,7 +24,8 @@ const ANCHOR_GAP = 0.75;                                         // min spacing 
 const GRID = 513;                                                // samples of a slice's deck / bottom offset curve
 // What a cross-section slice may adjust, and by how much at most (added to the board-wide value there)
 const ADJ = { rail_apex: 0.45, rail_apex_in: 1.5, rail_fullness: 1, deck_dome: 1, concave: 0.5, double: 0.5, vee: 0.5,
-  apex_deck_angle: 80, apex_deck_arm: 0.5, apex_bottom_angle: 80, apex_bottom_arm: 0.5, rail_tuck_in: 4, edge: 1 };
+  apex_deck_angle: 80, apex_deck_arm: 0.5, apex_bottom_angle: 80, apex_bottom_arm: 0.5, rail_tuck_in: 4, edge: 1,
+  edge_arms: 1, edge_arm_angle: 90, edge_arm_rail: 1, edge_arm_flat: 3 };   // the tuck (edge) point's arms: on (0..1), rail arm angle above the bottom (deg) and length (fraction of edge -> apex), bottom arm (inches)
 const PINCH_MAX = 80;                                            // apex arm angle, degrees in from upright: 0 = upright, 80 = nearly a knife edge
 const ARM_MAX = 0.5;                                            // apex arm length, fraction of the height that side spans
 // Bottom contour stations: what each type puts into the three channels [single concave, double concave, vee]
@@ -768,6 +769,9 @@ function sectionShape(p, x, d, t) {
     // the rail apex arms (slices only): angle in from upright (degrees) and length (fraction of the height that side spans)
     pd: clip(g('apex_deck_angle'), 0, PINCH_MAX), ld: clip(g('apex_deck_arm'), 0, ARM_MAX),
     pb: clip(g('apex_bottom_angle'), 0, PINCH_MAX), lb: clip(g('apex_bottom_arm'), 0, ARM_MAX),
+    // the edge (tuck point) arms (slices only): how much they lead (0 = the tuck as usual), the rail arm's angle above
+    // the bottom and its length, and the bottom arm (how far the edge's roundness runs in along the bottom, inches)
+    ew: clip(g('edge_arms'), 0, 1), ea: clip(g('edge_arm_angle'), 0, 90), er: clip(g('edge_arm_rail'), 0.02, 1), ef: clip(g('edge_arm_flat'), 0, 3),
   };
 }
 /**
@@ -784,7 +788,7 @@ export function sectionBase(p, x) {
   const [c0, d0, v0] = bottomAt(p, x);
   return { rail_apex: p.rail_apex, rail_apex_in: p.rail_apex_in ?? 0, rail_fullness: p.rail_fullness, deck_dome: p.deck_dome,
     rail_tuck_in: railTuckAt(p, x).w, edge: railTuckAt(p, x).hard, concave: c0, double: d0, vee: v0,
-    apex_deck_angle: 0, apex_deck_arm: 0, apex_bottom_angle: 0, apex_bottom_arm: 0 };
+    apex_deck_angle: 0, apex_deck_arm: 0, apex_bottom_angle: 0, apex_bottom_arm: 0, edge_arms: 0, edge_arm_angle: 0, edge_arm_rail: 0, edge_arm_flat: 0 };
 }
 const gridAt = (row, eta) => {
   const f = eta * (GRID - 1), i0 = Math.min(Math.floor(f), GRID - 2);
@@ -1267,6 +1271,65 @@ const ZERO_ROW = new Float64Array(GRID);
  * outline or the stringer, and beyond J nothing changes. Upright with no length = no change.
  */
 const BZ = 48, BZY = new Float64Array(BZ + 1), BZU = new Float64Array(BZ + 1);
+/**
+ * The tuck (edge) point's arms. The rail from the apex down to the edge becomes a Bezier: it leaves the
+ * apex straight down and arrives at the edge along the rail arm (angle above the bottom: 0 = tangent,
+ * a soft edge; up toward 90 = a harder corner; length = how full the tuck is near the edge). The bottom
+ * arm then rounds the corner over that many inches in along the bottom and as far up the rail: the
+ * edge's radius. sh.ew says how much the arms lead (they ease in and out along the board like any
+ * section setting); 0 leaves the usual tuck.
+ */
+function edgeArms(sh, zApex, tb, yi, hi, hs, yE, Y, Z, contour, tool) {
+  const n0 = KA, nE = KA + NR - 1, Wt = hi - yE;
+  const toY = (yr) => yi + (yr * (hi - yi)) / hs;
+  const base = (yr, u) => zApex - tb + u + contour(yr) * (1 - u / Math.max(tb, 1e-9)) + Math.min(tool(yr), 0.95 * Math.max(tb - u, 0));
+  const a = (sh.ea * Math.PI) / 180, dAE = Math.hypot(Wt, tb);
+  // the rail arm stays inside the rail (below 85% of the apex height, in from the apex), and the apex's own
+  // control sits above the arm's tip, so the tuck never hooks back on itself
+  let lr = sh.er * dAE;
+  if (Math.sin(a) > 1e-6) lr = Math.min(lr, (0.85 * tb) / Math.sin(a));
+  if (Math.cos(a) > 1e-6) lr = Math.min(lr, (0.95 * Wt) / Math.cos(a));
+  const p2u = lr * Math.sin(a), la = Math.max(0.1 * tb, Math.min(0.45 * tb, 0.7 * (tb - p2u)));
+  const P = [[hi, tb], [hi, tb - la], [yE + lr * Math.cos(a), p2u], [yE, 0]];
+  const by = new Float64Array(NR), bu = new Float64Array(NR);
+  for (let j = 0; j < NR; j++) {                          // the rail: samples by the Bezier's own parameter, apex first
+    const t = j / (NR - 1), s1 = 1 - t, b0 = s1 * s1 * s1, b1 = 3 * s1 * s1 * t, b2 = 3 * s1 * t * t, b3 = t * t * t;
+    by[j] = Math.min(b0 * P[0][0] + b1 * P[1][0] + b2 * P[2][0] + b3 * P[3][0], hi);
+    bu[j] = Math.max(b0 * P[0][1] + b1 * P[1][1] + b2 * P[2][1] + b3 * P[3][1], 0);
+  }
+  // the bottom arm: round the corner at the edge over ef in along the bottom and ef back up the rail
+  const ef = Math.min(sh.ef, 0.9 * yE, 0.9 * Math.hypot(Wt, tb));
+  const nf = NF, fy = new Float64Array(nf + 1), fu = new Float64Array(nf + 1);
+  for (let j = 1; j <= nf; j++) { fy[j] = yE * (1 - j / nf); fu[j] = 0; }
+  if (ef > 1e-3) {
+    let arc = 0, jr = NR - 1;
+    while (jr > 0 && arc < ef) { arc += Math.hypot(by[jr] - by[jr - 1], bu[jr] - bu[jr - 1]); jr--; }
+    let jf = 1; while (jf < nf && fy[jf] > yE - ef) jf++;
+    const F2 = [by[jr], bu[jr]], F1 = [yE - ef, 0];
+    // a cubic from the rail (leaving along the rail's own direction there) to the bottom (arriving level): no kink at either end
+    let ty = by[Math.min(jr + 1, NR - 1)] - by[jr], tu = bu[Math.min(jr + 1, NR - 1)] - bu[jr];
+    const tl = Math.hypot(ty, tu) || 1; ty /= tl; tu /= tl;
+    const reach = 0.55 * Math.hypot(F2[0] - yE, F2[1]), Q1 = [F2[0] + ty * reach, F2[1] + tu * reach], Q2 = [F1[0] + 0.55 * ef, 0];
+    const cnt = (NR - 1 - jr) + jf;                       // the samples in the rounded zone, rail end first
+    for (let q = 0; q <= cnt; q++) {
+      const t = q / cnt, s1 = 1 - t, c0 = s1 * s1 * s1, c1 = 3 * s1 * s1 * t, c2 = 3 * s1 * t * t, c3 = t * t * t;
+      const yq = c0 * F2[0] + c1 * Q1[0] + c2 * Q2[0] + c3 * F1[0], uq = Math.max(0, c0 * F2[1] + c1 * Q1[1] + c2 * Q2[1] + c3 * F1[1]);
+      const k = jr + q;                                   // rail samples jr .. NR-1, then flat samples 1 .. jf
+      if (k <= NR - 1) { by[k] = yq; bu[k] = uq; } else { fy[k - (NR - 1)] = yq; fu[k - (NR - 1)] = uq; }
+    }
+  }
+  const w = sh.ew;
+  for (let j = 0; j < NR; j++) {
+    const k = n0 + j, y1 = toY(by[j]), z1 = base(by[j], bu[j]);
+    Y[k] += w * (y1 - Y[k]); Z[k] += w * (z1 - Z[k]);
+  }
+  for (let j = 1; j <= nf; j++) {
+    if (!(fu[j] > 0)) continue;                           // only the rounded zone moves on the flat
+    const k = nE + j, y1 = toY(fy[j]), z1 = base(fy[j], fu[j]);
+    Y[k] += w * (y1 - Y[k]); Z[k] += w * (z1 - Z[k]);
+  }
+}
+
 function pinchRail(sh, zApex, td, tb, yi, hi, Y, Z) {
   for (const [deg, frac, span, deck] of [[sh.pd, sh.ld, td, true], [sh.pb, sh.lb, tb, false]]) {
     const l = frac * span;
@@ -1364,6 +1427,7 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
     Y[KA + NR - 1 + j] = yi + (yr * (hi - yi)) / hs;
     Z[KA + NR - 1 + j] = zApex - tb + contour(yr) + Math.min(tool(yr), 0.95 * tb);
   }
+  if (sh.ew > 1e-4 && w > 1e-3) edgeArms(sh, zApex, tb, yi, hi, hs, yE, Y, Z, contour, tool);
   pinchRail(sh, zApex, td, tb, yi, hi, Y, Z);
   if (!rowD) return sh;
   const RHO = aux ? aux.rho : S_RHO, NY = aux ? aux.ny : S_NY, NZ = aux ? aux.nz : S_NZ;

@@ -105,32 +105,171 @@ export const TAIL_TYPES = {
 };
 
 export const PRESETS = {
-  "Shortboard 6'0\"": {
-    "length": 72,
-    "width": 19.5,
-    "thickness": 2.44,
-    "wide_point_offset": -1.0,
-    "nose_type": "pointed",
+  "Shortboard 6'0¾\"": {
+    "length": 72.75,
+    "width": 18.125,
+    "thickness": 2.375,
+    "wide_point_offset": -0.5,
+    "nose_type": "semi_pointed",
     "tail_type": "squash",
-    "nose_width_12": 12.0,
-    "tail_width_12": 14.5,
-    "tail_block_width": 10.0,
-    "nose_rocker": 5.0,
-    "nose_rocker_12": 2.1875,
-    "tail_rocker_12": 0.8125,
-    "tail_rocker": 2.2,
-    "rocker_low_point": -5,
-    "nose_thickness": 0.85,
-    "nose_thickness_12": 1.75,
-    "tail_thickness_12": 1.875,
-    "tail_thickness": 1.2,
+    "nose_width_12": 11.5625,
+    "tail_width_12": 14.3125,
+    "tail_block_width": 6.1875,
+    "swallow_depth": 4.5,
+    "swallow_tip": 1,
+    "swallow_width": 5,
+    "nose_rocker": 4.875,
+    "nose_rocker_12": 1.4375,
+    "tail_rocker_12": 1.0625,
+    "tail_rocker": 2.5,
+    "rocker_low_point": -0.25,
+    "nose_thickness": 0.375,
+    "nose_thickness_12": 1.6875,
+    "tail_thickness_12": 1.5625,
+    "tail_thickness": 0.5,
+    "thickness_point_offset": 0.25,
     "rail_apex": 0.35,
-    "rail_fullness": 0.45,
+    "rail_apex_in": 0.6875,
+    "rail_fullness": 1,
+    "deck_dome": 0,
     "rail_hardness_nose": 0.25,
     "rail_hardness_tail": 0.85,
-    "concave_depth": 0.12,
-    "vee_depth": 0.0,
-    "rail_apex_in": 0.5
+    "concave_depth": 0,
+    "vee_depth": 0,
+    "lock_volume": false,
+    "target_volume": 28.4,
+    "stations": 161,
+    "section_points": 48,
+    "anchors": {
+      "outline": [
+        [
+          1.5,
+          0.0373
+        ],
+        [
+          4.5,
+          0.216
+        ],
+        [
+          21.75,
+          -0.1809
+        ],
+        [
+          66.75,
+          -0.2117
+        ],
+        [
+          70.25,
+          -0.3197
+        ]
+      ],
+      "rocker": [
+        [
+          49.75,
+          0.1076
+        ],
+        [
+          68.75,
+          -0.2145
+        ]
+      ],
+      "thickness": [
+        [
+          20,
+          0.0334
+        ],
+        [
+          53.25,
+          -0.0239
+        ],
+        [
+          56.75,
+          -0.0261
+        ],
+        [
+          59.5,
+          -0.0288
+        ],
+        [
+          62.5,
+          -0.0373
+        ],
+        [
+          67.25,
+          -0.0749
+        ],
+        [
+          70.25,
+          -0.1012
+        ]
+      ],
+      "swallow": []
+    },
+    "marks": [],
+    "handles": {
+      "outline": {}
+    },
+    "slices": [
+      {
+        "id": 1,
+        "x": 2.883,
+        "adj": {
+          "rail_apex_in": -0.5196,
+          "rail_tuck_in": -0.0189,
+          "vee": 0.0165,
+          "edge_arms": 1,
+          "edge_arm_angle": 89.7,
+          "edge_arm_rail": 0.17,
+          "edge_arm_flat": 0,
+          "rail_fullness": -0.4166
+        },
+        "deck": [],
+        "bottom": [],
+        "v": 2
+      },
+      {
+        "id": 2,
+        "x": 35.347,
+        "adj": {
+          "rail_apex_in": -0.0259,
+          "rail_tuck_in": -0.0693,
+          "concave": 0.1153,
+          "edge_arms": 1,
+          "edge_arm_angle": 13.6,
+          "edge_arm_rail": 0.357,
+          "edge_arm_flat": 0,
+          "rail_fullness": -0.1423
+        },
+        "deck": [],
+        "bottom": [],
+        "v": 2
+      },
+      {
+        "id": 3,
+        "x": 56.947,
+        "adj": {
+          "rail_apex_in": -0.1508,
+          "rail_tuck_in": -0.0062,
+          "vee": 0.0212,
+          "edge_arms": 1,
+          "edge_arm_angle": 3.5,
+          "edge_arm_rail": 0.431,
+          "edge_arm_flat": 0,
+          "rail_fullness": -0.5473
+        },
+        "deck": [],
+        "bottom": [],
+        "v": 2
+      }
+    ],
+    "bottom": [],
+    "tools": [],
+    "deck_contours": [],
+    "curve_v": 2,
+    "deck_flat": 0,
+    "hard_edge": false,
+    "rail_tuck_tail": 0.0625,
+    "rail_tuck_nose": 0.8125
   },
   "Fish 5'6\"": {
     "length": 66,

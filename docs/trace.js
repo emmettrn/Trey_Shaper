@@ -202,7 +202,7 @@ export function fitOutline(pts, L, current, build, types, notch = null, curve = 
   let W = 0, xw = L / 2;
   for (let x = 0; x <= L; x += 0.125) { const w = 2 * f(x); if (w > W) { W = w; xw = x; } }
   const half = L / 2, wpo = Math.min(Math.max(xw - half, -(half - 14)), half - 14);
-  const tb = 2 * f(0);
+  const tb = Math.max(2 * f(0), 2 * f(Math.min(0.3, 0.01 * L)));     // the tail end's width, read just in from the very end (a rounded squash corner reads narrow at 0)
   const base = structuredClone(current);
   Object.assign(base, {
     length: L, width: r16(W), wide_point_offset: Math.round(wpo * 4) / 4,

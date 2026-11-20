@@ -4,6 +4,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 import { railTuckFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES } from './geometry.js';
 import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js';
+import { importS3dx, setSectionAt } from './s3dx.js';
 import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js';
 
 const $ = (s) => document.querySelector(s);
@@ -2366,15 +2367,37 @@ function drawSections(v, data) {
     const ey = s.h - Math.min(s.shape.tuck, 0.97 * s.h);
     let ez = 0, bd = Infinity;
     s.bottom.y.forEach((yy, i) => { const d0 = Math.abs(yy - ey); if (d0 < bd) { bd = d0; ez = s.bottom.z[i]; } });
+    // its arms (click the edge to show them): the rail arm sets the angle the rail meets the bottom at
+    // (along the bottom = a soft edge, tilted up = a hard corner) and how full the tuck is near the edge;
+    // the bottom arm, along the bottom, sets how far the edge's roundness runs in (its radius).
+    // Double-click an arm to go back to the usual tuck.
+    const EDGE_ID = 'edge', sh = s.shape, tbE = Math.max(s.apex_in - ez, 0.05), wE = Math.max(s.h - ey, 0.02), dAE = Math.hypot(wE, tbE);
+    const on = sh.ew > 1e-3, angNow = on ? sh.ea : (sh.hard * Math.atan2(tbE, 2 * wE) * 180) / Math.PI, railNow = on ? sh.er : 0.35, flatNow = on ? sh.ef : 0;
+    const seed = (sl) => { if (!(sl.adj.edge_arms > 0)) Object.assign(sl.adj, { edge_arms: 1, edge_arm_angle: +angNow.toFixed(1), edge_arm_rail: railNow, edge_arm_flat: flatNow }); };
+    const edgeReset = () => { const sl = rawSlice(); if (sl) for (const k of ['edge_arms', 'edge_arm_angle', 'edge_arm_rail', 'edge_arm_flat']) delete sl.adj[k]; };
     for (const rail of [1, -1]) {
-      v.point(ctx, { x: rail * ey, y: ez, kind: 'anchor', color: COLORS.warm,
+      if (state.pt === EDGE_ID && rail === 1) {
+        const ar = (angNow * Math.PI) / 180, lr = railNow * dAE, lf = Math.max(flatNow, 0.3);   // (a radius of 0 still shows a grabbable arm)
+        const tip = { x: ey + lr * Math.cos(ar), y: ez + lr * Math.sin(ar) };
+        v.point(ctx, { x: tip.x, y: tip.y, kind: 'arm', color: COLORS.warm, ax: ey, ay: ez,
+          drag: (wx, wz) => {
+            const sl = rawSlice(); if (!sl) return; seed(sl);
+            const dx = Math.abs(wx) - ey, dz = wz - ez;
+            sl.adj.edge_arm_angle = +clip((Math.atan2(Math.max(dz, 0), Math.max(dx, 1e-6)) * 180) / Math.PI, 0, 90).toFixed(1);
+            sl.adj.edge_arm_rail = +clip(Math.hypot(Math.max(dx, 0), Math.max(dz, 0)) / dAE, 0.02, 1).toFixed(4);
+          }, remove: edgeReset });
+        v.point(ctx, { x: ey - lf, y: ez, kind: 'arm', color: COLORS.warm, ax: ey, ay: ez,
+          drag: (wx) => { const sl = rawSlice(); if (!sl) return; seed(sl); sl.adj.edge_arm_flat = +clip(snap(ey - Math.abs(wx), 1 / 32), 0, 3).toFixed(4); },
+          remove: edgeReset });
+      }
+      v.point(ctx, { x: rail * ey, y: ez, kind: 'anchor', color: COLORS.warm, on: state.pt === EDGE_ID, select: () => { state.pt = EDGE_ID; },
         drag: (wx) => {
           const sl = rawSlice(); if (!sl || !state.board) return;
           const w = clip(snap(s.h - Math.abs(wx), 1 / 16), 0, 4);
           sl.adj.rail_tuck_in = clip(+(w - sectionBase(state.board.params, sl.x).rail_tuck_in).toFixed(4), -4, 4);
         },
         remove: () => { const sl = rawSlice(); if (sl) delete sl.adj.rail_tuck_in; } });
-      if (rail < 0 && v.w > 300) v.text(ctx, `edge · tuck ${fracIn(s.shape.tuck)}″`, v.X(-ey) + 8, v.Y(ez) + 13, COLORS.warm, 'left');
+      if (rail < 0 && v.w > 300) v.text(ctx, `edge · tuck ${fracIn(s.shape.tuck)}″${on ? ` · ${Math.round(sh.ea)}° · radius ${fracIn(sh.ef, 32)}″` : ''}`, v.X(-ey) + 8, v.Y(ez) + 13, COLORS.warm, 'left');
     }
   }
   for (const rail of [1, -1]) {
@@ -2911,8 +2934,21 @@ function wireUI() {
   });
   $('#file-load').addEventListener('change', async (e) => {
     const f = e.target.files[0]; if (!f) return;
-    try { applyParams(JSON.parse(await f.text())); sel.value = ''; state.fitted = false; } catch (err) { toast('Could not read that design file.'); }
     e.target.value = '';
+    if (/\.s3dx$/i.test(f.name)) {                       // a Shape3D design: fit a Trey Shaper design to its curves
+      const text = await f.text();
+      toast('Reading the Shape3D file…');
+      setTimeout(() => {
+        try {
+          setSectionAt(sectionAt);
+          const { params, report: r } = importS3dx(text, buildBoard, sectionBase, { NOSE_TYPES, TAIL_TYPES }, state.params);
+          applyParams(params); sel.value = ''; state.fitted = false;
+          toast(`Shape3D design${r.name ? ` "${r.name}"` : ''}: ${r.nose.replace(/_/g, ' ')} nose, ${r.tail.replace(/_/g, ' ')} tail, ${r.sections} cross sections, ${r.volume.toFixed(1)} L (the file says ${r.fileVolume.toFixed(1)} L). Fins are left out.`);
+        } catch (err) { toast(`Could not read that Shape3D file (${err.message}).`); }
+      }, 30);
+      return;
+    }
+    try { applyParams(JSON.parse(await f.text())); sel.value = ''; state.fitted = false; } catch (err) { toast('Could not read that design file.'); }
   });
 
   const menu = $('#export-menu');
