@@ -69,6 +69,22 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## Round 11
+
+- **Load a Shape3D design** (.s3dx): Load takes Shape3D X files as well as Trey Shaper designs. It reads the
+  file's outline, bottom and deck stringer curves and cross sections and fits a Trey Shaper design to them:
+  the outline with the photo trace's fitter, rocker and thickness from their measurements plus a few
+  anchor points, and each of the file's cross sections between the tips as a cross section here (apex
+  height, tuck, the tuck point's arms, concave or vee, rail fullness matched to the file's section area).
+  On the test file the outline, rocker and thickness land within about 1/16" and the volume matches.
+  Fin boxes are left out.
+- **New stock shortboard**: "Shortboard 6'0¾"" is fitted from a real Shape3D shortboard and is the first
+  sample (and the starting design). The old "Shortboard 6'0"" sample is gone.
+- **Tuck point arms**: in the cross section editor, click the edge (tuck) point for two arms, like the apex.
+  The rail arm sets the angle the rail meets the bottom at (lying along the bottom = a soft edge, tilted
+  up = a hard corner) and how full the tuck is near the edge; the bottom arm, along the bottom, sets how
+  far the edge's roundness runs in (its radius). Double-click an arm to go back to the usual tuck.
+
 ## Round 10
 
 - **Nose and tail anchor points** on the graphs work as they did before round 8 again: their arms are plain
