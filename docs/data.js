@@ -460,26 +460,14 @@ export const GROUPS = [
       },
       {
         "key": "swallow_tip",
+    "swallow_rail": 0.6,
+    "swallow_round": 1.5,
         "label": "Swallow tips",
         "min": 0,
         "max": 1,
         "step": 0.01,
         "unit": "frac",
         "help": "0 = each side comes to a point, 1 = rounded tips",
-        "show_if": {
-          "tail_type": [
-            "swallow"
-          ]
-        }
-      },
-      {
-        "key": "swallow_round",
-        "label": "Swallow tip radius",
-        "min": 0,
-        "max": 6,
-        "step": 0.125,
-        "unit": "in",
-        "help": "the deck rounds down toward the rail over this many inches at the swallow's tips (0 = square ends)",
         "show_if": {
           "tail_type": [
             "swallow"
@@ -546,6 +534,34 @@ export const GROUPS = [
         "max": 1,
         "step": 0.01,
         "unit": "frac"
+      },
+      {
+        "key": "swallow_rail",
+        "label": "Swallow inside rail",
+        "min": 0,
+        "max": 1,
+        "step": 0.05,
+        "unit": "frac",
+        "help": "each half of the swallow rolls into a rail on the inside of the cut too (0 = square wall, 1 = full rail)",
+        "show_if": {
+          "tail_type": [
+            "swallow"
+          ]
+        }
+      },
+      {
+        "key": "swallow_round",
+        "label": "Swallow tip radius",
+        "min": 0,
+        "max": 6,
+        "step": 0.125,
+        "unit": "in",
+        "help": "the deck rounds down toward the rail over this many inches at the swallow's tips (0 = square ends)",
+        "show_if": {
+          "tail_type": [
+            "swallow"
+          ]
+        }
       },
       {
         "key": "nose_thickness",
