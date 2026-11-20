@@ -105,7 +105,7 @@ export function paramsFromDict(d = {}) {
   const base = { ...DEFAULTS };
   for (const k of Object.keys(DEFAULTS)) if (k in d) base[k] = d[k];
   base.tools = Array.isArray(d.tools) ? d.tools : [];      // concave tools (newer than the generated defaults)
-  for (const k of ['rail_tuck_nose', 'rail_tuck_tail', 'hard_edge', 'rail_reach_nose', 'rail_reach_tail', 'swallow_round', 'swallow_rail', 'deck_contours', 'curve_v', 'deck_flat']) if (k in d) base[k] = d[k];   // rail tucks (newer too)
+  for (const k of ['rail_tuck_nose', 'rail_tuck_tail', 'hard_edge', 'rail_reach_nose', 'rail_reach_tail', 'swallow_round', 'swallow_rail', 'deck_contours', 'curve_v', 'deck_flat', 'diamond_depth']) if (k in d) base[k] = d[k];   // rail tucks (newer too)
   const L = base.length;
   const xl = L / 2 + base.rocker_low_point, xt = L / 2 + base.thickness_point_offset;
   for (const [side, nose] of [['nose', true], ['tail', false]]) {
@@ -186,6 +186,8 @@ export function validated(src) {
   railTuckFromOld(p);
   if (!Number.isFinite(p.swallow_round)) p.swallow_round = 0;
   clamp('swallow_round', 0, 6);
+  if (!Number.isFinite(p.diamond_depth)) p.diamond_depth = 2.5;
+  clamp('diamond_depth', 0.5, Math.min(8, 0.3 * p.length));
   if (!Number.isFinite(p.deck_flat)) p.deck_flat = 0;
   clamp('deck_flat', 0, 1);
   if (!Number.isFinite(p.swallow_rail)) p.swallow_rail = 0;     // older designs: a square wall inside the cut
@@ -799,15 +801,26 @@ function halfWidth(p, x) {
   const bn = NOSE_TYPES[p.nose_type];
   const an = closureExponent(p.nose_width_12 / p.width, bn, (L - 12 - xw) / (L - xw));
   const tail = TAIL_TYPES[p.tail_type], bt = tail.b;
-  const te = tail.closes ? 0 : p.tail_block_width / p.width;
-  const at = closureExponent((p.tail_width_12 / p.width - te) / (1 - te), bt, (xw - 12) / xw);
+  let te = tail.closes ? 0 : p.tail_block_width / p.width;
+  let at = closureExponent((p.tail_width_12 / p.width - te) / (1 - te), bt, (xw - 12) / xw);
+  const dd = tail.point ? p.diamond_depth ?? 2.5 : 0;
+  if (dd) {                                              // a diamond: solve the tail end so the corners (dd in) are the tail block width, T12 still exact
+    const want = p.tail_block_width / p.width;
+    for (let it = 0; it < 6; it++) {
+      const f = te + (1 - te) * clip(1 - ((xw - dd) / xw) ** at, 0, 1) ** (1 / bt);
+      te = clip(te - (f - want), 0, want);
+      at = closureExponent((p.tail_width_12 / p.width - te) / (1 - te), bt, (xw - 12) / xw);
+    }
+  }
   const rc = tail.notch ? tail.corner * (p.swallow_tip ?? 1) : tail.corner;   // a swallow's tips: rounded, or (swallow_tip 0) a point
   const h = new Float64Array(x.length);
+  const main = (xi) => (xi >= xw ? W2 * clip(1 - ((xi - xw) / (L - xw)) ** an, 0, 1) ** (1 / bn) : W2 * (te + (1 - te) * clip(1 - ((xw - xi) / xw) ** at, 0, 1) ** (1 / bt)));
+  // a diamond tail: the outline runs as usual to the corners, diamond_depth in from the tail end
+  // (the tail block width is across them), then straight in to a point on the stringer
+  const hd = dd ? main(dd) : 0;
   for (let i = 0; i < x.length; i++) {
     const xi = x[i];
-    let v;
-    if (xi >= xw) v = W2 * clip(1 - ((xi - xw) / (L - xw)) ** an, 0, 1) ** (1 / bn);
-    else v = W2 * (te + (1 - te) * clip(1 - ((xw - xi) / xw) ** at, 0, 1) ** (1 / bt));
+    let v = dd && xi < dd ? (hd * xi) / dd : main(xi);
     if (rc > 0 && xi < rc) v = v - rc + Math.sqrt(Math.max(rc * rc - (rc - xi) ** 2, 0));
     h[i] = Math.max(v, 0);
   }
@@ -905,7 +918,7 @@ const veeAt = (p, x) => p.vee_depth * smoothstep((0.35 * p.length - x) / (0.3 * 
    lowers it away from a ridge on the stringer. Channels (one or two a side) cut down into the deck.
    Step decks, step tails and pockets are deck tools (params.tools with surface 'deck').
    --------------------------------------------------------------------------- */
-export const DECK_TYPES = { concave: 'Deck concave', vee: 'Deck vee', channels: 'Deck channels' };
+export const DECK_TYPES = { concave: 'Deck concave', vee: 'Deck vee' };   // channels are deck tools now (shape 'channel')
 
 function cleanDeck(p) {
   const L = p.length;
@@ -971,7 +984,11 @@ function deckShape(dc, dt, H, H0, y, hi) {
       }
     }
   }
-  if (dt) for (const q of dt) down += q.D * smootherAt((q.out ? y - q.e : q.e - y) / 0.15 + 0.5);   // inside the edges (pocket, step tail) or outside (step deck)
+  for (const q of dt || []) {
+    if (q.chan) { down += q.D * groove(y, q.e, q.gw, q.soft); continue; }
+    const so = soft(q.e - y);                             // a step deck: a dished pocket with a hard edge, like a tear drop concave
+    if (so > 1e-5) { const v = Math.max(q.e - so, 0) / q.e; down += q.D * (1 - v * v); }
+  }
   const room = 0.85 * (H + up);
   const cut = down > 0 ? (down * room) / Math.sqrt(down * down + room * room + 1e-12) : 0;   // a soft "no deeper than 85% of the deck"
   return H + up - cut;
@@ -987,7 +1004,9 @@ function deckShape(dc, dt, H, H0, y, hi) {
    blends into the ridge. Widths are full widths in inches; t runs 0 at the nose end of the
    tool to 1 at its tail end.
    --------------------------------------------------------------------------- */
-export const TOOL_SHAPES = { teardrop: 'Tear drop', straight: 'Straight edges', venturi: 'Venturi' };
+export const TOOL_SHAPES = { teardrop: 'Tear drop', straight: 'Straight edges', venturi: 'Venturi', channel: 'Channel' };
+/** On the deck: a step deck (a tear drop pocket with a hard edge) and channels. */
+export const DECK_SHAPES = { teardrop: 'Step deck', channel: 'Channel' };
 
 /**
  * An edge of a concave tool as a smooth curve through points, like the outline: each point
@@ -1045,9 +1064,13 @@ const blendOf = (v, def) => (Number.isFinite(+v) ? clip(+v, 0, 1) : def);
 
 function cleanTools(p) {
   const L = p.length, W = p.width, out = [];
+  const count = { bottom: 0, deck: 0, chB: 0, chD: 0 };
   for (const t of Array.isArray(p.tools) ? p.tools : []) {
     if (!t || !TOOL_SHAPES[t.shape] || !t.start || !t.end) continue;
-    if (out.length === 8) break;
+    const onDeck = t.surface === 'deck', ch = t.shape === 'channel';
+    if (onDeck && (!DECK_SHAPES[t.shape] || t.step === 'out')) continue;          // the old step deck (outside the edges) and step tail are gone
+    if (ch ? (onDeck ? count.chD >= 2 : count.chB >= 4) : (onDeck ? count.deck >= 4 : count.bottom >= 8)) continue;   // channels: 4 a side on the bottom, 2 on the deck
+    count[ch ? (onDeck ? 'chD' : 'chB') : onDeck ? 'deck' : 'bottom']++;
     const a = clip(posToX({ pos: +t.start.pos, from: fromOf(t.start.from) }, L), -24, L + 24);     // the ends may run off the board
     const b = clip(posToX({ pos: +t.end.pos, from: fromOf(t.end.from) }, L), -24, L + 24);
     const x1 = Math.max(a, b), x0 = Math.min(a, b), len = x1 - x0;
@@ -1059,7 +1082,15 @@ function cleanTools(p) {
     // deepest in the middle by default; one that runs out the tail holds its depth right out (blend toward the tail 0),
     // and either blend can still ease it out flat at that end
     let xdDef = (x0 + x1) / 2, bDef = [0.6, x0 <= 1 ? 0 : 0.6];
-    if (t.shape === 'straight') {
+    if (t.shape === 'channel') {                          // a channel: one groove each side, its line (out from the stringer) shaped like a tool edge
+      tool.kind = 'single';
+      tool.gw = Number.isFinite(+t.gw) ? clip(+t.gw, 0.25, 3) : 0.75;
+      tool.soft = Number.isFinite(+t.soft) ? clip(+t.soft, 0, 1) : 0;
+      const y0 = Number.isFinite(+t.pos) ? clip(+t.pos, 0.5, W) : 3;
+      tool.outer = edgeTable(Array.isArray(t.outer) ? t.outer : [[0, 2 * y0, 0, null, null], [1, 2 * y0, 0, null, null]], len, 2 * W)
+        || edgeTable([[0, 2 * y0], [1, 2 * y0]], len, 2 * W);
+      bDef = [0.3, x0 <= 1 ? 0 : 0.3];
+    } else if (t.shape === 'straight') {
       tool.w1 = Number.isFinite(+t.w1) ? clip(+t.w1, 0.5, 2 * W) : 10;   // at the nose end (wider than the board runs it off the rail)
       tool.w2 = Number.isFinite(+t.w2) ? clip(+t.w2, 0.5, 2 * W) : 10;   // at the tail end
       tool.ridge = ridge;
@@ -1088,7 +1119,7 @@ function cleanTools(p) {
     if (tool.center === 'custom' && cp.length < 2) tool.center = 'blend';
     // deck tools (step deck, step tail, pockets): single, blended center, and which side of the edges steps down
     tool.surface = t.surface === 'deck' ? 'deck' : 'bottom';
-    if (tool.surface === 'deck') { tool.kind = 'single'; tool.center = 'blend'; tool.step = t.step === 'out' ? 'out' : 'in'; tool.depth = Math.min(tool.depth, 1); }
+    if (tool.surface === 'deck') { tool.kind = 'single'; tool.center = 'blend'; tool.depth = Math.min(tool.depth, 1); }
     out.push(tool);
   }
   return out;
@@ -1135,6 +1166,7 @@ function toolsAt(p, x, h, t) {
     tool.zbAt = p._zbAt;
     const q = toolShapeAt(tool, x), e = q.e;                 // an edge past the outline runs the concave off the rail (it lifts the rail there)
     const D = Math.min(q.D, 0.4 * t);
+    if (tool.shape === 'channel') { if (D > 1e-6 && e > 0.1) list.push({ D, e, gw: tool.gw, chan: true }); continue; }
     if (!(D > 1e-6) || !(e > q.r + 0.2)) continue;
     list.push({ D, e, r: q.r, double: tool.kind === 'double', rail: tool.edge === 'rail' });
   }
@@ -1147,7 +1179,7 @@ function deckToolsAt(p, x) {
   for (const tool of p.tools) {
     if (tool.surface !== 'deck' || x < tool.x0 - 1e-9 || x > tool.x1 + 1e-9) continue;
     const q = toolShapeAt(tool, x);
-    if (q.D > 1e-6 && q.e > 0.05) list.push({ D: q.D, e: q.e, out: tool.step === 'out' });
+    if (q.D > 1e-6 && q.e > 0.05) list.push({ D: q.D, e: q.e, chan: tool.shape === 'channel', gw: tool.gw, soft: tool.soft });
   }
   return list.length ? list : null;
 }
@@ -1180,9 +1212,20 @@ export function toolOutline(board, k, n = 80) {
 /** How far the tools lift the bottom at y inches from the stringer. */
 const TOOL_ROUND = 0.1;                                  // the edges of a concave tool are rounded over this much (inches), so they read crisp without stepping
 const soft = (d) => (d > 8 * TOOL_ROUND ? d : d < -8 * TOOL_ROUND ? TOOL_ROUND * Math.exp(d / TOOL_ROUND) : TOOL_ROUND * Math.log1p(Math.exp(d / TOOL_ROUND)));
+/** A channel's groove across at y (0..1 of its depth): flat-bottomed with hard edges rounded over TOOL_ROUND,
+ *  centered e out from the stringer, gw wide; the stringer side can blend out toward the stringer (sf 0..1). */
+function groove(y, e, gw, sf) {
+  const hw = gw / 2, d = y - e, hard = smootherAt((hw - Math.abs(d)) / (2 * TOOL_ROUND) + 0.5);
+  const reach = hw + sf * Math.max(e - hw, 0);
+  if (d >= 0 || reach - hw < 2 * TOOL_ROUND) return hard;
+  const u = -d;                                          // in toward the stringer: eases out over reach instead of a wall
+  return u <= hw ? 1 : smootherAt(1 - (u - hw) / (reach - hw));
+}
+
 function toolLift(list, y) {
   let z = 0;
   for (const q of list) {
+    if (q.chan) { z += q.D * groove(y, q.e, q.gw, 0); continue; }
     const so = soft(q.e - y);                             // in from the outer edge
     if (so < 1e-5) continue;
     if (!q.double) { const v = Math.max(q.e - so, 0) / q.e; z += q.D * (1 - v * v); continue; }
@@ -1403,6 +1446,7 @@ function stationXs(p) {
   const tail = TAIL_TYPES[p.tail_type];
   if (tail.notch) for (let j = 1; j <= 8; j++) xs.push((p.swallow_depth * j) / 8);     // the cut can be curved
   if (tail.corner > 0) for (const f of [0.04, 0.15, 0.35, 0.6, 1]) xs.push(tail.corner * f);   // round the tail corners properly
+  if (tail.point) for (const f of [0.25, 0.5, 0.75, 0.97, 1, 1.03]) xs.push(p.diamond_depth * f);   // the diamond's corners stay crisp
   for (const s of p.slices) xs.push(s.x);
   for (const r of p.marks) xs.push(r.x);
   for (const v of deckStationXs(p)) xs.push(v);
@@ -1672,7 +1716,7 @@ export function specSheet(board) {
           return `             ${whereIs(r)} until ${whereIs(r.to)}: ${what}${blend}`;
         })]
       : [`bottom       concave ${fmtIn(p.concave_depth)}, tail vee ${fmtIn(p.vee_depth)}`]),
-    ...p.tools.filter((t) => t.surface === 'deck').map((t) => `deck tool    ${TOOL_SHAPES[t.shape].toLowerCase()}, steps down ${fmtIn(t.depth)} ${t.step === 'out' ? 'outside its edges (step deck)' : 'inside its edges'}, from ${whereIs(t.start)} until ${whereIs(t.end)}, blends ${t.blendNose.toFixed(2)} / ${t.blendTail.toFixed(2)}`),
+    ...p.tools.filter((t) => t.surface === 'deck').map((t) => `deck         ${DECK_SHAPES[t.shape].toLowerCase()} ${fmtIn(t.depth)} deep${t.shape === 'channel' ? `, ${fmtIn(t.gw)} wide` : ''}, from ${whereIs(t.start)} until ${whereIs(t.end)}, blends ${t.blendNose.toFixed(2)} / ${t.blendTail.toFixed(2)}`),
     ...(p.deck_contours || []).map((c) => `deck         ${DECK_TYPES[c.type].toLowerCase()} ${fmtIn(c.depth)}${c.type === 'channels' ? `, ${c.count} a side from ${fmtIn(c.pos)} out` : c.width ? `, ${fmtIn(c.width)} across` : ''}, ${fmtFtin(L_ - c.x1)} to ${fmtFtin(L_ - c.x0)} from the nose`),
     ...p.tools.filter((t) => t.surface !== 'deck').map((t) => `concave tool ${TOOL_SHAPES[t.shape].toLowerCase()}, ${t.kind}${t.kind === 'double' ? (t.edge === 'rail' ? ', hard on the rail side' : ', hard edges') : ', hard edge'}, ${fmtIn(t.depth)} deep, from ${whereIs(t.start)} until ${whereIs(t.end)}${
       t.shape === 'teardrop' ? `, ${fmtIn(2 * Math.max(...t.outer.Y))} at its widest, round end toward the ${t.round}` : t.shape === 'straight' ? `, ${fmtIn(t.w1)} wide at the nose end to ${fmtIn(t.w2)} at the tail end` : ', curved edges'}, deepest ${fmtFtin(L_ - t.xd)} from the nose, blends ${t.blendNose.toFixed(2)} / ${t.blendTail.toFixed(2)}`),

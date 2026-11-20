@@ -77,6 +77,13 @@ export const TAIL_TYPES = {
     "corner": 0.4,
     "notch": true
   },
+  "diamond": {
+    "closes": false,
+    "b": 1.0,
+    "corner": 0.0,
+    "notch": false,
+    "point": true
+  },
   "round": {
     "closes": true,
     "b": 2.0,
@@ -396,6 +403,10 @@ export const GROUPS = [
             "label": "Swallow"
           },
           {
+            "value": "diamond",
+            "label": "Diamond"
+          },
+          {
             "value": "round",
             "label": "Round"
           },
@@ -428,7 +439,22 @@ export const GROUPS = [
           "tail_type": [
             "squash",
             "square",
-            "swallow"
+            "swallow",
+            "diamond"
+          ]
+        }
+      },
+      {
+        "key": "diamond_depth",
+        "label": "Diamond depth",
+        "min": 0.5,
+        "max": 8,
+        "step": 0.125,
+        "unit": "in",
+        "help": "how far the diamond's point sticks out past its corners (the tail block width is across the corners)",
+        "show_if": {
+          "tail_type": [
+            "diamond"
           ]
         }
       },
