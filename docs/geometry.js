@@ -106,7 +106,7 @@ export function paramsFromDict(d = {}) {
   const base = { ...DEFAULTS };
   for (const k of Object.keys(DEFAULTS)) if (k in d) base[k] = d[k];
   base.tools = Array.isArray(d.tools) ? d.tools : [];      // concave tools (newer than the generated defaults)
-  for (const k of ['rail_tuck_nose', 'rail_tuck_tail', 'hard_edge', 'rail_reach_nose', 'rail_reach_tail', 'swallow_round', 'swallow_rail', 'deck_contours', 'curve_v', 'deck_flat', 'diamond_depth']) if (k in d) base[k] = d[k];   // rail tucks (newer too)
+  for (const k of ['rail_tuck_nose', 'rail_tuck_tail', 'hard_edge', 'rail_reach_nose', 'rail_reach_tail', 'swallow_round', 'swallow_rail', 'deck_contours', 'curve_v', 'deck_flat', 'diamond_depth', 'deck_flat_corner', 'nose_beak', 'nose_beak_pos']) if (k in d) base[k] = d[k];   // rail tucks (newer too)
   const L = base.length;
   const xl = L / 2 + base.rocker_low_point, xt = L / 2 + base.thickness_point_offset;
   for (const [side, nose] of [['nose', true], ['tail', false]]) {
@@ -189,6 +189,11 @@ export function validated(src) {
   clamp('swallow_round', 0, 6);
   if (!Number.isFinite(p.diamond_depth)) p.diamond_depth = 2.5;
   clamp('diamond_depth', 0.5, Math.min(8, 0.3 * p.length));
+  if (!Number.isFinite(p.deck_flat_corner)) p.deck_flat_corner = 0.8;
+  clamp('deck_flat_corner', 0.3, 0.95);
+  p.nose_beak = p.nose_beak === true;
+  if (!Number.isFinite(p.nose_beak_pos)) p.nose_beak_pos = 2;
+  clamp('nose_beak_pos', 0.25, 5);
   if (!Number.isFinite(p.deck_flat)) p.deck_flat = 0;
   clamp('deck_flat', 0, 1);
   if (!Number.isFinite(p.swallow_rail)) p.swallow_rail = 0;     // older designs: a square wall inside the cut
@@ -825,9 +830,18 @@ function halfWidth(p, x) {
   // a diamond tail: the outline runs as usual to the corners, diamond_depth in from the tail end
   // (the tail block width is across them), then straight in to a point on the stringer
   const hd = dd ? main(dd) : 0;
+  // pointed and semi-pointed noses finish into a point at an angle over the last 1.5-2" (like Shape3D), not a rounded
+  // end: a cubic from the curve (same width and slope where it starts) to the tip, arriving at a definite angle
+  const fin = bn < 1.9 ? clip(0.05 * (L - xw), 1.5, 2) : 0, xf = L - fin;
+  let finAt = null;
+  if (fin) {
+    const a0 = main(xf), m0 = (main(xf + 0.01) - main(xf - 0.01)) / 0.02;
+    const m1 = -Math.min(2.85 * a0 / fin, Math.max(1.35 * a0 / fin, -m0));
+    finAt = (xi) => { const t = (xi - xf) / fin, h00 = (1 + 2 * t) * (1 - t) ** 2, h10 = t * (1 - t) ** 2, h11 = t * t * (t - 1); return h00 * a0 + fin * (h10 * m0 + h11 * m1); };
+  }
   for (let i = 0; i < x.length; i++) {
     const xi = x[i];
-    let v = dd && xi < dd ? (hd * xi) / dd : main(xi);
+    let v = dd && xi < dd ? (hd * xi) / dd : finAt && xi > xf ? finAt(xi) : main(xi);
     if (rc > 0 && xi < rc) v = v - rc + Math.sqrt(Math.max(rc * rc - (rc - xi) ** 2, 0));
     h[i] = Math.max(v, 0);
   }
@@ -1064,8 +1078,14 @@ function teardropPoints(W, round) {
  */
 function depthAlong(x, x0, x1, xd, bn, bt) {
   const ease = (q) => { const v = clip(q, 0, 1); return v * v * v * (v * (6 * v - 15) + 10); };   // smootherstep: no jump in curvature where it starts
-  if (x >= xd) { const span = x1 - xd; if (span < 1e-6 || bn <= 0) return 1; const s = (x - xd) / span, hold = 1 - bn; return s <= hold ? 1 : ease((1 - s) / bn); }
-  const span = xd - x0; if (span < 1e-6 || bt <= 0) return 1; const s = (xd - x) / span, hold = 1 - bt; return s <= hold ? 1 : ease((1 - s) / bt);
+  // deepest right at an end (a spiral vee deepest at the tail): that end's blend fades it out to flat over
+  // its fraction of up to 12" in from the end, instead of having nothing to blend across
+  const len = Math.min(x1 - x0, 12);
+  let f = 1;
+  if (xd - x0 < 0.5 && bt > 0) f *= ease((x - x0) / (bt * len));
+  if (x1 - xd < 0.5 && bn > 0) f *= ease((x1 - x) / (bn * len));
+  if (x >= xd) { const span = x1 - xd; if (span < 0.5 || bn <= 0) return f; const s = (x - xd) / span, hold = 1 - bn; return f * (s <= hold ? 1 : ease((1 - s) / bn)); }
+  const span = xd - x0; if (span < 0.5 || bt <= 0) return f; const s = (xd - x) / span, hold = 1 - bt; return f * (s <= hold ? 1 : ease((1 - s) / bt));
 }
 const blendOf = (v, def) => (Number.isFinite(+v) ? clip(+v, 0, 1) : def);
 
@@ -1385,9 +1405,11 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   // inside a swallow's cut: each half's deck rolls down to its bottom on the inside of the cut (swallow_rail
   // 0 = a square wall, 1 = the deck comes all the way down to the bottom edge). The bottom is not touched.
   // It grows in over the first inch or so down from the crotch of the V, so the crotch stays smooth.
-  const sd = p.swallow_depth ?? 0, ramp = Math.max(Math.min(1.5, 0.3 * sd), 1e-3);
-  const qIn = yi > 1e-9 ? (p.swallow_rail ?? 0) * smootherAt((sd - xi) / ramp) : 0;
-  const Rw = Math.min(0.45 * (hi - yi), 1.5 * ti);
+  const sd = TAIL_TYPES[p.tail_type].notch ? p.swallow_depth ?? 0 : 0, Lb = Math.max(3, 0.8 * sd);
+  // the roll carries on past the crotch as a soft valley down the stringer, easing out over Lb, so the two halves
+  // blend into the stringer instead of meeting the full deck at the crotch
+  const qIn = sd > 0 && (p.swallow_rail ?? 0) > 0 ? (p.swallow_rail ?? 0) * (xi <= sd ? 1 : smootherAt(1 - (xi - sd) / Lb)) : 0;
+  const Rw = Math.min(0.55 * (hi - yi), 2 * ti);
   const inRoll = (y, R) => { const sx = R > 1e-6 ? clip((y - yi) / R, 0, 1) : 1; return Math.sqrt(Math.max(0, 1 - (1 - sx) ** 2)); };
   const tl = p.tools && p.tools.length ? toolsAt(p, xi, hi, ti) : null;     // hard-edged concaves at this spot
   // contours: a single concave is one dish across the bottom (deepest at the stringer, the same curve all
@@ -1396,14 +1418,16 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   // the deck: from the stringer round to the rail apex (a superellipse, as before), then the deck contours
   const dc = p.deck_contours && p.deck_contours.length ? deckContoursAt(p, xi) : null;
   const dtl = p.tools && p.tools.length ? deckToolsAt(p, xi) : null;
-  // flat deck (deck_flat): the deck's own curve gets boxier, so it stays flat across and turns down into
-  // the rail late, with a slight corner where the flat meets the rail (a classic fish deck)
-  const fl = p.deck_flat ?? 0, gF = 1 + 0.9 * fl, kF = 0.03 + 0.05 * (1 - fl);
-  const flatten = (S) => (fl > 0 ? (1 - fl) * S + fl * -kF * Math.log(Math.exp(-gF * S / kF) + Math.exp(-1 / kF)) : S);   // the rail's curve steepened, capped by a flat deck (soft corner)
+  // flat deck (deck_flat): the deck runs flat across to a corner (deck_flat_corner, a fraction of the half width out
+  // from the stringer), then bevels down and rounds into the rail. A corner further in makes a longer bevel and a
+  // lower, softer rail (foam comes out of the corners); deck_flat mixes this with the usual curve. (a classic fish deck)
+  const fl = p.deck_flat ?? 0, fc = p.deck_flat_corner ?? 0.8, rF = 1.25 + 0.5 * (sh.ed - 1.7) / 1.4, kF = 0.025 + 0.04 * (1 - fl);
+  const flatDeck = (eta) => { const u = (eta - fc) / (1 - fc), pr = Math.max(1 - u, 0) ** (1 / rF); return -kF * Math.log(Math.exp(-pr / kF) + Math.exp(-1 / kF)); };
   for (let k = 0; k < KA; k++) {
     const yraw = hi * TH_COS[k] ** (2 / ed), eta = clip(yraw / hs, 0, 1);
     Y[k] = yi + (yraw * (hi - yi)) / hs;
-    let H = td * flatten(TH_SIN[k] ** (2 / ed)) * (1 - 0.7 * dome * eta * eta);
+    const S0 = TH_SIN[k] ** (2 / ed);
+    let H = td * (fl > 0 ? (1 - fl) * S0 + fl * Math.min(flatDeck(eta), 1) : S0) * (1 - 0.7 * dome * eta * eta);
     if (dc || dtl) H = deckShape(dc, dtl, H, td, Math.abs(Y[k]), hi);
     if (qIn) { const zf = zApex - tb + contour(yraw); Z[k] = zf + (zApex + H - zf) * (1 - qIn * (1 - inRoll(Y[k], Rw))); }
     else Z[k] = zApex + H;
@@ -1415,10 +1439,13 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   // near the tips the board gets narrower than the tuck: ease the tuck down smoothly (no sudden cap, so no lump at the ends)
   const w = sh.tuck > 1e-6 ? (sh.tuck ** -4 + (0.85 * hi) ** -4) ** -0.25 : 0, yE = hi - w, hf = sh.hard;
   const tool = (yr) => (tl ? toolLift(tl, yi + (yr * (hi - yi)) / hs) : 0);
+  // a wide soft tuck under a low apex (a nose tuck) would make the quarter ellipse turn up in a tiny radius right
+  // at the apex (a pinched rail): there it gets boxier (a superellipse), so it turns up sooner and the rail stays round
+  const nT = 2 + clip(0.25 * (w / Math.max(tb, 1e-6) - 1), 0, 0.8);
   for (let j = 0; j < NR; j++) {
     const sp = j / (NR - 1), ph = (sp * Math.PI) / 2;
-    const yr = hi - w * ((1 - hf) * (1 - Math.cos(ph)) + hf * sp * sp);
-    const dz = tb * ((1 - hf) * Math.sin(ph) + hf * sp);
+    const yr = hi - w * ((1 - hf) * (1 - Math.cos(ph) ** (2 / nT)) + hf * sp * sp);
+    const dz = tb * ((1 - hf) * Math.sin(ph) ** (2 / nT) + hf * sp);
     Y[KA + j] = yi + (yr * (hi - yi)) / hs;
     Z[KA + j] = zApex - dz + contour(yr) * sp + Math.min(tool(yr), 0.95 * dz);   // a concave run off the rail lifts the rail too (never past the apex)
   }
@@ -1552,7 +1579,10 @@ function buildMesh(p, tScale) {
   const zb = Float64Array.from(zb0, (v, i) => v + dz[i]);
   const t = Float64Array.from(foil0, (v, i) => {
     const ti = Math.max(v + dt[i], 0.15 * v) * tScale;
-    return ti * Math.tanh((1.5 * h[i]) / Math.max(ti, 1e-9));   // pinch where the outline gets narrow
+    let tq = ti * Math.tanh((3 * h[i]) / Math.max(ti, 1e-9));   // pinch only right where the outline closes (the tip stays a small rounded nub, like Shape3D's)
+    // a beak nose: from nose_beak_pos in from the nose the deck turns down toward the tip (the bottom stays)
+    if (p.nose_beak && x[i] > p.length - p.nose_beak_pos) { const sB = (x[i] - (p.length - p.nose_beak_pos)) / p.nose_beak_pos; tq *= 1 - 0.7 * sB ** 1.25; }
+    return tq;
   });
   const notch = notchHalfWidth(p, x, arms.swallow);
   const keep = TAIL_TYPES[p.tail_type].notch ? 0.95 + 0.046 * (1 - (p.swallow_tip ?? 1)) : 0.95;   // pointed swallow tips: the cut runs right out

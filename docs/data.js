@@ -273,32 +273,97 @@ export const PRESETS = {
   },
   "Fish 5'6\"": {
     "length": 66,
-    "width": 21.0,
+    "width": 20.5,
     "thickness": 2.55,
-    "wide_point_offset": -2.0,
-    "nose_type": "round",
+    "wide_point_offset": 0,
+    "nose_type": "semi_pointed",
     "tail_type": "swallow",
     "nose_width_12": 15.5,
-    "tail_width_12": 17.0,
-    "tail_block_width": 13.0,
-    "swallow_depth": 5.5,
-    "swallow_width": 7.0,
+    "tail_width_12": 16,
+    "tail_block_width": 10.5,
+    "swallow_depth": 5.75,
+    "swallow_tip": 0.39,
+    "swallow_width": 9.25,
     "nose_rocker": 3.6,
     "nose_rocker_12": 1.25,
     "tail_rocker_12": 0.5625,
     "tail_rocker": 1.4,
     "rocker_low_point": -3,
-    "nose_thickness": 1.0,
-    "nose_thickness_12": 2.0625,
-    "tail_thickness_12": 2.1875,
-    "tail_thickness": 1.35,
+    "nose_thickness": 0.5,
+    "nose_thickness_12": null,
+    "tail_thickness_12": null,
+    "tail_thickness": 0.5,
+    "thickness_point_offset": 3,
     "rail_apex": 0.4,
+    "rail_apex_in": 0.4375,
     "rail_fullness": 0.7,
+    "deck_dome": 0.37,
     "rail_hardness_nose": 0.2,
     "rail_hardness_tail": 0.8,
-    "concave_depth": 0.08,
-    "vee_depth": 0.05,
-    "rail_apex_in": 0.625
+    "concave_depth": 0,
+    "vee_depth": 0,
+    "lock_volume": false,
+    "target_volume": 29,
+    "stations": 161,
+    "section_points": 48,
+    "anchors": {
+      "outline": [],
+      "rocker": [],
+      "thickness": [],
+      "swallow": [
+        [
+          2.029430646814662,
+          -0.9605960087030117,
+          -0.10255762449286254,
+          1.9845225300336882,
+          null
+        ]
+      ]
+    },
+    "marks": [],
+    "handles": {
+      "outline": {
+        "tail": [
+          0.1904269646525234,
+          null,
+          1.6638235145848075
+        ]
+      },
+      "rocker": {},
+      "thickness": {},
+      "swallow": {}
+    },
+    "slices": [],
+    "bottom": [
+      {
+        "pos": 0,
+        "from": "tail",
+        "type": "concave",
+        "to": {
+          "pos": 0,
+          "from": "nose"
+        },
+        "deep": {
+          "pos": 30,
+          "from": "nose"
+        },
+        "blendNose": 0.85,
+        "blendTail": 0.4,
+        "depth": 0.25,
+        "depth2": 0.0625
+      }
+    ],
+    "rail_tuck_nose": 1.875,
+    "rail_tuck_tail": 0.125,
+    "hard_edge": true,
+    "rail_reach_tail": 0.1,
+    "rail_reach_nose": 0,
+    "curve_v": 2,
+    "tools": [],
+    "deck_contours": [],
+    "deck_flat": 0.6,
+    "swallow_rail": 0.8,
+    "swallow_round": 1.875
   },
   "Groveler 5'8\"": {
     "length": 68,
@@ -707,7 +772,35 @@ export const GROUPS = [
         "max": 1,
         "step": 0.05,
         "unit": "frac",
-        "help": "flattens the deck across and turns it into the rail later, with a slight corner (a classic fish deck)"
+        "help": "flattens the deck across to a corner, then bevels it down into the rail (a classic fish deck)"
+      },
+      {
+        "key": "deck_flat_corner",
+        "label": "Flat deck corner",
+        "min": 0.3,
+        "max": 0.95,
+        "step": 0.01,
+        "unit": "frac",
+        "help": "where the flat deck's corner sits, out from the stringer (1 = at the rail); further in = a longer bevel and a softer, thinner rail"
+      },
+      {
+        "key": "nose_beak",
+        "label": "Beak nose",
+        "type": "bool"
+      },
+      {
+        "key": "nose_beak_pos",
+        "label": "Beak starts",
+        "min": 0.25,
+        "max": 5,
+        "step": 0.125,
+        "unit": "in",
+        "help": "how far back from the nose the deck turns down into the beak",
+        "show_if": {
+          "nose_beak": [
+            true
+          ]
+        }
       },
       {
         "key": "swallow_rail",
@@ -730,7 +823,7 @@ export const GROUPS = [
         "max": 6,
         "step": 0.125,
         "unit": "in",
-        "help": "the deck rounds down toward the rail over this many inches at the swallow's tips (0 = square ends)",
+        "help": "over this many inches each half of the swallow thins down onto its bottom to a thin tip (0 = full thickness to the end)",
         "show_if": {
           "tail_type": [
             "swallow"
