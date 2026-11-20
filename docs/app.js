@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { railTuckFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES } from './geometry.js';
+import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES } from './geometry.js';
 import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js';
 import { importS3dx, setSectionAt } from './s3dx.js';
 import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js';
@@ -23,7 +23,7 @@ const TAIL_CLOSES = Object.keys(TAIL_TYPES).filter((k) => TAIL_TYPES[k].closes);
 
 // Viewer preferences (not part of the design): kept per browser
 const LIGHT_HOME = [-0.79, 0.59];     // fixed light: left and up, low and raking (about 10 degrees), so slight contours show
-const prefs = { fix: true, vexProfile: 1, vexSections: 1, bay: true, bayGain: 0.3, fixedLight: true, edit: false, lightDir: LIGHT_HOME, layout: {} };
+const prefs = { fix: true, vexProfile: 1, vexSections: 1, bay: true, bayGain: 0.3, blueBg: false, fixedLight: true, edit: false, lightDir: LIGHT_HOME, layout: {} };
 try { Object.assign(prefs, JSON.parse(localStorage.getItem('surfboard.ui') || '{}')); } catch {}
 const savePrefs = () => { try { localStorage.setItem('surfboard.ui', JSON.stringify(prefs)); } catch {} };
 const COARSE = matchMedia('(pointer: coarse)').matches;      // fingers rather than a mouse: bigger targets, share sheet
@@ -1054,7 +1054,7 @@ function applyParams(p, keepSel = null) {
   const P = state.params, a = P.anchors && typeof P.anchors === 'object' ? P.anchors : {};
   railTuckFromOld(P);                                    // designs from before rail tucks (Rail edge 0..1) get tucks in inches
   if (P.curve_v !== 2) armsToAuto(P);
-  if (!Number.isFinite(P.deck_flat_corner)) P.deck_flat_corner = 0.8;   // newer settings: show their real starting values
+  deckFlatFromOld(P);                                    // the flat deck corner, once a fraction across, is now inches in from the rail
   if (!Number.isFinite(P.nose_beak_pos)) P.nose_beak_pos = 2;
   // the old single concave / tail vee sliders are gone: their shape becomes two bottom contours you can edit
   // (they only shaped the bottom when there were no contours, so with contours they are simply dropped)
@@ -1384,7 +1384,7 @@ function setWire() {
   boardMat.needsUpdate = true;
   $('#t-wire').classList.toggle('on', state.wire);
 }
-const stringerMat = new THREE.MeshStandardMaterial({ color: COLORS.wood, roughness: 0.6 });
+const stringerMat = new THREE.MeshStandardMaterial({ color: COLORS.wood, roughness: 0.6, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
 const stringerGroup = new THREE.Group();
 // outline of the cross section the Sections view is looking at
 const ring = new THREE.LineLoop(new THREE.BufferGeometry(),
@@ -1469,6 +1469,8 @@ function setLighting() {
   $('#lightpad').hidden = !(bay && fixed);
   setLightDir();
   viewport.classList.toggle('bay', bay);
+  viewport.classList.toggle('blue', !!prefs.blueBg);
+  $('#t-bg').classList.toggle('on', !!prefs.blueBg);
   $('#t-light').classList.toggle('on', bay);
 }
 
@@ -1532,11 +1534,19 @@ function updateMesh(data) {
   stringerGroup.children.forEach((c) => c.geometry.dispose());
   stringerGroup.clear();
   const s = data.curves.stringer;
-  for (const key of ['deck', 'bottom']) {
+  // a flat strip of wood 1/8" wide lying on the deck and on the bottom (not a tube: a tube stood out past the
+  // board as a little block wherever the board got thinner than it, like right at a pointed nose)
+  for (const [key, up] of [['deck', 1], ['bottom', -1]]) {
     if (s.x.length < 4) break;
-    const pts = s.x.map((x, i) => new THREE.Vector3(...toThree(x, 0, s[key][i], L)));
-    const curve = new THREE.CatmullRomCurve3(pts);
-    stringerGroup.add(new THREE.Mesh(new THREE.TubeGeometry(curve, Math.min(400, pts.length * 2), 0.07, 6), stringerMat));
+    const n = s.x.length, pos = new Float32Array(n * 6), idx = [];
+    for (let i = 0; i < n; i++) {
+      const z = s[key][i] + up * 0.012;
+      pos.set(toThree(s.x[i], -0.0625, z, L), 6 * i); pos.set(toThree(s.x[i], 0.0625, z, L), 6 * i + 3);
+      if (i) { const a = 2 * (i - 1), b = 2 * i; up > 0 ? idx.push(a, b, a + 1, a + 1, b, b + 1) : idx.push(a, a + 1, b, a + 1, b + 1, b); }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setIndex(idx); geo.computeVertexNormals();
+    stringerGroup.add(new THREE.Mesh(geo, stringerMat));
   }
   stringerGroup.visible = state.stringer;
   placeBoard();
@@ -2903,6 +2913,7 @@ function wireUI() {
   });
   $('#bay-gain').addEventListener('input', (e) => { prefs.bayGain = +e.target.value; savePrefs(); setBayGain(); });
   $('#t-light').addEventListener('click', () => { prefs.bay = !prefs.bay; savePrefs(); setLighting(); });
+  $('#t-bg').addEventListener('click', () => { prefs.blueBg = !prefs.blueBg; savePrefs(); setLighting(); });
   $('#t-fixed').addEventListener('click', () => { prefs.fixedLight = prefs.fixedLight === false; savePrefs(); setLighting(); });
   $('#t-flip').addEventListener('click', (e) => { state.flip = !state.flip; e.currentTarget.classList.toggle('on', state.flip); });
   $('#btn-undo').addEventListener('click', () => histGo(-1));

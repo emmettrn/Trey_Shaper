@@ -775,13 +775,13 @@ export const GROUPS = [
         "help": "flattens the deck across to a corner, then bevels it down into the rail (a classic fish deck)"
       },
       {
-        "key": "deck_flat_corner",
+        "key": "deck_flat_in",
         "label": "Flat deck corner",
-        "min": 0.3,
-        "max": 0.95,
-        "step": 0.01,
-        "unit": "frac",
-        "help": "where the flat deck's corner sits, out from the stringer (1 = at the rail); further in = a longer bevel and a softer, thinner rail"
+        "min": 0.25,
+        "max": 8,
+        "step": 0.125,
+        "unit": "in",
+        "help": "how far in from the rail apex the flat deck's corner sits; it follows the outline out through the tail (and each half of a swallow) and into the nose, or into the beak. Further in = a longer bevel and a softer, thinner rail"
       },
       {
         "key": "nose_beak",
@@ -809,7 +809,7 @@ export const GROUPS = [
         "max": 1,
         "step": 0.05,
         "unit": "frac",
-        "help": "each half of the swallow rolls into a rail on the inside of the cut too (0 = square wall, 1 = full rail)",
+        "help": "a rounded rail bevel down the inside of each half of the swallow, following the cut and meeting in a point on the stringer past the crotch (0 = square wall, 1 = full rail)",
         "show_if": {
           "tail_type": [
             "swallow"

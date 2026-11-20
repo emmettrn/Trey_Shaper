@@ -69,6 +69,27 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## Round 13
+
+- **Blue walls** (3D view bar): switches the background between dark and a shaping bay's light blue. Remembered.
+- **Swallow inside rail**: now a rounded rail bevel that follows the cut on each half at an even width, and
+  past the crotch the two bevels carry on along the lines of the cut until they meet in a point on the stringer
+  (no more soft valley).
+- **Flat deck corner** is in inches in from the rail apex. The corner follows the outline at that distance out
+  through the tail (and each half of a swallow), so it no longer dips at the tail; toward the nose it closes in
+  with the outline into the tip, or with a beak nose, onto the stringer where the beak starts. Older designs
+  are converted (0.68 on a 20 1/2" board = 3 1/4").
+- **Bottom contours across a swallow**: concave and vee are measured from the stringer across the whole board,
+  so a spiral vee no longer lips up along the swallow's cut.
+- **Concave to vee**: a vee too deep for the rail at some spot is scaled down as a whole instead of being cut
+  off spot by spot, so the rail line has no hump and dip where a single concave hands over to a vee.
+- **Channels**: the points across a channel bottom gather on each wall's corners wherever the channel runs, so
+  several channels no longer wrinkle, including where they cross a swallow's cut or run off the rail. Where a
+  channel meets its depth limit (thin tips) it eases into it.
+- **Pointed noses**: on pointed and semi-pointed noses the tuck blends down into the point over the last 4-6"
+  (a 1" tuck is about 1/8" a quarter inch from the tip), with more stations at the tip. The stringer is drawn as
+  a flat strip on the deck and bottom, so it no longer pokes out as a block at a thin nose.
+
 ## Round 12
 
 - **Nose finish**: pointed and semi-pointed noses now finish into a point at an angle over the last 1.5-2",

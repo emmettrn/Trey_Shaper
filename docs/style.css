@@ -127,6 +127,7 @@ input[type=range]:disabled { opacity: .35; }
 .readout span { color: #b9c6ce; font-size: 13px; }
 .viewport > .warnings { position: absolute; left: 14px; top: 14px; max-width: 46%; pointer-events: none; margin: 0; }
 .viewport.bay { background: radial-gradient(ellipse at 50% 40%, #12171b 0%, #06080a 75%); }
+.viewport.blue { background: radial-gradient(ellipse at 50% 40%, #cfe4f0 0%, #9fc3d8 80%); }   /* a shaping bay's light blue walls */
 
 /* ---------- 2D panels ---------- */
 .panels { position: relative; display: grid; grid-template-columns: var(--panel-cols, 1.25fr 1.25fr 1fr); border-top: 1px solid var(--line); background: var(--panel); min-height: 0;
