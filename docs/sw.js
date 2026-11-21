@@ -5,9 +5,9 @@
  *     straight away) and fall back to the saved copy when there isn't
  * Bump CACHE when the list of files changes.
  */
-const CACHE = 'surfboard-designer-v22';
+const CACHE = 'surfboard-designer-v23';
 const FILES = [
-  './', 'index.html', 'style.css', 'app.js', 'geometry.js', 'trace.js', 's3dx.js', 'data.js', 'manifest.webmanifest',
+  './', 'index.html', 'style.css', 'app.js', 'geometry.js', 'trace.js', 's3dx.js', 's3dxout.js', 'data.js', 'manifest.webmanifest',
   'icon-180.png', 'icon-192.png', 'icon-512.png',
   'three.module.min.js',
   'OrbitControls.js',

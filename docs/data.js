@@ -445,31 +445,177 @@ export const PRESETS = {
     "vee_depth": 0.1,
     "rail_apex_in": 1.25
   },
-  "Step-up 6'8\"": {
-    "length": 80,
-    "width": 19.0,
-    "thickness": 2.6,
-    "wide_point_offset": 1.0,
-    "nose_type": "pointed",
-    "tail_type": "pin",
-    "nose_width_12": 11.5,
-    "tail_width_12": 12.5,
-    "nose_rocker": 5.6,
-    "nose_rocker_12": 2.8125,
-    "tail_rocker_12": 1.0625,
-    "tail_rocker": 2.6,
-    "rocker_low_point": -6,
-    "nose_thickness": 0.85,
-    "nose_thickness_12": 1.75,
-    "tail_thickness_12": 1.875,
-    "tail_thickness": 1.15,
-    "rail_apex": 0.32,
-    "rail_fullness": 0.4,
-    "rail_hardness_nose": 0.2,
-    "rail_hardness_tail": 0.75,
-    "concave_depth": 0.08,
-    "vee_depth": 0.1,
-    "rail_apex_in": 0.5
+  "Step-up 6'8\u00bd\"": {
+    "length": 80.5,
+    "width": 18.75,
+    "thickness": 2.375,
+    "wide_point_offset": 2.75,
+    "nose_type": "semi_pointed",
+    "tail_type": "rounded_pin",
+    "nose_width_12": 12,
+    "tail_width_12": 12.9375,
+    "tail_block_width": 6.1875,
+    "swallow_depth": 4.5,
+    "swallow_tip": 1,
+    "swallow_width": 5,
+    "nose_rocker": 5.5,
+    "nose_rocker_12": 2.625,
+    "tail_rocker_12": null,
+    "tail_rocker": 2.0511363636363638,
+    "rocker_low_point": -3.25,
+    "nose_thickness": 0.375,
+    "nose_thickness_12": 1.5,
+    "tail_thickness_12": null,
+    "tail_thickness": 0.5,
+    "thickness_point_offset": 4.25,
+    "rail_apex": 0.35,
+    "rail_apex_in": 0.5,
+    "rail_fullness": 1,
+    "deck_dome": 0.46,
+    "rail_hardness_nose": 0.25,
+    "rail_hardness_tail": 0.85,
+    "lock_volume": false,
+    "target_volume": 28.4,
+    "stations": 161,
+    "section_points": 48,
+    "anchors": {
+      "outline": [
+        [
+          29.741732930818486,
+          -0.16663522494319238
+        ]
+      ],
+      "rocker": [
+        [
+          49.75,
+          0.1076
+        ],
+        [
+          68.75,
+          -0.2145
+        ]
+      ],
+      "thickness": [
+        [
+          20,
+          0.0334
+        ],
+        [
+          56.75,
+          0.0475
+        ],
+        [
+          62.5,
+          0.0675
+        ],
+        [
+          74,
+          -0.105
+        ]
+      ],
+      "swallow": []
+    },
+    "marks": [],
+    "handles": {
+      "outline": {
+        "tail": [
+          0.025263333302199098,
+          null,
+          4.197493997076833
+        ],
+        "tail12": [
+          -0.01752234483680587,
+          6.023289601893097,
+          4.615591070434299
+        ],
+        "nose": [
+          0.3805081441815495,
+          1.5401391203390773,
+          null
+        ]
+      },
+      "rocker": {},
+      "thickness": {},
+      "swallow": {}
+    },
+    "slices": [
+      {
+        "id": 1,
+        "x": 2.883,
+        "adj": {
+          "rail_apex_in": -0.5196,
+          "rail_tuck_in": -0.0189,
+          "vee": 0.0165,
+          "edge_arms": 1,
+          "edge_arm_angle": 89.7,
+          "edge_arm_rail": 0.17,
+          "edge_arm_flat": 0,
+          "rail_fullness": -0.4166
+        },
+        "deck": [],
+        "bottom": [],
+        "v": 2
+      },
+      {
+        "id": 2,
+        "x": 35.347,
+        "adj": {
+          "rail_apex_in": -0.0259,
+          "rail_tuck_in": -0.0693,
+          "concave": 0.1153,
+          "edge_arms": 1,
+          "edge_arm_angle": 13.6,
+          "edge_arm_rail": 0.357,
+          "edge_arm_flat": 0,
+          "rail_fullness": -0.1423
+        },
+        "deck": [],
+        "bottom": [],
+        "v": 2
+      },
+      {
+        "id": 3,
+        "x": 56.947,
+        "adj": {
+          "rail_apex_in": -0.1508,
+          "rail_tuck_in": -0.0062,
+          "vee": 0.0212,
+          "edge_arms": 1,
+          "edge_arm_angle": 3.5,
+          "edge_arm_rail": 0.431,
+          "edge_arm_flat": 0,
+          "rail_fullness": -0.5473
+        },
+        "deck": [],
+        "bottom": [],
+        "v": 2
+      }
+    ],
+    "bottom": [
+      {
+        "pos": 0,
+        "from": "tail",
+        "type": "concave",
+        "depth": 0.125,
+        "depth2": 0.0625,
+        "to": {
+          "pos": 12,
+          "from": "nose"
+        },
+        "blendNose": 0.35,
+        "blendTail": 0.35
+      }
+    ],
+    "tools": [],
+    "deck_contours": [],
+    "curve_v": 2,
+    "deck_flat": 0,
+    "hard_edge": false,
+    "rail_tuck_tail": 0.25,
+    "rail_tuck_nose": 0.75,
+    "rail_reach_tail": 0.09,
+    "rail_reach_nose": 0.33,
+    "nose_beak_pos": 2
   },
   "Round pin 6'0\" (v3 example)": {
     "length": 72,

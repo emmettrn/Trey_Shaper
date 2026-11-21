@@ -2,10 +2,11 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES } from './geometry.js?v=22';
-import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=22';
-import { importS3dx, setSectionAt } from './s3dx.js?v=22';
-import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=22';
+import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES } from './geometry.js?v=23';
+import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=23';
+import { importS3dx, setSectionAt } from './s3dx.js?v=23';
+import { exportS3dx } from './s3dxout.js?v=23';
+import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=23';
 
 const $ = (s) => document.querySelector(s);
 const state = {
@@ -2973,6 +2974,7 @@ function wireUI() {
     const name = `surfboard_${ftin(board.params.length).replace(/'/g, 'ft').replace(/"/g, 'in')}_${board.volume_l.toFixed(1)}L`;
     if (fmt === 'stl') saveFile(`${name}.stl`, toSTL(board, units));
     if (fmt === 'obj') saveFile(`${name}.obj`, toOBJ(board, units));
+    if (fmt === 's3dx') saveFile(`${name}.s3dx`, exportS3dx(board, name));
     if (fmt === 'txt') saveFile(`${name}_spec.txt`, specSheet(board));
   }));
 
@@ -2991,7 +2993,7 @@ async function saveFile(name, data) {
     try { hostDownloads = await host.use('downloads'); } catch {}
     if (!hostDownloads) { toast('Saving files is not available in this view.'); return; }
     let filename = name, payload = data;
-    if (/\.(stl|obj)$/i.test(name)) {
+    if (/\.(stl|obj|s3dx)$/i.test(name)) {
       payload = zipOne(name, typeof data === 'string' ? new TextEncoder().encode(data) : data);
       filename = `${name}.zip`;
     }

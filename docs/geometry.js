@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=22';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=23';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;
@@ -1450,8 +1450,7 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
     fc = clip(1 - cE / wq, 0, 0.98);
     if (p.nose_beak) {
       const xb = p.length - p.nose_beak_pos;
-      fc *= smoother((xb - xi) / Math.max(8, 2 * p.nose_beak_pos));
-      fl *= smoother((xb - xi) / 3);
+      fc *= smoother((xb - xi) / Math.max(8, 2 * p.nose_beak_pos));   // the flat narrows into the beak and meets it at its hard edge
     }
   }
   const kF = 0.025 + 0.04 * (1 - fl);
@@ -1648,6 +1647,7 @@ function stationXs(p) {
   if (tail.notch) for (let j = 1; j <= 8; j++) xs.push((p.swallow_depth * j) / 8);     // the cut can be curved
   if (tail.corner > 0) for (const f of [0.04, 0.15, 0.35, 0.6, 1]) xs.push(tail.corner * f);   // round the tail corners properly
   if (tail.point) for (const f of [0.25, 0.5, 0.75, 0.97, 1, 1.03]) xs.push(p.diamond_depth * f);   // the diamond's corners stay crisp
+  if (p.nose_beak) { const xb = L - p.nose_beak_pos; for (const d of [-0.3, -0.12, -0.04, 0, 0.04, 0.12, 0.3]) xs.push(xb + d); }   // the beak's edge stays crisp
   if (NOSE_TYPES[p.nose_type] < 1.9) for (const d of [0.02, 0.05, 0.1, 0.16, 0.24, 0.34, 0.46, 0.62, 0.8, 1.05, 1.35]) xs.push(L - d);   // a pointed nose finishes cleanly into its point
   for (const s of p.slices) xs.push(s.x);
   for (const r of p.marks) xs.push(r.x);
@@ -1670,8 +1670,9 @@ function buildMesh(p, tScale) {
   const t = Float64Array.from(foil0, (v, i) => {
     const ti = Math.max(v + dt[i], 0.15 * v) * tScale;
     let tq = ti * Math.tanh((3 * h[i]) / Math.max(ti, 1e-9));   // pinch only right where the outline closes (the tip stays a small rounded nub, like Shape3D's)
-    // a beak nose: from nose_beak_pos in from the nose the deck turns down toward the tip (the bottom stays)
-    if (p.nose_beak && x[i] > p.length - p.nose_beak_pos) { const sB = (x[i] - (p.length - p.nose_beak_pos)) / p.nose_beak_pos; tq *= 1 - 0.7 * sB ** 1.25; }
+    // a beak nose: from nose_beak_pos in from the nose the deck breaks down toward the tip over a hard edge (a crease
+    // across the deck where the beak starts, steepest right there), then eases into the tip. The bottom stays.
+    if (p.nose_beak && x[i] > p.length - p.nose_beak_pos) { const sB = (x[i] - (p.length - p.nose_beak_pos)) / p.nose_beak_pos; tq *= 1 - 0.7 * (1 - (1 - sB) ** 1.8); }
     return tq;
   });
   const notch = notchHalfWidth(p, x, arms.swallow);

@@ -69,6 +69,22 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## Round 14
+
+- **Export to Shape3D** (Export ▾ → Shape3D (.s3dx)): writes the board as a Shape3D X design that opens in
+  Shape3D for CNC. It carries the outline, bottom and deck stringers, the rail edge and apex lines, and about ten
+  cross sections (tail, 6" and 12" in, the wide point, 12" and 6" from the nose, the nose, plus any you edited).
+  Each curve is fitted to the board here: the outline and stringers within about 1/64", the cross sections within
+  about 1/50". Channels, concave and step deck tools and a swallow's cut are not in the file (a Shape3D cross
+  section is one smooth curve from stringer to rail); add those in Shape3D. Shape3D measures rocker and thickness
+  at the stringer, so with a concave its numbers read a little lower than Trey Shaper's (which measure from the
+  rail line); the shape is the same.
+- **Beak nose**: the deck now breaks into the beak over a hard edge (a crease across the deck where the beak
+  starts) instead of blending into it, and a flat deck runs right up to that edge.
+- **Step-up 6'8½"** is the new step-up sample. The lump on its deck was the thickness 12" from the nose (1 5/8")
+  pinned between two anchor points that both asked for a thinner nose; it now reads 1 1/2" there with the anchors
+  refitted, so the deck runs smooth.
+
 ## Round 13
 
 - **Blue walls** (3D view bar): switches the background between dark and a shaping bay's light blue. Remembered.
