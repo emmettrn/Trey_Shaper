@@ -150,23 +150,24 @@ export function exportS3dx(board, name = 'Trey Shaper board') {
   // the swallow's cut is left to Shape3D: inside it, the stringer lines carry on from the crotch
   const sd = p.tail_type === 'swallow' ? p.swallow_depth || 0 : 0;
   const near = (x) => { let b = 0; for (let i = 0; i < n; i++) if (Math.abs(pr.x[i] - x) < Math.abs(pr.x[b] - x)) b = i; return b; };
-  const iCut = sd > 0 ? near(sd + 0.25) : 0;
+  const iCut = sd > 0 ? near(sd + 2) : 0;                 // clear of the inside rail bevel
   const lineAlong = (f) => { const P = []; for (let i = 0; i < n; i++) P.push(f(i)); return P; };
   const slopeAt = (i) => unit(sub(lineAlong((j) => [X[j], 0, zbot(j)])[Math.min(i + 1, n - 1)], [X[Math.max(i - 1, 0)], 0, zbot(Math.max(i - 1, 0))]));
-  const extend = (P, f) => {   // inside a swallow's cut: straight on from the crotch at the crotch's slope (cm)
-    if (!iCut) return P;
-    const a = P[iCut], b = P[iCut + 1], m = (b[2] - a[2]) / (b[0] - a[0] || 1);
-    for (let i = 0; i < iCut; i++) P[i] = [X[i], 0, a[2] + m * (X[i] - a[0])];
-    return P;
-  };
+  // inside a swallow's cut the board's stringer is cut away: there the stringer lines follow the designed rocker
+  // and thickness (the board's own profiles), offset to meet the real stringer lines at the crotch, so they carry
+  // straight on through the cut without a jump or a dive (Shape3D cuts the swallow itself)
+  const zbD = (i) => pr.zb[i] * IN, tD = (i) => pr.t[i] * IN;
+  const oBot = iCut ? zbot(iCut) - zbD(iCut) : 0, oTop = iCut ? ztop(iCut) - zbD(iCut) - tD(iCut) : 0;
+  const botAt = (i) => (i < iCut ? zbD(i) + oBot : zbot(i)), topAt = (i) => (i < iCut ? zbD(i) + tD(i) + oTop : ztop(i));
+  const extend = (P, top) => { for (let i = 0; i < iCut; i++) P[i] = [X[i], 0, top ? topAt(i) : botAt(i)]; return P; };
   const tolL = 0.04;                                       // cm, about 1/64"
   const wide = near(L / 2 + (p.wide_point_offset || 0)), low = (() => { let b = 0; for (let i = 0; i < n; i++) if (pr.zb[i] < pr.zb[b]) b = i; return b; })();
   // outline: the apex (widest) line in plan
   const Po = lineAlong((i) => [X[i], pr.h[i] * IN, 0]);
   const otl = fitCurve(Po, [wide], tolL, 24, (i) => (i === wide ? [1, 0, 0] : null));
-  const PbRaw = extend(lineAlong((i) => [X[i], 0, zbot(i)]));
+  const PbRaw = extend(lineAlong((i) => [X[i], 0, zbot(i)]), false);
   const strBot = fitCurve(PbRaw, [low], tolL, 24, (i) => (i === low ? [1, 0, 0] : null));
-  const strDeck = fitCurve(extend(lineAlong((i) => [X[i], 0, ztop(i)])), [], tolL);
+  const strDeck = fitCurve(extend(lineAlong((i) => [X[i], 0, ztop(i)]), true), [], tolL);
   // the rail edge (tuck point) and apex paths, in plan and in the side view
   const railTop = fitCurve(lineAlong((i) => [X[i], pr.Y[i * M + Md + Mr] * IN, 0]), [], tolL);
   const apexTop = fitCurve(lineAlong((i) => [X[i], pr.Y[i * M + Md] * IN, 0]), [wide], tolL, 24, (i) => (i === wide ? [1, 0, 0] : null));
@@ -176,8 +177,13 @@ export function exportS3dx(board, name = 'Trey Shaper board') {
   // a cross section at station i: bottom stringer, rail edge, apex, deck shoulder, deck stringer
   const couple = (i) => {
     const P = [];
-    for (let m = M - 1; m >= 0; m--) P.push(row(i, m));
-    if (pr.yin[i] > 1e-6) P.unshift([X[i], 0, P[0][2]]);   // a swallow's half: closed to the stringer
+    if (i < iCut) {
+      // inside a swallow's cut: the section just ahead of the crotch, stretched to this station's width and set
+      // between its stringer lines (a whole section from the stringer; Shape3D cuts the swallow out of it)
+      const j = iCut, b0 = zbot(j), t0 = ztop(j) - b0, sy = pr.h[i] / Math.max(pr.h[j], 1e-6), sz = (topAt(i) - botAt(i)) / Math.max(t0, 1e-6);
+      for (let m = M - 1; m >= 0; m--) { const q = row(j, m); P.push([X[i], q[1] * sy, botAt(i) + (q[2] - b0) * sz]); }
+    } else for (let m = M - 1; m >= 0; m--) P.push(row(i, m));
+    if (P[0][1] > 1e-6) P.unshift([X[i], 0, P[0][2]]);     // closed to the stringer
     const off = P.length - M, iE = off + (M - 1 - (Md + Mr)), iA = off + (M - 1 - Md);
     // the deck shoulder: where the deck has come in to 85% of the apex's width
     let iD = iA + 1; const yA = P[iA][1];
