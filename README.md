@@ -69,6 +69,16 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## Round 15
+
+- **Flat deck corner into a beak**: the beak's start is now the corner line's tip. The corner follows the same fair
+  curve it makes into a nose, landing on the stringer where the beak starts; where that runs inside the usual
+  distance, it wins (the corner sits closer to the rail than the slider there), so nothing blends.
+- **Shape3D export, swallow tails**: inside the swallow's cut the stringer lines follow the designed rocker and
+  thickness straight through (no dive at the tail, no wild tail points), and the cross sections there are whole
+  sections from the stringer (no deck concave in the tail). Shape3D cuts the swallow itself.
+- **Skeleton** lines turn black on the Blue walls background.
+
 ## Round 14b
 
 - **Beak nose** again: the crease across the deck is gone. With a flat deck, the flat's corners sharpen into hard

@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=24';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=25';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;
@@ -1449,12 +1449,22 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   const rF = 1.25 + 0.5 * (sh.ed - 1.7) / 1.4;
   if (fl > 0) {
     const wq = Math.max(hi - yi, 1e-6), c = p.deck_flat_in ?? 2, k = 0.6;
-    const cE = (c ** -4 + (k * wq) ** -4) ** -0.25;       // c inches in from the rail; no more than 60% of the way in where it is narrow
-    fc = clip(1 - cE / wq, 0, 0.98);
-    if (p.nose_beak) {
-      const xb = p.length - p.nose_beak_pos;
-      fc *= smoother((xb - xi) / Math.max(8, 2 * p.nose_beak_pos));   // the flat narrows into the beak and meets it at its hard edge
+    // the corner's line: c inches in from the rail, no more than 60% of the way in where it is narrow
+    const corner = (hq) => hq - (c ** -4 + (k * Math.max(hq, 1e-6)) ** -4) ** -0.25;
+    let yc = corner(hi);
+    if (p.nose_beak && p._hAt) {
+      // with a beak, the beak's start is the corner line's tip: the same fair curve it makes into a nose, squeezed so it
+      // lands on the stringer right where the beak starts. Wherever that runs inside the usual line, it wins (the corner
+      // sits closer to the rail than c there), so the corner meets the beak's edge cleanly, no blending
+      const L = p.length, xb = L - p.nose_beak_pos, xw = L / 2 + (p.wide_point_offset || 0);
+      if (xi >= xb) yc = 0;
+      else if (xi > xw) {
+        const yv = corner(p._hAt(xw + ((xi - xw) * (L - xw)) / Math.max(xb - xw, 1)));
+        const kk = 0.15;                                     // a soft min (about 1/8"), so the two lines meet without a kink
+        yc = Math.min(yc, yv) - kk * Math.log1p(Math.exp(-Math.abs(yc - yv) / kk));
+      }
     }
+    fc = clip((yc - yi) / wq, 0, 0.98);
   }
   // with a beak, the flat's corner sharpens into a hard edge as it closes onto the stringer, and past the beak's
   // start the two bevels meet along the stringer in a ridge down into the beak (like a fish's beak nose)
@@ -1701,6 +1711,7 @@ function buildMesh(p, tScale) {
     }
   }
   p._zbAt = (xq) => interp(clip(xq, x[0], x[n - 1]), x, zb);
+  p._hAt = (xq) => interp(clip(xq, x[0], x[n - 1]), x, h);   // the outline, for a flat deck's corner into a beak
   p._yinAt = (xq) => interp(clip(xq, x[0], x[n - 1]), x, yin);   // the swallow's cut, for its inside rail     // the rocker, for concave tools with a flat center line
   p._chanB = (p.tools || []).some((t) => t.shape === 'channel' && t.surface !== 'deck');   // bottom channels: resample the flat by turning too
   const [Y, Z] = sections(p, x, h, yin, t, zb, M, sl);

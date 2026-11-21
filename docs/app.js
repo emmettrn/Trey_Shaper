@@ -2,11 +2,11 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES } from './geometry.js?v=24';
-import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=24';
-import { importS3dx, setSectionAt } from './s3dx.js?v=24';
-import { exportS3dx } from './s3dxout.js?v=24';
-import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=24';
+import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES } from './geometry.js?v=25';
+import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=25';
+import { importS3dx, setSectionAt } from './s3dx.js?v=25';
+import { exportS3dx } from './s3dxout.js?v=25';
+import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=25';
 
 const $ = (s) => document.querySelector(s);
 const state = {
@@ -1471,6 +1471,8 @@ function setLighting() {
   setLightDir();
   viewport.classList.toggle('bay', bay);
   viewport.classList.toggle('blue', !!prefs.blueBg);
+  ribs.material.color.set(prefs.blueBg ? 0x000000 : 0x7fe6d6);   // the skeleton in black against the blue walls
+  editedRibs.material.color.set(prefs.blueBg ? 0xc4501a : 0xffb347);
   $('#t-bg').classList.toggle('on', !!prefs.blueBg);
   $('#t-light').classList.toggle('on', bay);
 }
