@@ -69,6 +69,14 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## Round 14b
+
+- **Beak nose** again: the crease across the deck is gone. With a flat deck, the flat's corners sharpen into hard
+  edges as they close onto the stringer at the beak, and from there the two bevels meet in a ridge down into the
+  beak, like a fish's beak nose. The deck still turns down into the beak as before.
+- **Swallow inside rail**: past the crotch the two bevels now close onto the stringer within about an inch, so the
+  shadow line stops just ahead of the crotch instead of running up the board.
+
 ## Round 14
 
 - **Export to Shape3D** (Export ▾ → Shape3D (.s3dx)): writes the board as a Shape3D X design that opens in

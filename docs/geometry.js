@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=23';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=24';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;
@@ -1425,8 +1425,11 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
     const Rw = Math.min(0.55 * (hi - Math.max(yi, 0)), 1.25 * ti);
     // the cut's direction: its own slope here inside the cut, the slope it arrives at the crotch with past it
     const xs = Math.min(xi, sd), sl = (p._yinAt(xs) - p._yinAt(xs - 0.5)) / 0.5, cs = 1 / Math.hypot(1, sl);
-    const yl = xi <= sd ? yi : sl * (xi - sd);              // the cut's line (past the crotch: carried on across the stringer)
-    if (Rw > 1e-3 && (xi <= sd || -yl * cs < Rw)) bevel = (y) => { const u = clip(((y - yl) * cs) / Rw, 0, 1); return qIn * (1 - Math.sqrt(Math.max(0, 1 - (1 - u) ** 2))); };
+    // the cut's line; past the crotch the two bevels close onto the stringer quickly, within about one bevel width
+    // (a short point just ahead of the crotch, not a long shadow line up the board)
+    const Lc = clip(0.6 * Rw, 0.5, 1.25);
+    const yl = xi <= sd ? yi : -Rw * clip((xi - sd) / Lc, 0, 1);
+    if (Rw > 1e-3 && (xi <= sd || xi - sd < Lc)) bevel = (y) => { const u = clip(((y - yl) * (xi <= sd ? cs : 1)) / Rw, 0, 1); return qIn * (1 - Math.sqrt(Math.max(0, 1 - (1 - u) ** 2))); };
   }
   const tl = p.tools && p.tools.length ? toolsAt(p, xi, hi, ti * tipK) : null;     // hard-edged concaves at this spot (shallower where a swallow's tips thin out)
   // contours: a single concave is one dish across the bottom (deepest at the stringer, the same curve all
@@ -1453,7 +1456,10 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
       fc *= smoother((xb - xi) / Math.max(8, 2 * p.nose_beak_pos));   // the flat narrows into the beak and meets it at its hard edge
     }
   }
-  const kF = 0.025 + 0.04 * (1 - fl);
+  // with a beak, the flat's corner sharpens into a hard edge as it closes onto the stringer, and past the beak's
+  // start the two bevels meet along the stringer in a ridge down into the beak (like a fish's beak nose)
+  const kB = p.nose_beak && fl > 0 ? smoother((xi - (p.length - p.nose_beak_pos - 14)) / 10) : 0;
+  const kF = (0.025 + 0.04 * (1 - fl)) * (1 - 0.75 * kB);
   const flatDeck = (eta) => { const u = (eta - fc) / (1 - fc), pr = Math.max(1 - u, 0) ** (1 / rF); return -kF * Math.log(Math.exp(-pr / kF) + Math.exp(-1 / kF)); };
   for (let k = 0; k < KA; k++) {
     const yraw = hi * TH_COS[k] ** (2 / ed), eta = clip(yraw / hs, 0, 1);
@@ -1670,9 +1676,8 @@ function buildMesh(p, tScale) {
   const t = Float64Array.from(foil0, (v, i) => {
     const ti = Math.max(v + dt[i], 0.15 * v) * tScale;
     let tq = ti * Math.tanh((3 * h[i]) / Math.max(ti, 1e-9));   // pinch only right where the outline closes (the tip stays a small rounded nub, like Shape3D's)
-    // a beak nose: from nose_beak_pos in from the nose the deck breaks down toward the tip over a hard edge (a crease
-    // across the deck where the beak starts, steepest right there), then eases into the tip. The bottom stays.
-    if (p.nose_beak && x[i] > p.length - p.nose_beak_pos) { const sB = (x[i] - (p.length - p.nose_beak_pos)) / p.nose_beak_pos; tq *= 1 - 0.7 * (1 - (1 - sB) ** 1.8); }
+    // a beak nose: from nose_beak_pos in from the nose the deck turns down toward the tip (the bottom stays)
+    if (p.nose_beak && x[i] > p.length - p.nose_beak_pos) { const sB = (x[i] - (p.length - p.nose_beak_pos)) / p.nose_beak_pos; tq *= 1 - 0.7 * sB ** 1.25; }
     return tq;
   });
   const notch = notchHalfWidth(p, x, arms.swallow);
