@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=26';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=27';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;
@@ -1406,8 +1406,22 @@ function pinchRail(sh, zApex, td, tb, yi, hi, Y, Z) {
  * and the rail apex (1). aux, if given, also receives the section before the anchor
  * points (Y0, Z0), rho, the normals and the two arc lengths.
  */
+/** A beak nose: the thickness factor from nose_beak_pos in from the nose (1 behind it, down to 0.3 at the tip). */
+function beakF(p, x) {
+  if (!p.nose_beak || !(x > p.length - p.nose_beak_pos)) return 1;
+  const sB = (x - (p.length - p.nose_beak_pos)) / p.nose_beak_pos;
+  return 1 - 0.7 * sB ** 1.25;
+}
 function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
-  const sh = sectionShape(p, xi, d, ti);
+  // in a beak the whole section comes down with the deck, the rail apex (and the tuck under it) too: the section is
+  // shaped for the thickness before the beak, then scaled (an apex set in inches would otherwise stay up as a lump)
+  const bF = beakF(p, xi), sh = sectionShape(p, xi, d, ti / bF);
+  if (bF < 1) {
+    // and the rail turns down with the deck: the apex drops toward the bottom edge and the tuck closes up, so the
+    // rail runs down into the beak instead of the tuck standing up into it
+    const sB = (xi - (p.length - p.nose_beak_pos)) / p.nose_beak_pos, q = 1 - clip(sB, 0, 1) ** 0.8;
+    sh.ar = Math.max(0.12, sh.ar * (0.45 + 0.55 * q)); sh.tuck *= 0.25 + 0.75 * q;
+  }
   const { ar, ed, dome, con, dbl, vee } = sh;
   // a swallow's tips: over the last swallow_round inches each half thins down onto its bottom on a radius,
   // to a thin tip (12% of the thickness at the very end). The bottom and its edge stay where they are.
@@ -1424,12 +1438,12 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   if (qIn > 0 && p._yinAt) {
     const Rw = Math.min(0.55 * (hi - Math.max(yi, 0)), 1.25 * ti);
     // the cut's direction: its own slope here inside the cut, the slope it arrives at the crotch with past it
-    const xs = Math.min(xi, sd), sl = (p._yinAt(xs) - p._yinAt(xs - 0.5)) / 0.5, cs = 1 / Math.hypot(1, sl);
+    const xs = Math.min(xi, sd - 0.75), sl = (p._yinAt(xs + 0.75) - p._yinAt(xs - 0.75)) / 1.5, cs0 = 1 / Math.hypot(1, sl);   // the cut's slope, read over 1 1/2" so it doesn't wobble
     // the cut's line; past the crotch the two bevels close onto the stringer quickly, within about one bevel width
     // (a short point just ahead of the crotch, not a long shadow line up the board)
-    const Lc = clip(1.6 * Rw, 2, 3.5);
+    const Lc = clip(1.6 * Rw, 2, 3.5), cs = xi <= sd ? cs0 : cs0 + (1 - cs0) * smoother(clip((xi - sd) / Lc, 0, 1));   // and eases from the cut's angle to square past the crotch
     const yl = xi <= sd ? yi : -Rw * clip((xi - sd) / Lc, 0, 1);
-    if (Rw > 1e-3 && (xi <= sd || xi - sd < Lc)) bevel = (y) => { const u = clip(((y - yl) * (xi <= sd ? cs : 1)) / Rw, 0, 1); return qIn * (1 - Math.sqrt(Math.max(0, 1 - (1 - u) ** 2))); };
+    if (Rw > 1e-3 && (xi <= sd || xi - sd < Lc)) bevel = (y) => { const u = clip(((y - yl) * cs) / Rw, 0, 1); return qIn * (1 - Math.sqrt(Math.max(0, 1 - (1 - u) ** 2))); };
   }
   const tl = p.tools && p.tools.length ? toolsAt(p, xi, hi, ti * tipK) : null;     // hard-edged concaves at this spot (shallower where a swallow's tips thin out)
   // contours: a single concave is one dish across the bottom (deepest at the stringer, the same curve all
@@ -1456,11 +1470,14 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
       // with a beak, the beak's start is the corner line's tip: from the wide point forward the corner follows the
       // outline's own curve, squeezed smoothly (no squeeze at the wide point, more toward the nose) so it closes onto
       // the stringer right where the beak starts. One continuous curve, no blending or reversed bend
-      const L = p.length, xb = L - p.nose_beak_pos, xw = L / 2 + (p.wide_point_offset || 0);
+      const L = p.length, xb = L - p.nose_beak_pos, xw = p._xw ?? L / 2;     // from the widest point of the outline
       if (xi >= xb) yc = 0;
       else if (xi > xw && xb > xw + 1) {
-        const a = (L - xb) / (xb - xw) ** 2, xs = xi + a * (xi - xw) ** 2;   // xw -> xw, xb -> L, slope 1 at xw
-        yc = corner(p._hAt(xs));
+        // ahead of the wide point the corner line is the nose outline itself, scaled in across (so it sits c in from the
+        // rail at the wide point) and squeezed smoothly along (none at the wide point) to end at the beak's start:
+        // the same curve as the nose, just smaller
+        const hw = p._hAt(xw), a = (L - xb) / (xb - xw) ** 2, xs = xi + a * (xi - xw) ** 2;
+        yc = (corner(hw) / Math.max(hw, 1e-6)) * p._hAt(xs);
       }
     }
     fc = clip((yc - yi) / wq, 0, 0.98);
@@ -1488,7 +1505,7 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   // about 1/8" a quarter inch from the tip), so the rail runs cleanly out into the point instead of a tuck crowding it
   let tk = sh.tuck, cw = 0.85;
   if (NOSE_TYPES[p.nose_type] < 1.9) {
-    const Lt = clip(0.08 * p.length, 4, 6), s = smoother(clip((p.length - xi) / Lt, 0, 1));
+    const Lt = clip(0.18 * p.length, 8, 14), u = clip((p.length - xi) / Lt, 0, 1), s = 1 - (1 - u) ** 2;   // gently, over 8-14"
     tk *= 0.15 + 0.85 * s; cw *= 0.4 + 0.6 * s;         // and it takes less and less of the width, so the edge runs out into the point
   }
   const w = tk > 1e-6 ? (tk ** -4 + (cw * hi) ** -4) ** -0.25 : 0, yE = hi - w, hf = sh.hard;
@@ -1686,7 +1703,7 @@ function buildMesh(p, tScale) {
     const ti = Math.max(v + dt[i], 0.15 * v) * tScale;
     let tq = ti * Math.tanh((3 * h[i]) / Math.max(ti, 1e-9));   // pinch only right where the outline closes (the tip stays a small rounded nub, like Shape3D's)
     // a beak nose: from nose_beak_pos in from the nose the deck turns down toward the tip (the bottom stays)
-    if (p.nose_beak && x[i] > p.length - p.nose_beak_pos) { const sB = (x[i] - (p.length - p.nose_beak_pos)) / p.nose_beak_pos; tq *= 1 - 0.7 * sB ** 1.25; }
+    tq *= beakF(p, x[i]);
     return tq;
   });
   const notch = notchHalfWidth(p, x, arms.swallow);
@@ -1710,6 +1727,7 @@ function buildMesh(p, tScale) {
     }
   }
   p._zbAt = (xq) => interp(clip(xq, x[0], x[n - 1]), x, zb);
+  { let iw = 0; for (let i = 1; i < n; i++) if (h[i] > h[iw]) iw = i; p._xw = x[iw]; }
   p._hAt = (xq) => interp(clip(xq, x[0], x[n - 1]), x, h);   // the outline, for a flat deck's corner into a beak
   p._yinAt = (xq) => interp(clip(xq, x[0], x[n - 1]), x, yin);   // the swallow's cut, for its inside rail     // the rocker, for concave tools with a flat center line
   p._chanB = (p.tools || []).some((t) => t.shape === 'channel' && t.surface !== 'deck');   // bottom channels: resample the flat by turning too

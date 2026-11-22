@@ -69,6 +69,18 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## Round 17
+
+- **Pointed nose tuck**: blends down into the point gradually over the last 8 to 14" (was 4 to 6"), so there is no
+  flat spot or kink in the rail. About 1/8" of tuck is left a quarter inch from the tip.
+- **Beak nose rail**: the whole cross section now comes down with the beak, rail apex included, and through the
+  beak the apex drops toward the bottom edge and the tuck closes up. The rail runs down into the beak instead of
+  the tuck standing up above it (the lump next to the beak).
+- **Flat deck corner into a beak**: ahead of the widest point the corner line is the nose outline itself, scaled
+  in and eased along to end at the beak's start, so it has the same curve as the nose.
+- **Swallow inside rail**: the cut's angle is read over 1 1/2" (no wobble on deep swallows) and the bevel eases
+  from that angle to square past the crotch (no ridge across the deck at the crotch).
+
 ## Round 16
 
 - **Flat deck corner into a beak**: from the wide point forward the corner line follows the outline's own curve,
