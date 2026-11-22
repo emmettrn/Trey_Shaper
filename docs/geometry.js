@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=29';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=30';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;
@@ -1423,6 +1423,11 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   const tS = (ti / bF) * (1 - sB * (1 - bF)), dropB = Math.max(tS - ti, 0);
   ti = tS;
   const sh = sectionShape(p, xi, d, ti);
+  if (sB > 0) {
+    // and toward the tip the rail turns down with it: the apex drops toward the bottom edge and the tuck closes up
+    const q = 1 - sB ** 0.8;
+    sh.ar = Math.max(0.12, sh.ar * (0.45 + 0.55 * q)); sh.tuck *= 0.25 + 0.75 * q;
+  }
   const { ar, ed, dome, con, dbl, vee } = sh;
   // a swallow's tips: over the last swallow_round inches each half thins down onto its bottom on a radius,
   // to a thin tip (12% of the thickness at the very end). The bottom and its edge stay where they are.
@@ -1496,7 +1501,7 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
     if (dc || dtl) H = deckShape(dc, dtl, H, td, Math.abs(Y[k]), hi);
     if (bevel) { const zf = zApex - tb + contour(yraw); Z[k] = zApex + H - (zApex + H - zf) * bevel(Y[k]); }
     else Z[k] = zApex + H;
-    if (dropB > 0) Z[k] -= dropB * (1 - smoother(clip((eta - 0.4) / 0.5, 0, 1)));   // flat across the middle, easing out into the rail band
+    if (dropB > 0) Z[k] -= dropB * (1 - eta * eta);     // flat at the stringer, easing out across the deck into the rail
   }
   // the bottom: from the apex down and in around the rail to the edge (the tuck, w in from the apex),
   // then the flat bottom (with its contours and concave tools) in to the stringer. Soft: a quarter

@@ -2,11 +2,11 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES } from './geometry.js?v=29';
-import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=29';
-import { importS3dx, setSectionAt } from './s3dx.js?v=29';
-import { exportS3dx } from './s3dxout.js?v=29';
-import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=29';
+import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES } from './geometry.js?v=30';
+import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=30';
+import { importS3dx, setSectionAt } from './s3dx.js?v=30';
+import { exportS3dx } from './s3dxout.js?v=30';
+import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=30';
 
 const $ = (s) => document.querySelector(s);
 const state = {
