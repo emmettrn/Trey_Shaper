@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=30';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=31';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;
@@ -1420,13 +1420,13 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   // toward the tip, where the board is just rail, more and more of it is the whole section coming down (so the rail
   // never stands above the beak)
   const bF = beakF(p, xi), sB = bF < 1 ? clip((xi - (p.length - p.nose_beak_pos)) / p.nose_beak_pos, 0, 1) : 0;
-  const tS = (ti / bF) * (1 - sB * (1 - bF)), dropB = Math.max(tS - ti, 0);
+  const tS = (ti / bF) * (1 - smoother(sB) * (1 - bF)), dropB = Math.max(tS - ti, 0);
   ti = tS;
   const sh = sectionShape(p, xi, d, ti);
   if (sB > 0) {
     // and toward the tip the rail turns down with it: the apex drops toward the bottom edge and the tuck closes up
-    const q = 1 - sB ** 0.8;
-    sh.ar = Math.max(0.12, sh.ar * (0.45 + 0.55 * q)); sh.tuck *= 0.25 + 0.75 * q;
+    const q = 1 - smoother(sB);                          // eased in from the beak's start: no kink in the rail or tuck lines
+    sh.ar = Math.max(0.12, sh.ar * (0.8 + 0.2 * q));
   }
   const { ar, ed, dome, con, dbl, vee } = sh;
   // a swallow's tips: over the last swallow_round inches each half thins down onto its bottom on a radius,
@@ -1517,7 +1517,12 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
     const Lt = clip(0.18 * p.length, 8, 14), xT = p.length - Lt;
     if (xi > xT && p._hAt) { const h0 = Math.max(p._hAt(xT), 1e-6); tk *= clip(hi / h0, 0, 1); }
   }
-  const w = tk > 1e-6 ? (tk ** -4 + (cw * hi) ** -4) ** -0.25 : 0, yE = hi - w, hf = sh.hard;
+  let hf = sh.hard;
+  if (NOSE_TYPES[p.nose_type] < 1.9) {                   // and its corners soften toward the point, so its shadow line stays continuous
+    const Lt = clip(0.18 * p.length, 8, 14), u = clip((p.length - xi) / Lt, 0, 1);
+    hf *= 0.5 + 0.5 * smoother(u);
+  }
+  const w = tk > 1e-6 ? (tk ** -4 + (cw * hi) ** -4) ** -0.25 : 0, yE = hi - w;
   const tool = (yr) => (tl ? toolLift(tl, yi + (yr * (hi - yi)) / hs) : 0);
   // a wide soft tuck under a low apex (a nose tuck) would make the quarter ellipse turn up in a tiny radius right
   // at the apex (a pinched rail): there it gets boxier (a superellipse), so it turns up sooner and the rail stays round
