@@ -69,6 +69,14 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## Round 16
+
+- **Flat deck corner into a beak**: from the wide point forward the corner line follows the outline's own curve,
+  eased in a little more toward the nose so it lands on the stringer at the beak's start. One continuous curve
+  (the last round's version bent the wrong way where it changed over).
+- **Swallow inside rail**: past the crotch the two bevels again meet in a point on the stringer, over 2 to 3½"
+  (depending on how wide the bevel is) instead of running far up the board.
+
 ## Round 15
 
 - **Flat deck corner into a beak**: the beak's start is now the corner line's tip. The corner follows the same fair
