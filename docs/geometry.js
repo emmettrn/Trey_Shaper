@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=28';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=29';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;
@@ -1416,12 +1416,11 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   // in a beak the whole section comes down with the deck, the rail apex (and the tuck under it) too: the section is
   // shaped for the thickness before the beak, then scaled (an apex set in inches would otherwise stay up as a lump)
   // a beak nose: the section keeps its full thickness and rail (the rail band keeps its angle); only the deck comes
-  // down, most along the stringer and less and less out toward the rail, so the beak is a ridge on the stringer
-  // that bends into the rail bands on each side
+  // down, flat across the middle (flat at the stringer) and easing out into the rail band on each side
   // toward the tip, where the board is just rail, more and more of it is the whole section coming down (so the rail
   // never stands above the beak)
   const bF = beakF(p, xi), sB = bF < 1 ? clip((xi - (p.length - p.nose_beak_pos)) / p.nose_beak_pos, 0, 1) : 0;
-  const tS = (ti / bF) * (1 - sB ** 1.5 * (1 - bF)), dropB = Math.max(tS - ti, 0);
+  const tS = (ti / bF) * (1 - sB * (1 - bF)), dropB = Math.max(tS - ti, 0);
   ti = tS;
   const sh = sectionShape(p, xi, d, ti);
   const { ar, ed, dome, con, dbl, vee } = sh;
@@ -1497,7 +1496,7 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
     if (dc || dtl) H = deckShape(dc, dtl, H, td, Math.abs(Y[k]), hi);
     if (bevel) { const zf = zApex - tb + contour(yraw); Z[k] = zApex + H - (zApex + H - zf) * bevel(Y[k]); }
     else Z[k] = zApex + H;
-    if (dropB > 0) { const u = clip(eta / 0.85, 0, 1); Z[k] -= dropB * (1 - u) ** 2; }
+    if (dropB > 0) Z[k] -= dropB * (1 - smoother(clip((eta - 0.4) / 0.5, 0, 1)));   // flat across the middle, easing out into the rail band
   }
   // the bottom: from the apex down and in around the rail to the edge (the tuck, w in from the apex),
   // then the flat bottom (with its contours and concave tools) in to the stringer. Soft: a quarter

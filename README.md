@@ -71,9 +71,9 @@ the tip), it is limited to the nearest value that can, and a warning chip says s
 
 ## Round 18
 
-- **Beak nose**: the beak is a ridge along the stringer, not a flat plane. The deck comes down most at the stringer
-  and less and less out toward the rail, so the beak bends into the rail bands on each side and the rail keeps its
-  angle. Toward the very tip, where the board is all rail, the whole section comes down with it, so the rail never
+- **Beak nose**: the deck comes down flat across the middle (flat at the stringer) and eases out into the rail band
+  on each side, so the beak bends into the rails and the rail keeps its angle (round 19; round 18 dropped the
+  stringer most, which left a divot). Toward the very tip, where the board is all rail, the whole section comes down with it, so the rail never
   stands above the beak.
 - **Pointed nose tuck**: over the last 8 to 14" the tuck is a fixed share of the half width, so its shadow line is a
   smaller copy of the outline and tapers evenly into the point.
