@@ -69,6 +69,13 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## Round 20
+
+- **Beak nose**: a mix of the two earlier versions. Near the beak's start only the deck comes down, flat at the
+  stringer and easing out across the deck into the rail (the blend of the "divot" version, without the divot);
+  toward the tip more and more of the whole nose turns down, apex and tuck included (the shape and angle of the
+  "plane" version).
+
 ## Round 18
 
 - **Beak nose**: the deck comes down flat across the middle (flat at the stringer) and eases out into the rail band

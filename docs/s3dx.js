@@ -9,7 +9,7 @@
  *    tuck point's arms, concave or vee, rail fullness).
  * Fin boxes are left out (fins are not part of Trey Shaper). No DOM: runs in the browser and in Node.
  */
-import { fitOutline } from './trace.js?v=29';
+import { fitOutline } from './trace.js?v=30';
 
 const CM = 1 / 2.54;
 const clip = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
