@@ -69,6 +69,15 @@ follows along.
 If a measurement can't be reached by a fair curve (for example more rocker at 12" than at
 the tip), it is limited to the nearest value that can, and a warning chip says so.
 
+## Round 18
+
+- **Beak nose**: the beak is a ridge along the stringer, not a flat plane. The deck comes down most at the stringer
+  and less and less out toward the rail, so the beak bends into the rail bands on each side and the rail keeps its
+  angle. Toward the very tip, where the board is all rail, the whole section comes down with it, so the rail never
+  stands above the beak.
+- **Pointed nose tuck**: over the last 8 to 14" the tuck is a fixed share of the half width, so its shadow line is a
+  smaller copy of the outline and tapers evenly into the point.
+
 ## Round 17
 
 - **Pointed nose tuck**: blends down into the point gradually over the last 8 to 14" (was 4 to 6"), so there is no

@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=27';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=28';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;
@@ -1415,13 +1415,15 @@ function beakF(p, x) {
 function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   // in a beak the whole section comes down with the deck, the rail apex (and the tuck under it) too: the section is
   // shaped for the thickness before the beak, then scaled (an apex set in inches would otherwise stay up as a lump)
-  const bF = beakF(p, xi), sh = sectionShape(p, xi, d, ti / bF);
-  if (bF < 1) {
-    // and the rail turns down with the deck: the apex drops toward the bottom edge and the tuck closes up, so the
-    // rail runs down into the beak instead of the tuck standing up into it
-    const sB = (xi - (p.length - p.nose_beak_pos)) / p.nose_beak_pos, q = 1 - clip(sB, 0, 1) ** 0.8;
-    sh.ar = Math.max(0.12, sh.ar * (0.45 + 0.55 * q)); sh.tuck *= 0.25 + 0.75 * q;
-  }
+  // a beak nose: the section keeps its full thickness and rail (the rail band keeps its angle); only the deck comes
+  // down, most along the stringer and less and less out toward the rail, so the beak is a ridge on the stringer
+  // that bends into the rail bands on each side
+  // toward the tip, where the board is just rail, more and more of it is the whole section coming down (so the rail
+  // never stands above the beak)
+  const bF = beakF(p, xi), sB = bF < 1 ? clip((xi - (p.length - p.nose_beak_pos)) / p.nose_beak_pos, 0, 1) : 0;
+  const tS = (ti / bF) * (1 - sB ** 1.5 * (1 - bF)), dropB = Math.max(tS - ti, 0);
+  ti = tS;
+  const sh = sectionShape(p, xi, d, ti);
   const { ar, ed, dome, con, dbl, vee } = sh;
   // a swallow's tips: over the last swallow_round inches each half thins down onto its bottom on a radius,
   // to a thin tip (12% of the thickness at the very end). The bottom and its edge stay where they are.
@@ -1495,6 +1497,7 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
     if (dc || dtl) H = deckShape(dc, dtl, H, td, Math.abs(Y[k]), hi);
     if (bevel) { const zf = zApex - tb + contour(yraw); Z[k] = zApex + H - (zApex + H - zf) * bevel(Y[k]); }
     else Z[k] = zApex + H;
+    if (dropB > 0) { const u = clip(eta / 0.85, 0, 1); Z[k] -= dropB * (1 - u) ** 2; }
   }
   // the bottom: from the apex down and in around the rail to the edge (the tuck, w in from the apex),
   // then the flat bottom (with its contours and concave tools) in to the stringer. Soft: a quarter
@@ -1505,8 +1508,10 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   // about 1/8" a quarter inch from the tip), so the rail runs cleanly out into the point instead of a tuck crowding it
   let tk = sh.tuck, cw = 0.85;
   if (NOSE_TYPES[p.nose_type] < 1.9) {
-    const Lt = clip(0.18 * p.length, 8, 14), u = clip((p.length - xi) / Lt, 0, 1), s = 1 - (1 - u) ** 2;   // gently, over 8-14"
-    tk *= 0.15 + 0.85 * s; cw *= 0.4 + 0.6 * s;         // and it takes less and less of the width, so the edge runs out into the point
+    // over the last 8-14" the tuck narrows with the outline itself (a fixed share of the half width), so the tuck's
+    // shadow line is a smaller copy of the outline and runs evenly into the point
+    const Lt = clip(0.18 * p.length, 8, 14), xT = p.length - Lt;
+    if (xi > xT && p._hAt) { const h0 = Math.max(p._hAt(xT), 1e-6); tk *= clip(hi / h0, 0, 1); }
   }
   const w = tk > 1e-6 ? (tk ** -4 + (cw * hi) ** -4) ** -0.25 : 0, yE = hi - w, hf = sh.hard;
   const tool = (yr) => (tl ? toolLift(tl, yi + (yr * (hi - yi)) / hs) : 0);
