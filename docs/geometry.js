@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=25';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=26';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;
@@ -1427,7 +1427,7 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
     const xs = Math.min(xi, sd), sl = (p._yinAt(xs) - p._yinAt(xs - 0.5)) / 0.5, cs = 1 / Math.hypot(1, sl);
     // the cut's line; past the crotch the two bevels close onto the stringer quickly, within about one bevel width
     // (a short point just ahead of the crotch, not a long shadow line up the board)
-    const Lc = clip(0.6 * Rw, 0.5, 1.25);
+    const Lc = clip(1.6 * Rw, 2, 3.5);
     const yl = xi <= sd ? yi : -Rw * clip((xi - sd) / Lc, 0, 1);
     if (Rw > 1e-3 && (xi <= sd || xi - sd < Lc)) bevel = (y) => { const u = clip(((y - yl) * (xi <= sd ? cs : 1)) / Rw, 0, 1); return qIn * (1 - Math.sqrt(Math.max(0, 1 - (1 - u) ** 2))); };
   }
@@ -1453,15 +1453,14 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
     const corner = (hq) => hq - (c ** -4 + (k * Math.max(hq, 1e-6)) ** -4) ** -0.25;
     let yc = corner(hi);
     if (p.nose_beak && p._hAt) {
-      // with a beak, the beak's start is the corner line's tip: the same fair curve it makes into a nose, squeezed so it
-      // lands on the stringer right where the beak starts. Wherever that runs inside the usual line, it wins (the corner
-      // sits closer to the rail than c there), so the corner meets the beak's edge cleanly, no blending
+      // with a beak, the beak's start is the corner line's tip: from the wide point forward the corner follows the
+      // outline's own curve, squeezed smoothly (no squeeze at the wide point, more toward the nose) so it closes onto
+      // the stringer right where the beak starts. One continuous curve, no blending or reversed bend
       const L = p.length, xb = L - p.nose_beak_pos, xw = L / 2 + (p.wide_point_offset || 0);
       if (xi >= xb) yc = 0;
-      else if (xi > xw) {
-        const yv = corner(p._hAt(xw + ((xi - xw) * (L - xw)) / Math.max(xb - xw, 1)));
-        const kk = 0.15;                                     // a soft min (about 1/8"), so the two lines meet without a kink
-        yc = Math.min(yc, yv) - kk * Math.log1p(Math.exp(-Math.abs(yc - yv) / kk));
+      else if (xi > xw && xb > xw + 1) {
+        const a = (L - xb) / (xb - xw) ** 2, xs = xi + a * (xi - xw) ** 2;   // xw -> xw, xb -> L, slope 1 at xw
+        yc = corner(p._hAt(xs));
       }
     }
     fc = clip((yc - yi) / wq, 0, 0.98);
