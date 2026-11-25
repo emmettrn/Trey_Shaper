@@ -2,11 +2,11 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES } from './geometry.js?v=31';
-import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=31';
-import { importS3dx, setSectionAt } from './s3dx.js?v=31';
-import { exportS3dx } from './s3dxout.js?v=31';
-import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=31';
+import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES } from './geometry.js?v=33';
+import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=33';
+import { importS3dx, setSectionAt } from './s3dx.js?v=33';
+import { exportS3dx } from './s3dxout.js?v=33';
+import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=33';
 
 const $ = (s) => document.querySelector(s);
 const state = {
@@ -2861,7 +2861,8 @@ function placeSplitters() {
   const narrow = NARROW.matches;
   for (const el of document.querySelectorAll('.splitter')) {
     const a = el._a, host = el.parentElement, hr = host.getBoundingClientRect(), ar = a.getBoundingClientRect();
-    const off = narrow || ar.width < 4 || ar.height < 4 || (el._b && el._b.getBoundingClientRect().width < 4);
+    const folded = el.parentElement.classList.contains('panels') && (prefs.fold?.view || [...document.querySelectorAll('.panel')].some((p) => prefs.fold?.[p.dataset.panel]));
+    const off = narrow || folded || ar.width < 4 || ar.height < 4 || (el._b && el._b.getBoundingClientRect().width < 4);
     el.hidden = off;
     if (off) continue;
     if (el._dir === 'col') el.style.left = `${ar.right - hr.left}px`; else el.style.top = `${ar.bottom - hr.top}px`;
@@ -2908,6 +2909,8 @@ function wireSplitters() {
 
 function wireUI() {
   wireTrace();
+  wireStart();
+  wireFold();
   wireSplitters();
   wireLightPad();
   document.querySelectorAll('#views button[data-view]').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
@@ -2944,10 +2947,7 @@ function wireUI() {
     applyParams(state.schema.presets[sel.value]);
   });
 
-  $('#btn-save').addEventListener('click', () => {
-    const blob = new Blob([JSON.stringify(state.params, null, 2)], { type: 'application/json' });
-    download(blob, `board_${ftin(state.params.length).replace(/'/g, 'ft').replace(/"/g, 'in').replace(/ /g, '')}.json`);
-  });
+  wireBoards();
   $('#file-load').addEventListener('change', async (e) => {
     const f = e.target.files[0]; if (!f) return;
     e.target.value = '';
@@ -2964,7 +2964,7 @@ function wireUI() {
       }, 30);
       return;
     }
-    try { applyParams(JSON.parse(await f.text())); sel.value = ''; state.fitted = false; } catch (err) { toast('Could not read that design file.'); }
+    try { applyParams(JSON.parse(await f.text())); sel.value = ''; state.fitted = false; state.boardName = f.name.replace(/\.json$/i, ''); } catch (err) { toast('Could not read that design file.'); }
   });
 
   const menu = $('#export-menu');
@@ -3068,6 +3068,226 @@ function wireFeedback() {
   });
 }
 
+/* =========================================================================
+   Boards kept in the app: Save puts the design in this browser's library (Download file still gives a
+   .json); Load opens a saved board, a sample board, or a file. Library: localStorage 'surfboard.library',
+   { name: { params, saved } }.
+   ========================================================================= */
+const LIB_KEY = 'surfboard.library';
+const libRead = () => { try { const v = JSON.parse(localStorage.getItem(LIB_KEY) || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; } };
+const libWrite = (v) => { try { localStorage.setItem(LIB_KEY, JSON.stringify(v)); return true; } catch { return false; } };
+const boardFileName = () => (state.boardName || `board_${ftin(state.params.length)}`).replace(/'/g, 'ft').replace(/"/g, 'in').replace(/[^\w.-]+/g, '_');
+function defaultBoardName() {
+  if (state.boardName) return state.boardName;
+  const P = state.params, tail = (P.tail_type || '').replace(/_/g, ' ');
+  return `${ftin(P.length)} ${tail}`.trim();
+}
+function openSave() {
+  $('#save-name').value = defaultBoardName();
+  const n = Object.keys(libRead()).length;
+  $('#save-note').textContent = `Saved boards stay in this browser on this device (${n} saved so far). Use Download file to keep a copy elsewhere or to send it to someone.`;
+  $('#savebox').hidden = false;
+  setTimeout(() => $('#save-name').select(), 30);
+}
+function renderLibrary() {
+  const lib = libRead(), names = Object.keys(lib).sort((a, b) => String(lib[b].saved).localeCompare(String(lib[a].saved)));
+  const mine = $('#lib-mine');
+  mine.innerHTML = names.length ? '' : '<div class="empty">Nothing saved yet. Use Save to keep a board here.</div>';
+  for (const name of names) {
+    const r = document.createElement('div'), when = lib[name].saved ? new Date(lib[name].saved) : null, P = lib[name].params || {};
+    r.className = 'row';
+    r.innerHTML = `<b></b><small>${P.length ? ftin(P.length) : ''}${when ? ' · ' + when.toLocaleDateString() : ''}</small><button data-a="open">Open</button><button data-a="del" title="Delete this saved board">✕</button>`;
+    r.querySelector('b').textContent = name;
+    r.querySelector('[data-a="open"]').addEventListener('click', () => { loadBoard(P, name); closeLibrary(); });
+    r.querySelector('[data-a="del"]').addEventListener('click', () => {
+      if (!confirmDelete(name)) return;
+      const v = libRead(); delete v[name]; libWrite(v); renderLibrary();
+    });
+    mine.appendChild(r);
+  }
+  const sam = $('#lib-samples');
+  sam.innerHTML = '';
+  for (const name of Object.keys(state.schema.presets)) {
+    const r = document.createElement('div');
+    r.className = 'row';
+    r.innerHTML = '<b></b><button>Open</button>';
+    r.querySelector('b').textContent = name;
+    r.querySelector('button').addEventListener('click', () => { loadBoard(state.schema.presets[name], null, name); closeLibrary(); });
+    sam.appendChild(r);
+  }
+}
+// deleting asks twice in a row on the same button instead of a browser dialog (dialogs are blocked in some views)
+let delArm = null;
+function confirmDelete(name) {
+  if (delArm === name) { delArm = null; return true; }
+  delArm = name; toast(`Press ✕ again to delete "${name}".`); setTimeout(() => { if (delArm === name) delArm = null; }, 4000);
+  return false;
+}
+function loadBoard(params, name, preset = null) {
+  state.fitted = false;
+  applyParams(params);
+  state.boardName = name || null;
+  $('#preset').value = preset || '';
+  histCommit();
+  closeStart();
+}
+const openLibrary = () => { renderLibrary(); $('#library').hidden = false; };
+const closeLibrary = () => { $('#library').hidden = true; };
+function wireBoards() {
+  $('#btn-save').addEventListener('click', openSave);
+  $('#btn-load').addEventListener('click', openLibrary);
+  $('#lib-close').addEventListener('click', closeLibrary);
+  $('#lib-file').addEventListener('click', () => { closeLibrary(); closeStart(); $('#file-load').click(); });
+  $('#save-cancel').addEventListener('click', () => { $('#savebox').hidden = true; });
+  $('#save-file').addEventListener('click', () => {
+    const name = $('#save-name').value.trim();
+    if (name) state.boardName = name;
+    download(new Blob([JSON.stringify(state.params, null, 2)], { type: 'application/json' }), `${boardFileName()}.json`);
+  });
+  $('#save-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const name = $('#save-name').value.trim() || defaultBoardName();
+    const lib = libRead(), had = name in lib;
+    lib[name] = { params: structuredClone(state.params), saved: new Date().toISOString() };
+    if (!libWrite(lib)) { toast('Could not save here (the browser storage is full or blocked). Use Download file instead.'); return; }
+    state.boardName = name;
+    $('#savebox').hidden = true;
+    toast(had ? `Saved over "${name}".` : `Saved "${name}". Find it under Load.`);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!$('#library').hidden) closeLibrary();
+    if (!$('#savebox').hidden) $('#savebox').hidden = true;
+  });
+}
+
+/* =========================================================================
+   Start screen: New board (type in the measurements, pick the board type, nose and tail, then
+   Generate) or Load board. Anything left blank comes from that type's sample board.
+   ========================================================================= */
+const BOARD_TYPES = [['shortboard', 'Shortboard', "Shortboard 6'0¾\""], ['fish', 'Fish', "Fish 5'6\""], ['midlength', 'Mid-length', "Mid-length 7'6\""], ['longboard', 'Longboard', "Longboard 9'2\""]];
+const NEW_FIELDS = [
+  ['Size', [['length', 'Length', 'ftin'], ['width', 'Width', 'in'], ['thickness', 'Thickness', 'in']]],
+  ['Outline', [['nose_width_12', 'Nose width 12″ in', 'in'], ['tail_width_12', 'Tail width 12″ in', 'in'], ['tail_block_width', 'Tail block width', 'in'], ['wide_point_offset', 'Wide point from center (+ toward nose)', 'in']]],
+  ['Rocker', [['nose_rocker', 'Nose rocker', 'in'], ['nose_rocker_12', 'Nose rocker 12″ in', 'in'], ['tail_rocker_12', 'Tail rocker 12″ in', 'in'], ['tail_rocker', 'Tail rocker', 'in']]],
+  ['Foil', [['nose_thickness', 'Nose thickness', 'in'], ['nose_thickness_12', 'Thickness 12″ from nose', 'in'], ['tail_thickness_12', 'Thickness 12″ from tail', 'in'], ['tail_thickness', 'Tail thickness', 'in']]],
+];
+const NOSE_LABELS = { pointed: 'Pointed', semi_pointed: 'Semi-pointed', round: 'Round', blunt: 'Blunt' };
+const TAIL_LABELS = { squash: 'Squash', square: 'Square', swallow: 'Swallow', diamond: 'Diamond', round: 'Round', rounded_pin: 'Rounded pin', pin: 'Pin' };
+const startPick = { type: 'shortboard', nose: null, tail: null };
+const typeBase = () => state.schema.presets[BOARD_TYPES.find((t) => t[0] === startPick.type)[2]];
+function openStart(hasSaved) {
+  $('#st-home').hidden = false; $('#st-form').hidden = true;
+  $('#st-continue').hidden = !hasSaved;
+  $('#start').hidden = false;
+}
+const closeStart = () => { $('#start').hidden = true; };
+function renderNewForm() {
+  const f = $('#st-form'), base = typeBase();
+  const nose = startPick.nose || base.nose_type, tail = startPick.tail || base.tail_type;
+  const chips = (key, opts, cur) => `<div class="choice" data-k="${key}">${opts.map(([v, l]) => `<button type="button" data-v="${v}" class="${v === cur ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+  const val = (k) => base[k] ?? null;
+  const shown = (k, u) => (val(k) === null ? 'auto' : u === 'ftin' ? ftin(val(k)) : fracIn(val(k)) + '″');
+  f.innerHTML = `<p>Type in what you know; anything left blank comes from the ${BOARD_TYPES.find((t) => t[0] === startPick.type)[1].toLowerCase()} sample board (shown in grey).</p>
+    <h3>Board type</h3>${chips('type', BOARD_TYPES.map((t) => [t[0], t[1]]), startPick.type)}
+    <h3>Nose</h3>${chips('nose', Object.keys(NOSE_TYPES).map((k) => [k, NOSE_LABELS[k] || k]), nose)}
+    <h3>Tail</h3>${chips('tail', Object.keys(TAIL_TYPES).map((k) => [k, TAIL_LABELS[k] || k]), tail)}
+    ${NEW_FIELDS.map(([g, fl]) => `<h3>${g}</h3><div class="start-grid">${fl.map(([k, l, u]) => `<label>${l}<input data-k="${k}" data-u="${u}" inputmode="decimal" placeholder="${shown(k, u)}" value="${(startPick.vals || {})[k] ?? ''}"></label>`).join('')}</div>`).join('')}
+    <div class="sheet-actions">
+      <button type="button" class="ghost" id="st-back">Back</button>
+      <button type="button" class="ghost" id="st-trace" title="Generate, then trace the outline from a photo of a board or template">Generate &amp; trace photo</button>
+      <button type="submit" class="primary">Generate</button>
+    </div>`;
+  f.querySelectorAll('.choice').forEach((c) => c.addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    keepVals();
+    const k = c.dataset.k;
+    if (k === 'type') { startPick.type = b.dataset.v; startPick.nose = null; startPick.tail = null; }
+    else startPick[k] = b.dataset.v;
+    renderNewForm();
+  }));
+  f.querySelector('#st-back').addEventListener('click', () => { keepVals(); $('#st-form').hidden = true; $('#st-home').hidden = false; });
+  f.querySelector('#st-trace').addEventListener('click', () => { if (generate()) openTrace(); });
+}
+function keepVals() {
+  startPick.vals = {};
+  $('#st-form').querySelectorAll('input[data-k]').forEach((i) => { if (i.value.trim()) startPick.vals[i.dataset.k] = i.value.trim(); });
+}
+function generate() {
+  keepVals();
+  const base = structuredClone(typeBase()), vals = {};
+  for (const [k, v] of Object.entries(startPick.vals || {})) {
+    const n = parseVal(v);
+    if (!Number.isFinite(n)) { toast(`Could not read "${v}". Use inches, like 19 1/2, or feet and inches, like 6'2".`); return false; }
+    vals[k] = n;
+  }
+  const P = base;
+  P.nose_type = startPick.nose || P.nose_type; P.tail_type = startPick.tail || P.tail_type;
+  // a new board starts from clean curves (no anchors, handles or edited sections from the sample)
+  P.anchors = { outline: [], rocker: [], thickness: [], swallow: [] }; P.handles = { outline: {}, rocker: {}, thickness: {}, swallow: {} };
+  P.marks = []; P.slices = [];
+  // widths left blank follow the width typed in; thicknesses at the ends stay as they are
+  const kW = Number.isFinite(vals.width) ? vals.width / P.width : 1, kL = Number.isFinite(vals.length) ? vals.length / P.length : 1;
+  for (const k of ['nose_width_12', 'tail_width_12', 'tail_block_width', 'swallow_width']) if (Number.isFinite(P[k]) && !(k in vals)) P[k] = Math.round(P[k] * kW * 16) / 16;
+  if (!('wide_point_offset' in vals) && Number.isFinite(P.wide_point_offset)) P.wide_point_offset = Math.round(P.wide_point_offset * kL * 4) / 4;
+  for (const [k, n] of Object.entries(vals)) P[k] = n;
+  // stretches of bottom contour placed from the nose or tail stay where they were; tools from the sample are dropped
+  P.tools = [];
+  P.lock_volume = false;
+  state.fitted = false;
+  applyParams(P);
+  const L = state.params.length;
+  state.boardName = `${ftin(L)} ${(TAIL_LABELS[state.params.tail_type] || '').toLowerCase()} ${BOARD_TYPES.find((t) => t[0] === startPick.type)[1].toLowerCase()}`.replace(/\s+/g, ' ').trim();
+  $('#preset').value = '';
+  histCommit();
+  closeStart();
+  toast(`Generated: ${ftin(L)} × ${fracIn(state.params.width)}″ × ${fracIn(state.params.thickness)}″. Shape it from here.`);
+  return true;
+}
+function wireStart() {
+  $('#st-new').addEventListener('click', () => { $('#st-home').hidden = true; $('#st-form').hidden = false; renderNewForm(); });
+  $('#st-load').addEventListener('click', () => { openLibrary(); });
+  $('#st-continue').addEventListener('click', closeStart);
+  $('#st-form').addEventListener('submit', (e) => { e.preventDefault(); generate(); });
+}
+
+/* =========================================================================
+   Collapsing: the 3D view and each graph fold away. With the 3D view folded, the graphs stack up the
+   screen, outline on top, then the cross section, then the rocker, each taking an even share.
+   prefs.fold = { view, plan, profile, sections }.
+   ========================================================================= */
+function applyFold() {
+  const F = prefs.fold || (prefs.fold = {}), stage = $('.stage'), panels = [...document.querySelectorAll('.panel')];
+  stage.dataset.fold3d = F.view ? '1' : '';
+  $('#foldbar').hidden = !F.view;
+  $('#t-fold').textContent = '▴ 3D';
+  for (const p of panels) {
+    const f = !!F[p.dataset.panel];
+    p.classList.toggle('folded', f);
+    const b = p.querySelector('.fold'); if (b) { b.textContent = f ? '▸' : '▾'; b.title = f ? 'Show this graph' : 'Collapse this graph'; }
+  }
+  const order = ['plan', 'sections', 'profile'], ps = $('.panels').style;
+  if (F.view) { ps.setProperty('--panel-rows', order.map((k) => (F[k] ? 'auto' : '1fr')).join(' ')); }
+  else ps.removeProperty('--panel-rows');
+  // side by side: a folded graph keeps only its title
+  if (!F.view && panels.some((p) => F[p.dataset.panel])) {
+    const L = prefs.layout?.cols, base = Array.isArray(L) && L.length === 3 ? L : [1.25, 1.25, 1];
+    ps.setProperty('--panel-cols', panels.map((p, i) => (F[p.dataset.panel] ? 'auto' : `${base[i].toFixed(3)}fr`)).join(' '));
+  } else applyLayout();
+  if (panels.every((p) => F[p.dataset.panel]) && F.view) { F.plan = false; applyFold(); return; }   // always keep something to look at
+  requestAnimationFrame(() => { placeSplitters(); resize(); drawPanels?.(); });
+}
+function wireFold() {
+  for (const p of document.querySelectorAll('.panel')) {
+    const b = document.createElement('button');
+    b.className = 'fold'; b.type = 'button';
+    p.querySelector('figcaption').prepend(b);
+    b.addEventListener('click', () => { const F = prefs.fold || (prefs.fold = {}); F[p.dataset.panel] = !F[p.dataset.panel]; savePrefs(); applyFold(); });
+  }
+  $('#t-fold').addEventListener('click', () => { (prefs.fold || (prefs.fold = {})).view = true; savePrefs(); applyFold(); });
+  $('#t-unfold').addEventListener('click', () => { prefs.fold.view = false; savePrefs(); applyFold(); });
+}
+
 /* ========================================================================= */
 function init() {
   state.schema = { groups: GROUPS, station_table: STATION_TABLE, defaults: DEFAULTS, presets: PRESETS };
@@ -3079,6 +3299,8 @@ function init() {
   applyParams(saved || state.schema.presets[first]);
   histCommit();                                         // the starting point for undo
   resize();
+  applyFold();
+  openStart(!!saved);
 }
 init();
 

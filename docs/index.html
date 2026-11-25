@@ -14,7 +14,7 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 40 16%22%3E%3Cpath d=%22M2 8C8 1 30 1 38 8 30 15 8 15 2 8Z%22 fill=%22%233cc8b4%22/%3E%3C/svg%3E" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=31" />
+  <link rel="stylesheet" href="style.css?v=33" />
   <script type="importmap">
     {
       "imports": {
@@ -43,8 +43,9 @@
         <select id="preset"></select>
       </label>
       <button id="btn-feedback" class="ghost accent">Feedback</button>
-      <button id="btn-save" class="ghost">Save</button>
-      <label class="ghost file-btn">Load<input id="file-load" type="file" accept=".json,application/json,.s3dx" hidden /></label>
+      <button id="btn-save" class="ghost" title="Save this board in Trey Shaper (or download it as a file)">Save</button>
+      <button id="btn-load" class="ghost" title="Open one of your saved boards, a sample board, or a file">Load</button>
+      <input id="file-load" type="file" accept=".json,application/json,.s3dx" hidden />
       <div class="menu">
         <button id="btn-export" class="primary">Export ▾</button>
         <div class="menu-list" id="export-menu" hidden>
@@ -73,6 +74,7 @@
             <button id="t-flip" class="flip" title="Turn the board over, so the bottom can be looked at the same way as the deck">Bottom up</button>
           </div>
           <div class="seg">
+            <button id="t-fold" title="Collapse the 3D view: the outline, sections and profile graphs stack up and share the screen">▴ 3D</button>
             <button id="t-light" title="Shaping-bay lighting on a matte blank, to show the foil and contours">Bay lights</button><input type="range" id="bay-gain" min="0" max="1" step="0.05" title="How hard the bay lights pick out contours: left is true to scale, right exaggerates every tilt" aria-label="Bay light strength"><button id="t-fixed" title="On: the light stays put and the board moves through it as you turn it, as in Shape3D. Off: lights along both rails that turn with the board.">Fixed light</button>
             <button id="t-bg" title="Background: dark, or light blue like a shaping bay's walls">Blue walls</button>
             <button id="t-wire" title="Show the board as a frame: a cross section every 6 inches on its stringer and rail lines">Skeleton</button>
@@ -87,6 +89,7 @@
         <div class="busy" id="busy"></div>
       </div>
 
+      <div class="foldbar" id="foldbar" hidden><button id="t-unfold" title="Show the 3D view again">▾ 3D view</button><span>hidden: the graphs share the screen</span></div>
       <div class="panels">
         <figure class="panel" data-panel="plan">
           <figcaption><b>Plan</b><span>outline</span>
@@ -138,12 +141,45 @@
       <div class="trace-actions" id="tr-actions"></div>
     </div>
   </div>
+  <div class="modal" id="start" hidden>
+    <div class="sheet start-sheet">
+      <div class="start-brand"><svg viewBox="0 0 40 16" class="logo" aria-hidden="true"><path d="M2 8 C 8 1, 30 1, 38 8 C 30 15, 8 15, 2 8 Z" /><line x1="4" y1="8" x2="36" y2="8" /></svg><span>Trey Shaper</span></div>
+      <div class="start-home" id="st-home">
+        <button type="button" class="big primary" id="st-new">New board</button>
+        <button type="button" class="big" id="st-load">Load board</button>
+        <button type="button" class="linkish" id="st-continue" hidden>Continue the board you had open</button>
+      </div>
+      <form class="start-form" id="st-form" hidden autocomplete="off"></form>
+    </div>
+  </div>
+  <div class="modal" id="library" hidden>
+    <div class="sheet lib-sheet">
+      <div class="trace-head"><h2>Load a board</h2><button type="button" class="ghost" id="lib-close" aria-label="Close">✕</button></div>
+      <h3>Your boards</h3>
+      <div class="lib-list" id="lib-mine"></div>
+      <h3>Sample boards</h3>
+      <div class="lib-list" id="lib-samples"></div>
+      <div class="sheet-actions"><button type="button" class="ghost" id="lib-file" title="A Trey Shaper design file (.json) or a Shape3D design (.s3dx)">From a file…</button></div>
+    </div>
+  </div>
+  <div class="modal" id="savebox" hidden>
+    <form class="sheet" id="save-form">
+      <h2>Save board</h2>
+      <label>Name<input id="save-name" type="text" maxlength="60" /></label>
+      <p id="save-note"></p>
+      <div class="sheet-actions">
+        <button type="button" class="ghost" id="save-cancel">Close</button>
+        <button type="button" class="ghost" id="save-file" title="Download the design as a file, to keep elsewhere or send to someone">Download file</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </div>
   <div class="toast" id="toast" hidden></div>
   <div class="install" id="install" hidden>
     <span>Use it like an app: tap <b>Share</b>, then <b>Add to Home Screen</b>.</span>
     <button id="install-x" aria-label="Dismiss">Got it</button>
   </div>
 
-  <script type="module" src="app.js?v=31"></script>
+  <script type="module" src="app.js?v=33"></script>
 </body>
 </html>
