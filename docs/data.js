@@ -365,58 +365,98 @@ export const PRESETS = {
     "swallow_rail": 0.8,
     "swallow_round": 1.875
   },
-  "Groveler 5'8\"": {
-    "length": 68,
-    "width": 20.5,
-    "thickness": 2.5,
-    "wide_point_offset": 0.0,
-    "nose_type": "semi_pointed",
-    "tail_type": "squash",
-    "nose_width_12": 14.0,
-    "tail_width_12": 16.0,
-    "tail_block_width": 11.5,
-    "nose_rocker": 4.0,
-    "nose_rocker_12": 1.5,
-    "tail_rocker_12": 0.625,
-    "tail_rocker": 1.6,
-    "rocker_low_point": -4,
-    "nose_thickness": 0.95,
-    "nose_thickness_12": 1.9375,
-    "tail_thickness_12": 2.0625,
-    "tail_thickness": 1.3,
-    "rail_apex": 0.38,
-    "rail_fullness": 0.65,
-    "rail_hardness_nose": 0.25,
-    "rail_hardness_tail": 0.9,
-    "concave_depth": 0.15,
-    "vee_depth": 0.0,
-    "rail_apex_in": 0.5
-  },
   "Mid-length 7'6\"": {
     "length": 90,
-    "width": 21.0,
+    "width": 21.5,
     "thickness": 2.75,
-    "wide_point_offset": 1.0,
-    "nose_type": "round",
+    "wide_point_offset": 1,
+    "nose_type": "semi_pointed",
     "tail_type": "rounded_pin",
-    "nose_width_12": 15.0,
-    "tail_width_12": 13.5,
-    "nose_rocker": 4.5,
-    "nose_rocker_12": 2.4375,
-    "tail_rocker_12": 0.9375,
-    "tail_rocker": 2.0,
+    "nose_width_12": 16,
+    "tail_width_12": 14.5,
+    "tail_block_width": 10,
+    "swallow_depth": 4.5,
+    "swallow_tip": 1,
+    "swallow_width": 5,
+    "nose_rocker": 4,
+    "nose_rocker_12": null,
+    "tail_rocker_12": null,
+    "tail_rocker": 2.5,
     "rocker_low_point": -6,
-    "nose_thickness": 1.0,
-    "nose_thickness_12": 1.875,
-    "tail_thickness_12": 2.0,
-    "tail_thickness": 1.3,
+    "nose_thickness": 0.5,
+    "nose_thickness_12": null,
+    "tail_thickness_12": null,
+    "tail_thickness": 0.5,
+    "thickness_point_offset": 0,
     "rail_apex": 0.45,
-    "rail_fullness": 0.6,
+    "rail_apex_in": 0.8125,
+    "rail_fullness": 0.78,
+    "deck_dome": 0.35,
     "rail_hardness_nose": 0.1,
     "rail_hardness_tail": 0.6,
-    "concave_depth": 0.06,
-    "vee_depth": 0.08,
-    "rail_apex_in": 0.875
+    "lock_volume": false,
+    "target_volume": 29,
+    "stations": 161,
+    "section_points": 48,
+    "anchors": {
+      "outline": [],
+      "rocker": [],
+      "thickness": [],
+      "swallow": []
+    },
+    "marks": [],
+    "handles": {
+      "outline": {
+        "tail": [
+          -0.43673416909421914,
+          null,
+          0.5
+        ],
+        "tail12": [
+          -0.07265988057071734,
+          null,
+          6.172171709044097
+        ],
+        "origin": [
+          null,
+          15.38097441261667,
+          10.715909090909093
+        ]
+      },
+      "rocker": {},
+      "thickness": {},
+      "swallow": {}
+    },
+    "slices": [],
+    "bottom": [
+      {
+        "pos": 0,
+        "from": "tail",
+        "type": "concave",
+        "to": {
+          "pos": 18,
+          "from": "nose"
+        },
+        "deep": {
+          "pos": 27,
+          "from": "tail"
+        },
+        "blendNose": 0.6,
+        "blendTail": 0.25,
+        "depth": 0.06,
+        "depth2": 0.0625
+      }
+    ],
+    "rail_tuck_nose": 2,
+    "rail_tuck_tail": 0.25,
+    "hard_edge": false,
+    "rail_reach_tail": 0.27,
+    "rail_reach_nose": 0,
+    "curve_v": 2,
+    "deck_flat_in": 2,
+    "nose_beak_pos": 2,
+    "tools": [],
+    "deck_contours": []
   },
   "Longboard 9'2\"": {
     "length": 110,

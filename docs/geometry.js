@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=31';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=33';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;
@@ -578,12 +578,15 @@ function curveDelta(p, name, x, arms, baseFn) {
   K.sort((a, b) => a[0] - b[0]);
   const n = K.length, xs = K.map((k) => k[0]), ys = K.map((k) => k[1]), m = K.map((k) => k[2]);
   const tip = (i) => K[i][5] === 'tail' || K[i][5] === 'nose';       // the nose and tail points work as they did before: their arms are Bezier arms
-  // measured points between the tips with no slope of their own: the slope through their neighbours (parabola)
-  for (let i = 1; i < n - 1; i++) if (K[i][5] && m[i] === null) {
+  // a measured point next to a tip whose arms were moved: the slope through its neighbours (parabola), as before, so
+  // the tip's Bezier span keeps the shape it was given
+  const armsSet = (i) => Number.isFinite(K[i][3]) || Number.isFinite(K[i][4]) || Number.isFinite(K[i][2]);
+  for (const [i, t0] of [[1, 0], [n - 2, n - 1]]) if (n > 2 && K[i][5] && !tip(i) && m[i] === null && armsSet(t0)) {
     const h0 = xs[i] - xs[i - 1], h1 = xs[i + 1] - xs[i], d0 = (ys[i] - ys[i - 1]) / h0, d1 = (ys[i + 1] - ys[i]) / h1;
     m[i] = (h1 * d0 + h0 * d1) / (h0 + h1);
   }
-  // C2 slopes for the rest, span by span between knots with a known slope (the tips are free ends)
+  // C2 slopes everywhere a slope isn't set (by a handle, or the wide point, held level): the 12" points included, so the
+  // curve bends evenly through them, span by span between knots with a known slope (the tips are free ends)
   let a0 = 0;
   for (let b0 = 1; b0 < n; b0++) {
     if (m[b0] === null && b0 < n - 1) continue;
@@ -594,8 +597,44 @@ function curveDelta(p, name, x, arms, baseFn) {
     if (arms) fillArms(arms, K, m, null);
     return out;
   }
+  // where a slope is set the spans either side would bend differently at the point (a kink a shaper's eye catches):
+  // each point gets one bend, the average of the two, and every span is a quintic matching the height, slope and bend
+  // at both its ends, so the curve has no kink anywhere (heights and slopes stay exactly as set)
+  const kap = new Float64Array(n);
+  const bendL = (i) => { const h = xs[i] - xs[i - 1]; return (6 * (ys[i - 1] - ys[i])) / (h * h) + (2 * m[i - 1] + 4 * m[i]) / h; };
+  const bendR = (i) => { const h = xs[i + 1] - xs[i]; return (6 * (ys[i + 1] - ys[i])) / (h * h) - (4 * m[i] + 2 * m[i + 1]) / h; };
+  for (let i = 0; i < n; i++) {
+    if (i === 0) { kap[i] = bendR(0); continue; }
+    if (i === n - 1) { kap[i] = bendL(n - 1); continue; }
+    // weighted by the spans' lengths squared: a long span keeps its own easy bend, the short one takes up the difference
+    const wl = (xs[i] - xs[i - 1]) ** 2, wr = (xs[i + 1] - xs[i]) ** 2;
+    kap[i] = (wl * bendL(i) + wr * bendR(i)) / (wl + wr);
+  }
   const curve = knotCurve(K.map((k, i) => (tip(i) ? [xs[i], ys[i], k[2], k[3], k[4]] : [xs[i], ys[i], m[i], null, null])), false, false);
-  for (let i = 0; i < x.length; i++) if (x[i] > 0 && x[i] < L) out[i] = curve.at(x[i]);
+  // a tip with its own arms: its span is the Bezier its arms make, plus a small one-signed correction that brings
+  // its bend at the next point to that point's bend (no kink where the tip's span joins the rest)
+  const tipFix = [0, n - 1].map((i) => {
+    if (n < 3 || !(Number.isFinite(K[i][3]) || Number.isFinite(K[i][4]) || Number.isFinite(K[i][2]))) return null;
+    const j = i === 0 ? 1 : n - 2, e = Math.min(0.05, 0.02 * Math.abs(xs[j] - xs[i])), dir = i === 0 ? -1 : 1;   // from the inner point, back into the tip's span
+    const bz = (curve.at(xs[j]) - 2 * curve.at(xs[j] + dir * e) + curve.at(xs[j] + 2 * dir * e)) / (e * e);
+    return kap[j] - bz;
+  });
+  let seg = 0;
+  for (let i = 0; i < x.length; i++) {
+    const xi = x[i];
+    if (!(xi > 0 && xi < L)) continue;
+    while (seg < n - 2 && xi > xs[seg + 1]) seg++;
+    const tf = seg === 0 ? tipFix[0] : seg === n - 2 ? tipFix[1] : null;
+    if (tf !== null && tf !== undefined) {
+      const h = xs[seg + 1] - xs[seg], t = (xi - xs[seg]) / h;
+      out[i] = curve.at(xi) + h * h * tf * (seg === 0 ? 0.5 * t ** 3 * (1 - t) ** 2 : 0.5 * t * t * (1 - t) ** 3);
+      continue;
+    }
+    const h = xs[seg + 1] - xs[seg], t = (xi - xs[seg]) / h, t2 = t * t, t3 = t2 * t, t4 = t3 * t, t5 = t4 * t;
+    const H0 = 1 - 10 * t3 + 15 * t4 - 6 * t5, H1 = t - 6 * t3 + 8 * t4 - 3 * t5, H2 = 0.5 * (t2 - 3 * t3 + 3 * t4 - t5);
+    const H3 = 10 * t3 - 15 * t4 + 6 * t5, H4 = -4 * t3 + 7 * t4 - 3 * t5, H5 = 0.5 * (t3 - 2 * t4 + t5);
+    out[i] = H0 * ys[seg] + H1 * h * m[seg] + H2 * h * h * kap[seg] + H3 * ys[seg + 1] + H4 * h * m[seg + 1] + H5 * h * h * kap[seg + 1];
+  }
   // fullness: an arm longer or shorter than a third of its span pulls the curve toward, or away from, its line
   const pulls = [];
   for (let i = 0; i < n; i++) for (const side of [-1, 1]) {
@@ -606,8 +645,10 @@ function curveDelta(p, name, x, arms, baseFn) {
     if (Math.abs(r - 1) < 1e-3) continue;
     const bx = Float64Array.of(xs[i] - 0.01, xs[i], xs[i] + 0.01), bv = baseFn(bx);
     const y0 = bv[1] + ys[i], S = (bv[2] - bv[0]) / 0.02 + m[i];
-    pulls.push({ x0: xs[i], x1: xs[j], y0, S, lam: r >= 1 ? Math.min(r - 1, 1) : Math.max(r - 1, -0.5), ex: r > 2 ? r - 1 : 1 });
+    pulls.push({ i, x0: xs[i], x1: xs[j], y0, S, lam: r >= 1 ? Math.min(r - 1, 1) : Math.max(r - 1, -0.5), ex: r > 2 ? r - 1 : 1 });
   }
+  // at the point itself both sides pull alike (the average of the two), so the bend is the same either side of it
+  for (const q of pulls) { const both = pulls.filter((o) => o.i === q.i); q.lam0 = both.reduce((acc, o) => acc + o.lam, 0) / 2; }
   if (pulls.length) {
     const bx = Float64Array.from(x), bv = baseFn(bx);
     const add = new Float64Array(x.length);
@@ -615,7 +656,10 @@ function curveDelta(p, name, x, arms, baseFn) {
       const lo = Math.min(q.x0, q.x1), hi = Math.max(q.x0, q.x1);
       for (let i = 0; i < x.length; i++) {
         if (x[i] <= lo || x[i] >= hi) continue;
-        const sN = Math.abs(x[i] - q.x0) / (hi - lo), sx = sN ** q.ex, w = q.lam * (1 - sx) * (1 - sx) * (1 + 2 * sx);
+        // the pull starts at the point at the average of both sides' pulls, turns to its own over the first third, and fades
+        // out with no corner at the next point (smootherstep), so the curve never kinks at either end
+        const sN = Math.abs(x[i] - q.x0) / (hi - lo), sx = sN ** q.ex, S5 = (t) => { t = clip(t, 0, 1); return t * t * t * (10 - 15 * t + 6 * t * t); };
+        const w = (q.lam0 + (q.lam - q.lam0) * S5(sN / 0.3)) * (1 - S5(sx));
         add[i] += w * (q.y0 + q.S * (x[i] - q.x0) - (bv[i] + out[i]));
       }
     }
@@ -831,7 +875,12 @@ function halfWidth(p, x) {
   }
   const rc = tail.notch ? tail.corner * (p.swallow_tip ?? 1) : tail.corner;   // a swallow's tips: rounded, or (swallow_tip 0) a point
   const h = new Float64Array(x.length);
-  const main = (xi) => (xi >= xw ? W2 * clip(1 - ((xi - xw) / (L - xw)) ** an, 0, 1) ** (1 / bn) : W2 * (te + (1 - te) * clip(1 - ((xw - xi) / xw) ** at, 0, 1) ** (1 / bt)));
+  const mN = (xi) => W2 * clip(1 - (Math.max(xi - xw, 0) / (L - xw)) ** an, 0, 1) ** (1 / bn);
+  const mT = (xi) => W2 * (te + (1 - te) * clip(1 - (Math.max(xw - xi, 0) / xw) ** at, 0, 1) ** (1 / bt));
+  // the nose and tail curves meet at the wide point; over a few inches either side they are mixed (each is level at
+  // full width past it), so the bend changes smoothly through the wide point. Width there and at 12" are unchanged
+  const bw = Math.max(0.5, Math.min(3, 0.2 * (xw - 12), 0.2 * (L - 12 - xw)));
+  const main = (xi) => { const t = clip((xi - xw + bw) / (2 * bw), 0, 1); if (t <= 0) return mT(xi); if (t >= 1) return mN(xi); const s5 = t * t * t * (10 - 15 * t + 6 * t * t); return (1 - s5) * mT(xi) + s5 * mN(xi); };
   // a diamond tail: the outline runs as usual to the corners, diamond_depth in from the tail end
   // (the tail block width is across them), then straight in to a point on the stringer
   const hd = dd ? main(dd) : 0;
@@ -847,7 +896,7 @@ function halfWidth(p, x) {
   for (let i = 0; i < x.length; i++) {
     const xi = x[i];
     let v = dd && xi < dd ? (hd * xi) / dd : finAt && xi > xf ? finAt(xi) : main(xi);
-    if (rc > 0 && xi < rc) v = v - rc + Math.sqrt(Math.max(rc * rc - (rc - xi) ** 2, 0));
+    if (rc > 0 && xi < rc) { const t = xi / rc; v += (-rc + Math.sqrt(Math.max(rc * rc - (rc - xi) ** 2, 0))) * (1 - t * t * t * (10 - 15 * t + 6 * t * t)); }   // the round fades out with no corner in the bend
     h[i] = Math.max(v, 0);
   }
   return h;
@@ -1097,8 +1146,11 @@ function depthAlong(x, x0, x1, xd, bn, bt) {
   let f = 1;
   if (xd - x0 < 0.5 && bt > 0) f *= ease((x - x0) / (bt * len));
   if (x1 - xd < 0.5 && bn > 0) f *= ease((x1 - x) / (bn * len));
-  if (x >= xd) { const span = x1 - xd; if (span < 0.5 || bn <= 0) return f; const s = (x - xd) / span, hold = 1 - bn; return f * (s <= hold ? 1 : ease((1 - s) / bn)); }
-  const span = xd - x0; if (span < 0.5 || bt <= 0) return f; const s = (xd - x) / span, hold = 1 - bt; return f * (s <= hold ? 1 : ease((1 - s) / bt));
+  // a blend always runs over at least 4" (or the whole side, if shorter): a small blend no longer steps the bottom (and
+  // the rail line) to flat in a fraction of an inch
+  const minB = (span, b) => (b > 0 ? Math.max(b, Math.min(1, 4 / span)) : b);
+  if (x >= xd) { const span = x1 - xd; if (span < 0.5 || bn <= 0) return f; const b = minB(span, bn), s = (x - xd) / span, hold = 1 - b; return f * (s <= hold ? 1 : ease((1 - s) / b)); }
+  const span = xd - x0; if (span < 0.5 || bt <= 0) return f; const b = minB(span, bt), s = (xd - x) / span, hold = 1 - b; return f * (s <= hold ? 1 : ease((1 - s) / b));
 }
 const blendOf = (v, def) => (Number.isFinite(+v) ? clip(+v, 0, 1) : def);
 
