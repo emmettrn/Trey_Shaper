@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=38';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=39';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;
@@ -106,7 +106,7 @@ export function paramsFromDict(d = {}) {
   const base = { ...DEFAULTS };
   for (const k of Object.keys(DEFAULTS)) if (k in d) base[k] = d[k];
   base.tools = Array.isArray(d.tools) ? d.tools : [];      // concave tools (newer than the generated defaults)
-  for (const k of ['rail_tuck_nose', 'rail_tuck_tail', 'hard_edge', 'rail_reach_nose', 'rail_reach_tail', 'swallow_round', 'swallow_rail', 'deck_contours', 'curve_v', 'deck_flat', 'diamond_depth', 'deck_flat_corner', 'deck_flat_in', 'nose_beak', 'nose_beak_pos', 'outline_pts', 'rocker_pts', 'deck_pts', 'pts_off']) if (k in d) base[k] = d[k];   // rail tucks (newer too)
+  for (const k of ['rail_tuck_nose', 'rail_tuck_tail', 'hard_edge', 'rail_reach_nose', 'rail_reach_tail', 'swallow_round', 'swallow_rail', 'deck_contours', 'curve_v', 'deck_flat', 'diamond_depth', 'deck_flat_corner', 'deck_flat_in', 'nose_beak', 'nose_beak_pos', 'outline_pts', 'rocker_pts', 'deck_pts', 'section_pts', 'pts_off']) if (k in d) base[k] = d[k];   // rail tucks (newer too)
   const L = base.length;
   const xl = L / 2 + base.rocker_low_point, xt = L / 2 + base.thickness_point_offset;
   for (const [side, nose] of [['nose', true], ['tail', false]]) {
@@ -136,6 +136,7 @@ export function validated(src) {
   p.deck_pts = p.rocker_pts ? cleanPts(p.deck_pts, p.length, false) : null;
   if (!p.deck_pts) p.rocker_pts = null;
   if (p.rocker_pts) Object.assign(p, profileReadouts(p.rocker_pts, p.deck_pts, p.length));
+  p.section_pts = cleanSecPts(p.section_pts);
   const w = [], auto = [];
   const clamp = (name, lo, hi, label) => {
     const v = p[name], nv = Math.min(Math.max(v, lo), hi);
@@ -1663,6 +1664,181 @@ function beakF(p, x) {
   const sB = (x - (p.length - p.nose_beak_pos)) / p.nose_beak_pos;
   return 1 - 0.7 * sB ** 1.25;
 }
+/* ---------------------------------------------------------------------------
+   Cross sections as control points (Shape3D's couples): a few sections along the board, each one curve from the
+   deck stringer round the rail to the bottom stringer, in shares of the half width (x: 0 stringer, 1 outline) and of
+   the thickness (y: 0 bottom stringer, 1 deck stringer). Every section has the same points, tagged ds (deck stringer),
+   apex (rail apex, on the outline), edge (rail edge), bs (bottom stringer); between sections each point (and its
+   arms) is eased along the board, so the board is the sections blended, as in Shape3D.
+   --------------------------------------------------------------------------- */
+const SEC_F = ['x', 'y', 'aL', 'lL', 'aR', 'lR'];
+function cleanSecPts(sp) {
+  if (!Array.isArray(sp) || sp.length < 2) return null;
+  const q = sp.filter((c) => c && Number.isFinite(+c.x) && Array.isArray(c.pts)).map((c) => ({ x: +c.x,
+    pts: c.pts.map((o) => ({ x: +o.x, y: +o.y, aL: +o.aL, lL: Math.max(+o.lL || 0, 0), aR: +o.aR, lR: Math.max(+o.lR || 0, 0), c: !!o.c, ...(o.m ? { m: String(o.m) } : {}) })) }))
+    .sort((a, b) => a.x - b.x);
+  const n = q[0]?.pts.length;
+  if (q.length < 2 || !(n >= 4) || q.some((c) => c.pts.length !== n || c.pts.some((o) => SEC_F.some((f) => !Number.isFinite(o[f]))))) return null;
+  for (const c of q) {
+    const P = c.pts; P[0].x = 0; P[0].y = 1; P[n - 1].x = 0; P[0].aL = P[0].aR = 0; P[n - 1].aL = P[n - 1].aR = Math.PI;
+    const a = P.find((o) => o.m === 'apex'); if (a) { a.x = 1; a.aL = a.aR = -Math.PI / 2; }
+  }
+  return q;
+}
+/** Fritsch-Carlson: a smooth, overshoot-free curve through (xs, ys), read at xq (held level past the ends). */
+function pchip(xs, ys, xq) {
+  const n = xs.length;
+  if (xq <= xs[0]) return ys[0];
+  if (xq >= xs[n - 1]) return ys[n - 1];
+  let i = 0; while (i < n - 2 && xs[i + 1] < xq) i++;
+  const d = (k) => (ys[k + 1] - ys[k]) / (xs[k + 1] - xs[k]);
+  const m = (k) => {
+    if (k === 0 || k === n - 1) return 0;
+    const a = d(k - 1), b = d(k); if (a * b <= 0) return 0;
+    const w1 = 2 * (xs[k + 1] - xs[k]) + (xs[k] - xs[k - 1]), w2 = (xs[k + 1] - xs[k]) + 2 * (xs[k] - xs[k - 1]);
+    return (w1 + w2) / (w1 / a + w2 / b);
+  };
+  const h = xs[i + 1] - xs[i], t = (xq - xs[i]) / h, t2 = t * t, t3 = t2 * t;
+  return (2 * t3 - 3 * t2 + 1) * ys[i] + (t3 - 2 * t2 + t) * h * m(i) + (-2 * t3 + 3 * t2) * ys[i + 1] + (t3 - t2) * h * m(i + 1);
+}
+/** The section's control points at x, blended from the sections either side. */
+export function secCoupleAt(sp, x) {
+  const xs = sp.map((c) => c.x), n = sp[0].pts.length, out = [];
+  for (let j = 0; j < n; j++) {
+    const o = { c: sp.some((c) => c.pts[j].c), ...(sp[0].pts[j].m ? { m: sp[0].pts[j].m } : {}) };
+    for (const f of SEC_F) o[f] = pchip(xs, sp.map((c) => c.pts[j][f]), x);
+    out.push(o);
+  }
+  return out;
+}
+const bez = (a, b, t) => {
+  const P1 = [a.x + a.lR * Math.cos(a.aR), a.y + a.lR * Math.sin(a.aR)], P2 = [b.x - b.lL * Math.cos(b.aL), b.y - b.lL * Math.sin(b.aL)], s = 1 - t;
+  return [s * s * s * a.x + 3 * s * s * t * P1[0] + 3 * s * t * t * P2[0] + t * t * t * b.x, s * s * s * a.y + 3 * s * s * t * P1[1] + 3 * s * t * t * P2[1] + t * t * t * b.y];
+};
+/** Points from control point i0 to i1, dense, measured in inches (sx, sy: inches per share across and up). */
+function secDense(P, i0, i1, sx, sy) {
+  const D = [], S = [0];
+  for (let i = i0; i < i1; i++) for (let k = i === i0 ? 0 : 1; k <= 64; k++) D.push(bez(P[i], P[i + 1], k / 64));
+  for (let k = 1; k < D.length; k++) S.push(S[k - 1] + Math.hypot((D[k][0] - D[k - 1][0]) * sx, (D[k][1] - D[k - 1][1]) * sy) + 1e-9);
+  return { D, S };
+}
+function secRead(dn, s) {
+  const { D, S } = dn; let lo = 0, hi = S.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (S[m] <= s) lo = m; else hi = m; }
+  const f = (s - S[lo]) / (S[hi] - S[lo]);
+  return [D[lo][0] + f * (D[hi][0] - D[lo][0]), D[lo][1] + f * (D[hi][1] - D[lo][1])];
+}
+/** Fill a section (the same samples as the measured sections: deck stringer -> apex, apex -> rail edge, edge ->
+ *  bottom stringer) from control points, as shares (U across, V up). */
+function secSample(P, sx, sy, U, V) {
+  const n = P.length, ia = Math.max(P.findIndex((o) => o.m === 'apex'), 1);
+  let ie = P.findIndex((o) => o.m === 'edge'); if (!(ie > ia && ie < n - 1)) ie = Math.min(ia + 1, n - 2);
+  const deck = secDense(P, 0, ia, sx, sy), rail = secDense(P, ia, ie, sx, sy), flat = secDense(P, ie, n - 1, sx, sy);
+  const Ld = deck.S[deck.S.length - 1], Lr = rail.S[rail.S.length - 1], Lf = flat.S[flat.S.length - 1];
+  for (let k = 0; k < KA; k++) { const q = secRead(deck, (Ld * k) / KA); U[k] = q[0]; V[k] = q[1]; }
+  for (let j = 0; j < NR; j++) { const q = secRead(rail, (Lr * j) / (NR - 1)); U[KA + j] = q[0]; V[KA + j] = q[1]; }
+  for (let j = 1; j <= NF; j++) { const q = secRead(flat, (Lf * j) / NF); if (KA + NR - 1 + j < K) { U[KA + NR - 1 + j] = q[0]; V[KA + NR - 1 + j] = q[1]; } }
+  return P[ia].y;
+}
+/** A cubic from a to d with set end directions fitted to the points Q (a and d included): its two arm lengths. */
+function bezArms(Q, t0, t1) {
+  const a = Q[0], d = Q[Q.length - 1], chord = Math.hypot(d[0] - a[0], d[1] - a[1]) || 1e-6;
+  let u = [0], acc = 0;
+  for (let i = 1; i < Q.length; i++) { acc += Math.hypot(Q[i][0] - Q[i - 1][0], Q[i][1] - Q[i - 1][1]); u.push(acc); }
+  u = u.map((v) => v / (acc || 1));
+  let al = chord / 3, be = chord / 3;
+  for (let it = 0; it < 8; it++) {
+    let c11 = 0, c12 = 0, c22 = 0, x1 = 0, x2 = 0;
+    for (let j = 1; j < Q.length - 1; j++) {
+      const t = u[j], s = 1 - t, B1 = 3 * s * s * t, B2 = 3 * s * t * t, B0 = s * s * s, B3 = t * t * t;
+      const A1 = [t0[0] * B1, t0[1] * B1], A2 = [-t1[0] * B2, -t1[1] * B2];
+      const r = [Q[j][0] - ((B0 + B1) * a[0] + (B2 + B3) * d[0]), Q[j][1] - ((B0 + B1) * a[1] + (B2 + B3) * d[1])];
+      c11 += A1[0] * A1[0] + A1[1] * A1[1]; c12 += A1[0] * A2[0] + A1[1] * A2[1]; c22 += A2[0] * A2[0] + A2[1] * A2[1];
+      x1 += A1[0] * r[0] + A1[1] * r[1]; x2 += A2[0] * r[0] + A2[1] * r[1];
+    }
+    const det = c11 * c22 - c12 * c12;
+    if (Math.abs(det) > 1e-14) { al = (x1 * c22 - x2 * c12) / det; be = (c11 * x2 - c12 * x1) / det; }
+    al = clip(al, chord * 0.02, chord * 1.2); be = clip(be, chord * 0.02, chord * 1.2);
+    const b = [a[0] + t0[0] * al, a[1] + t0[1] * al], c = [d[0] - t1[0] * be, d[1] - t1[1] * be];
+    for (let j = 1; j < Q.length - 1; j++) {         // re-place each sample at its nearest spot on the curve
+      const t = u[j], s = 1 - t;
+      const q = [0, 1].map((k) => s * s * s * a[k] + 3 * s * s * t * b[k] + 3 * s * t * t * c[k] + t * t * t * d[k]);
+      const q1 = [0, 1].map((k) => 3 * (s * s * (b[k] - a[k]) + 2 * s * t * (c[k] - b[k]) + t * t * (d[k] - c[k])));
+      const q2 = [0, 1].map((k) => 6 * (s * (c[k] - 2 * b[k] + a[k]) + t * (d[k] - 2 * c[k] + b[k])));
+      const r = [q[0] - Q[j][0], q[1] - Q[j][1]], num = r[0] * q1[0] + r[1] * q1[1], den = q1[0] * q1[0] + q1[1] * q1[1] + r[0] * q2[0] + r[1] * q2[1];
+      if (Math.abs(den) > 1e-12) u[j] = clip(t - num / den, 0, 1);
+    }
+  }
+  return [al, be];
+}
+/** Section control points fitted to a board's sections: six points each (deck stringer, deck, apex, rail edge,
+ *  bottom, bottom stringer) at a handful of stations. Shares are measured from the stringer out to the outline and
+ *  from the bottom at the rocker up by the thickness. */
+export function fitSectionPts(board0, input = null, stations = null) {
+  // fitted to the board without what goes on top of the points (tools, deck contours, a swallow's bevel): input is
+  // the design as typed (the board is rebuilt from it without those)
+  const p0 = board0.params, bare = !(p0.tools?.length || p0.deck_contours?.length || p0.swallow_rail);
+  const board = bare || !input ? board0 : buildBoard({ ...input, tools: [], deck_contours: [], swallow_rail: 0, section_pts: null });
+  const p = board.params, L = p.length, xw = L / 2 + p.wide_point_offset;
+  const xs = stations || [0.75, 12, xw, L - 12, L - 2];
+  const sp = xs.map((x) => ({ x, pts: fitSectionAt(sectionAt(board, x)) }));
+  if (stations) return sp;
+  // then a section wherever the blend strays from the board by more than tol (in inches), up to max sections
+  const U = new Float64Array(K), V = new Float64Array(K), tol = 0.06, max = 9;
+  const err = (x) => {
+    const s = sectionAt(board, x), yi = Math.max(s.yin || 0, 0), w = Math.max(s.h - yi, 1e-6);
+    secSample(secCoupleAt(sp, x), w, s.t, U, V);
+    let worst = 0;
+    for (const which of ['deck', 'bottom']) for (let i = 0; i < s[which].y.length; i += 12) {
+      let best = Infinity;
+      for (let k = 0; k < K; k += 3) best = Math.min(best, Math.hypot(yi + U[k] * w - s[which].y[i], V[k] * s.t - s[which].z[i]));
+      worst = Math.max(worst, best);
+    }
+    return worst;
+  };
+  while (sp.length < max) {
+    let wx = null, we = tol;
+    for (let x = 1.5; x < L - 1.5; x += 1) {
+      if (sp.some((c) => Math.abs(c.x - x) < 2.5)) continue;
+      const e = err(x); if (e > we) { we = e; wx = x; }
+    }
+    if (wx === null) break;
+    sp.push({ x: wx, pts: fitSectionAt(sectionAt(board, wx)) }); sp.sort((a, b) => a.x - b.x);
+  }
+  return sp;
+}
+function fitSectionAt(s) {
+  const yi = Math.max(s.yin || 0, 0), w = Math.max(s.h - yi, 1e-6), t = Math.max(s.t, 1e-6);
+  const N = (y, z) => [(y - yi) / w, z / t];
+  // deck stringer -> apex, then apex -> bottom stringer (sectionAt gives the bottom from the stringer out)
+  const deck = s.deck.y.map((y, k) => N(y, s.deck.z[k]));
+  const bot = s.bottom.y.map((y, k) => N(y, s.bottom.z[k])).reverse();
+  const ie = NR - 1;                                   // NR - 1 samples past the apex: the rail edge
+  const near = (Q, u) => { let b = 0; for (let k = 1; k < Q.length; k++) if (Math.abs(Q[k][0] - u) < Math.abs(Q[b][0] - u)) b = k; return b; };
+  const id = near(deck, 0.55), flat = bot.slice(ie), ib = ie + near(flat, 0.5);
+  const all = [...deck, ...bot];                       // one line: 0 deck stringer .. KA apex .. bottom stringer
+  const ks = [0, id, KA, KA + ie, KA + ib, all.length - 1], tags = ['ds', null, 'apex', 'edge', null, 'bs'];
+  const unit = (v) => { const l = Math.hypot(v[0], v[1]); return l > 1e-12 ? [v[0] / l, v[1] / l] : [1, 0]; };
+  const dir = (k, side) => { const a = clip(k + (side < 0 ? -6 : 0), 0, all.length - 1), b = clip(k + (side > 0 ? 6 : 0), 0, all.length - 1); return unit([all[b][0] - all[a][0], all[b][1] - all[a][1]]); };
+  const tan = ks.map((k, i) => {
+    if (tags[i] === 'ds') return [[1, 0], [1, 0]];
+    if (tags[i] === 'bs') return [[-1, 0], [-1, 0]];
+    if (tags[i] === 'apex') return [[0, -1], [0, -1]];
+    const L0 = dir(k, -1), R0 = dir(k, 1), cosA = L0[0] * R0[0] + L0[1] * R0[1];
+    if (tags[i] === 'edge' && cosA < 0.9) return [L0, R0];          // a hard edge stays a corner
+    const m = unit([L0[0] + R0[0], L0[1] + R0[1]]); return [m, m];
+  });
+  const pts = ks.map((k, i) => ({ x: all[k][0], y: all[k][1], aL: Math.atan2(tan[i][0][1], tan[i][0][0]), lL: 0, aR: Math.atan2(tan[i][1][1], tan[i][1][0]), lR: 0, c: tan[i][0] !== tan[i][1] && !['ds', 'bs', 'apex'].includes(tags[i]), ...(tags[i] ? { m: tags[i] } : {}) }));
+  // keep the angles continuous along the line (no jump of a full turn between points), so they blend between sections
+  let prev = 0; for (const o of pts) { for (const f of ['aL', 'aR']) { while (o[f] - prev > Math.PI) o[f] -= 2 * Math.PI; while (o[f] - prev < -Math.PI) o[f] += 2 * Math.PI; prev = o[f]; } }
+  pts[pts.length - 1].aL = pts[pts.length - 1].aR = Math.PI;
+  for (let i = 0; i < ks.length - 1; i++) {
+    const [al, be] = bezArms(all.slice(ks[i], ks[i + 1] + 1), tan[i][1], tan[i + 1][0]);
+    pts[i].lR = al; pts[i + 1].lL = be;
+  }
+  return pts;
+}
+
 function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   // in a beak the whole section comes down with the deck, the rail apex (and the tuck under it) too: the section is
   // shaped for the thickness before the beak, then scaled (an apex set in inches would otherwise stay up as a lump)
@@ -1671,7 +1847,7 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   // toward the tip, where the board is just rail, more and more of it is the whole section coming down (so the rail
   // never stands above the beak)
   const bF = beakF(p, xi), sB = bF < 1 ? clip((xi - (p.length - p.nose_beak_pos)) / p.nose_beak_pos, 0, 1) : 0;
-  const tS = (ti / bF) * (1 - smoother(sB) * (1 - bF)), dropB = Math.max(tS - ti, 0);
+  const tS = (ti / bF) * (1 - smoother(sB) * (1 - bF)), dropB = Math.max(tS - ti, 0), tOrig = ti;
   ti = tS;
   const sh = sectionShape(p, xi, d, ti);
   if (sB > 0) {
@@ -1702,6 +1878,26 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
     const yl = xi <= sd ? yi : -Rw * clip((xi - sd) / Lc, 0, 1);
     if (Rw > 1e-3 && (xi <= sd || xi - sd < Lc)) bevel = (y) => { const u = clip(((y - yl) * cs) / Rw, 0, 1); return qIn * (1 - Math.sqrt(Math.max(0, 1 - (1 - u) ** 2))); };
   }
+  if (p.section_pts) {
+    // sections drawn with control points: the section is the blend of the nearest sections' points, scaled to the
+    // outline and the thickness here (the thickness as it ends up: a beak's drop is in the points). Bottom contours,
+    // rail settings and shaped slices are in the points; tools, deck contours and a swallow's bevel go on top.
+    const tt = tOrig * tipK, va = secSample(secCoupleAt(p.section_pts, xi), Math.max(hi - yi, 1e-6), tt, Y, Z);
+    sh.ar = clip(va, 0.02, 0.98);
+    const zA = zbi + va * tt, tdP = (1 - va) * tt, tbP = va * tt;
+    const tl = p.tools && p.tools.length ? toolsAt(p, xi, hi, tt) : null;
+    const dc = p.deck_contours && p.deck_contours.length ? deckContoursAt(p, xi) : null;
+    const dtl = p.tools && p.tools.length ? deckToolsAt(p, xi) : null;
+    for (let k = 0; k < K; k++) {
+      const u = clip(Y[k], 0, 1);
+      Y[k] = yi + u * (hi - yi); Z[k] = zbi + Z[k] * tt;
+      if (k < KA) {
+        if (dc || dtl) { const H0 = Z[k] - zA; Z[k] += deckShape(dc, dtl, H0, tdP, Math.abs(Y[k]), hi) - H0; }
+        if (bevel) Z[k] -= (Z[k] - zbi) * bevel(Y[k]);
+      } else if (tl) Z[k] += sMin(toolLift(tl, Y[k]), 0.95 * Math.max(zA - Z[k], 0));
+    }
+    if (!rowD) return sh;
+  } else {
   const tl = p.tools && p.tools.length ? toolsAt(p, xi, hi, ti * tipK) : null;     // hard-edged concaves at this spot (shallower where a swallow's tips thin out)
   // contours: a single concave is one dish across the bottom (deepest at the stringer, the same curve all
   // the way out, so it reads as one concave); a vee keeps the stringer on the rocker and lifts the rails.
@@ -1794,6 +1990,7 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   }
   if (sh.ew > 1e-4 && w > 1e-3) edgeArms(sh, zApex, tb, yi, hi, hs, yE, Y, Z, contour, tool);
   pinchRail(sh, zApex, td, tb, yi, hi, Y, Z);
+  }
   if (!rowD) return sh;
   const RHO = aux ? aux.rho : S_RHO, NY = aux ? aux.ny : S_NY, NZ = aux ? aux.nz : S_NZ;
   RHO[0] = 0;
