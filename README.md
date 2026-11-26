@@ -386,17 +386,19 @@ kink. The measurements become readouts of the points; typing one moves the point
   thicknesses.
 - Control points are the only way to edit the outline, rocker, deck and sections: **Edit points** turns dragging on.
 - The rocker can't rise into the deck and the deck can't drop into the rocker (1/4" apart at least).
-- **Sections** (Shape3D's couples): a handful of sections along the board (about 9, placed where the board changes
-  most), each six control points: deck stringer, deck, rail apex, rail edge, bottom, bottom stringer. Each is drawn as
-  shares of the half width and thickness there, and between sections every point eases along the board, so changing
-  the outline or foil carries the sections with it. These sections are not shown: roll the slider to any spot and
-  **Edit here** opens the section there as control points (the apex slides up and down the rail). Once changed it is
-  an edited section, highlighted orange like the old shaped slices; **Done** closes it (one opened and not changed goes
-  away), **Remove** / **Reset** takes it out or puts it back to the board's own shape. Clicking the line adds a point
-  to every section at the same spot along its line. The board's own (unedited) sections follow the rail and bottom
-  settings: changing one refits them, edited sections stay as shaped (until points are added).
-  The bottom shape (concave, vee) and shaped slices are in the points; tools, channels, deck contours and a
-  swallow's rail bevel still go on top.
+- **Sections** (Shape3D's couples): about a dozen sections along the board (one every 6" in the tail, more where
+  the board changes), each seven control points: deck stringer, deck, rail apex, half way round the rail, rail edge,
+  bottom, bottom stringer, in shares of the half width and thickness there. Between sections the board is the
+  sections' lines eased along, so changing the outline or foil carries them with it, and a section can have points
+  of its own (clicking the line adds a point to that section only). The fitted sections are not shown: roll the
+  slider anywhere and **Edit here** opens the section there; once changed it is an edited section, highlighted
+  orange; **Done** closes it (one opened and not changed goes away), **Remove** / **Reset** takes it out or puts it
+  back. Rail and bottom settings reach every section, edited ones too (their change goes on top of how a section was
+  shaped), so the latest change, slider or point, wins. Tools, channels, deck contours and a swallow's rail bevel
+  go on top of the sections.
+- Control points show only while **Edit points** is on, so the curves are easy to read otherwise.
+- A soft tuck meets a rolled or veed bottom with no crease: the contour eases in round the rail and arrives level,
+  and the tuck eases into it instead of finishing on a radius.
 
 ## 3D view
 

@@ -2,11 +2,11 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES, fitOutlinePts, fitProfilePts, fitSectionPts, secCoupleAt, ptsPolyline } from './geometry.js?v=40';
-import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=40';
-import { importS3dx, setSectionAt } from './s3dx.js?v=40';
-import { exportS3dx } from './s3dxout.js?v=40';
-import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=40';
+import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES, fitOutlinePts, fitProfilePts, fitSectionPts, secCoupleAt, secLine, ptsPolyline } from './geometry.js?v=41';
+import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=41';
+import { importS3dx, setSectionAt } from './s3dx.js?v=41';
+import { exportS3dx } from './s3dxout.js?v=41';
+import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=41';
 
 const $ = (s) => document.querySelector(s);
 const state = {
@@ -1148,6 +1148,7 @@ function applyParams(p, keepSel = null) {
   for (const [k, fe] of Object.entries(state.fieldEls)) fe.set(state.params[k]);
   for (const [k, ce] of Object.entries(state.cellEls)) ce.set(state.params[k]);
   if (!hist.restoring) autoPts(P);
+  if (!hist.restoring && P.section_pts && P.sec_v !== 3) migrateSecs(P);
   state.secSigV = undefined; state.secSel = null;
   if (P.section_pts) P.section_pts = P.section_pts.filter((c) => !(c.n && !c.e));   // a section opened and never shaped                       // control points unless they were switched off
   renderBottomTable();
@@ -1236,8 +1237,8 @@ function schedule() {
       state.board = board;
       if (state.params.section_pts) {                         // a rail or bottom setting changed: the board's own sections follow it
         const sg = secSig(state.params);
-        if (state.secSigV !== undefined && sg !== state.secSigV) refitAuto();
-        state.secSigV = sg;
+        if (state.secSigV === undefined) { state.secSigV = sg; state.secBase = structuredClone(state.params); }
+        else if (sg !== state.secSigV) refitAuto();          // the baseline moves on once the refit is in
       }
       const read = [...(state.params.outline_pts ? PTS_KEYS : []), ...(state.params.rocker_pts ? PROFILE_KEYS : [])];
       for (const k of read) {                                    // read off the control points
@@ -2046,7 +2047,7 @@ function fitPtsNow(P, b, which) {
     for (const r of P.marks || []) if (r.width !== undefined) r.width = null;
   }
   if (which.includes('sections') && !P.section_pts) {
-    P.section_pts = fitSectionPts(b, P);
+    P.section_pts = fitSectionPts(b, P); P.sec_v = 3;
     P.slices = []; state.sel = null;                    // what the shaped sections did is in the points now
   }
   if (which.includes('profile') && !P.rocker_pts) {
@@ -2115,6 +2116,7 @@ function syncPtsButtons() {
  *  shown with the volume lock's scaling), main (colour of a free point). With Fix dimensions on, the measured points
  *  (the wide or low point, 12" points, thickest point and the ends) can't be moved, only their arms turned. */
 function drawPts(v, ctx, pts, cfg) {
+  if (!prefs.edit) return;                          // looking, not editing: just the curves
   const { L, sgn = 0, mirror = false, outline = false } = cfg, n = pts.length, fix = prefs.fix;
   const tf = cfg.tf || ((x, y) => [x, y]), inv = cfg.inv || ((x, y) => [x, y]);
   tagPts(pts, L, sgn);
@@ -2218,6 +2220,7 @@ const unwrapNear = (a, ref) => { while (a - ref > Math.PI) a -= 2 * Math.PI; whi
 function secSplit(i, t, ci) {
   let mine = null;
   secPts().forEach((c, k) => {
+    if (k !== ci) return;                                // sections can have their own points now
     const a = c.pts[i], b = c.pts[i + 1], P0 = [a.x, a.y], P1 = armEnd(a, 1), P2 = armEnd(b, -1), P3 = [b.x, b.y];
     const mix = (p, q) => [p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])];
     const A = mix(P0, P1), B = mix(P1, P2), C = mix(P2, P3), D = mix(A, B), E = mix(B, C), F = mix(D, E);
@@ -2231,7 +2234,7 @@ function secSplit(i, t, ci) {
 }
 function drawSecPts(v, ctx, data, s) {
   const sp = secPts(), cur = secSel(), ci = sp.indexOf(cur);
-  if (ci < 0) return false;
+  if (ci < 0 || !prefs.edit) return false;
   const mark = () => { cur.e = true; };
   const pts = sp[ci].pts, n = pts.length, yi = Math.max(s.yin || 0, 0), w = Math.max(s.h - yi, 1e-6), t = Math.max(s.t, 1e-6);
   const tf = (u, q) => [yi + u * w, q * t], inv = (X, Z) => [(Math.abs(X) - yi) / w, Z / t];
@@ -2265,7 +2268,7 @@ function drawSecPts(v, ctx, data, s) {
         o.y = clip(q, -0.4, o.m === 'bs' ? 0.6 : o.m === 'apex' ? 0.98 : 1.4);
         mark();
       },
-      remove: tagged ? null : () => { for (const c of sp) c.pts.splice(i, 1); mark(); if (state.pt === o) state.pt = null; redo(); } });
+      remove: tagged ? null : () => { pts.splice(i, 1); mark(); if (state.pt === o) state.pt = null; redo(); } });
     v.point(ctx, { x: -X, y: Z, kind: 'anchor', color: COLORS.foam, ghost: true });
   });
   // click the line to add a point: it goes into every section, at the same spot along its line
@@ -2279,7 +2282,7 @@ function drawSecPts(v, ctx, data, s) {
       const [b] = nearest(wx, wz); if (!b || b[1] < 0.02 || b[1] > 0.98) return null;
       const o = secSplit(b[0], b[1], ci); state.pt = o; mark(); redo();
       return { fn: (wx2, wz2) => { const [u, q] = inv(wx2, wz2); o.x = clip(u, 0, 1); o.y = clip(q, -0.4, 1.4); },
-        undo: () => { const j = sp[ci].pts.indexOf(o); if (j > 0) for (const c of sp) c.pts.splice(j, 1); } };
+        undo: () => { const j = sp[ci].pts.indexOf(o); if (j > 0) sp[ci].pts.splice(j, 1); } };
     },
   });
   return true;
@@ -2860,7 +2863,8 @@ function secBarClick(b) {
     let c = sp.find((q) => q.e && Math.abs(q.x - x) < 0.4) || sp.find((q) => Math.abs(q.x - x) < 0.13);
     if (!c) {
       const xs = clip(snap(x, 0.25), 0.5, L - 0.5);
-      c = { x: xs, pts: secCoupleAt(state.board.params.section_pts, xs), u: true, n: true };
+      const q = { ...P, section_pts: null };
+      c = { x: xs, pts: secCoupleAt(state.board.params.section_pts, xs) || fitSectionPts(buildBoard(q), q, [xs])[0].pts, u: true, n: true };
       sp.push(c); sp.sort((a, q) => a.x - q.x);
     }
     open(c); schedule(); return true;
@@ -2882,23 +2886,74 @@ function secDone() {
   if (c) delete c.n;
   state.secSel = null; state.pt = null;
 }
-/** The board's own sections (the ones not edited) follow the rail and bottom settings: refit them at their spots
- *  when a setting changes. Edited sections stay as shaped. */
+/** A rail or bottom setting changed: every section takes the change, edited ones too (the change is added on top of
+ *  how it was shaped), so the sections never fight each other and the most recent edit, slider or point, wins.
+ *  base = the design before the change. */
 function refitAuto(now = false) {
   clearTimeout(state.refitT);
   const go = () => {
-    const P = state.params, sp = P.section_pts;
+    const P = state.params, sp = P.section_pts, base = state.secBase;
     if (!sp) return;
-    const auto = sp.filter((c) => !c.e);
-    if (!auto.length) return;
-    if (sp[0].pts.length !== 6) { if (!state.refitWarned) { state.refitWarned = true; toast('The sections have extra points now, so the rail and bottom settings no longer change them: shape them with Edit here.'); } return; }
     try {
-      const input = { ...P, section_pts: null }, f = fitSectionPts(buildBoard(input), input, auto.map((c) => c.x));
-      auto.forEach((c, i) => { c.pts = f[i].pts; });
+      const xs = sp.map((c) => c.x), fitAt = (inp) => { const q = { ...inp, section_pts: null }; return fitSectionPts(buildBoard(q), q, xs); };
+      const nf = fitAt(P), of = base ? fitAt(base) : null;
+      sp.forEach((c, i) => {
+        if (!c.e && c.pts.length === SEC_N) c.pts = nf[i].pts;        // a section of the board's own: simply the new fit
+        else if (of) secDelta(c.pts, of[i].pts, nf[i].pts);           // shaped (or with added points): the change on top
+      });
     } catch (e) { console.error(e); return; }
+    state.secBase = structuredClone(P); state.secSigV = secSig(P);
     saveLocal(); schedule();
   };
   if (now) go(); else state.refitT = setTimeout(go, 300);
+}
+/** Add the change from section o to section n (both SEC_N points) onto the points of a shaped section. */
+function secDelta(pts, o, n) {
+  const wrap = (a) => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
+  if (pts.length === o.length && o.length === n.length) {
+    pts.forEach((q, j) => {
+      q.x += n[j].x - o[j].x; q.y += n[j].y - o[j].y;
+      q.lL = Math.max(q.lL + n[j].lL - o[j].lL, 0); q.lR = Math.max(q.lR + n[j].lR - o[j].lR, 0);
+      q.aL += wrap(n[j].aL - o[j].aL); q.aR += wrap(n[j].aR - o[j].aR);
+    });
+  } else {
+    // different points: each point moves (and turns) with the spot of the line nearest it (the two lines sampled the
+    // same way, so sample k of one is sample k of the other)
+    const [ou, ov] = secLine(o), [nu, nv] = secLine(n), Kn = ou.length;
+    const dir = (u, v, k) => { const a = Math.max(k - 4, 0), b = Math.min(k + 4, Kn - 1); return Math.atan2(v[b] - v[a], u[b] - u[a]); };
+    for (const q of pts) {
+      let bk = 0, bd = Infinity;
+      for (let k = 0; k < Kn; k += 2) { const d = Math.hypot(ou[k] - q.x, ov[k] - q.y); if (d < bd) { bd = d; bk = k; } }
+      const da = wrap(dir(nu, nv, bk) - dir(ou, ov, bk));
+      q.x += nu[bk] - ou[bk]; q.y += nv[bk] - ov[bk]; q.aL += da; q.aR += da;
+    }
+  }
+  const ds = pts[0], ap = pts.find((q) => q.m === 'apex'), bs = pts[pts.length - 1];
+  ds.x = 0; ds.y = 1; ds.aL = ds.aR = 0; bs.x = 0; bs.aL = bs.aR = Math.PI;
+  if (ap) { ap.x = 1; ap.aL = ap.aR = -Math.PI / 2; }
+  for (const q of pts) q.x = clip(q.x, 0, 1);
+}
+/** A point of a section segment and its direction: [x, y, dx, dy]. */
+function secBz(a, b, t) {
+  const P1 = armEnd(a, 1), P2 = armEnd(b, -1), s = 1 - t;
+  return [s * s * s * a.x + 3 * s * s * t * P1[0] + 3 * s * t * t * P2[0] + t * t * t * b.x, s * s * s * a.y + 3 * s * s * t * P1[1] + 3 * s * t * t * P2[1] + t * t * t * b.y,
+    3 * (s * s * (P1[0] - a.x) + 2 * s * t * (P2[0] - P1[0]) + t * t * (b.x - P2[0])), 3 * (s * s * (P1[1] - a.y) + 2 * s * t * (P2[1] - P1[1]) + t * t * (b.y - P2[1]))];
+}
+const SEC_N = 7;                                       // points in a fitted section
+/** Sections fitted before round 28 (a crease where a soft tuck met a roll or vee, and too few sections in the tail):
+ *  the board's own sections are fitted again from scratch; a shaped one takes the change the sections around it took. */
+function migrateSecs(P) {
+  try {
+    const sp = P.section_pts, q = { ...P, section_pts: null }, b = buildBoard(q), ed = sp.filter((c) => c.e || c.u);
+    const old = sp.filter((c) => !c.e && !c.u).map((c) => ({ x: c.x, pts: structuredClone(c.pts) }));
+    // the board's own sections fitted again from scratch (they land where the board needs them), the shaped ones put
+    // back with the change the sections around them took
+    const fresh = fitSectionPts(b, q).filter((c) => !ed.some((e) => Math.abs(e.x - c.x) < 2));
+    const nf = ed.length ? fitSectionPts(b, q, ed.map((c) => c.x)) : [];
+    ed.forEach((c, i) => { const o = old.length >= 2 ? secCoupleAt(old, c.x) : null; if (o) secDelta(c.pts, o, nf[i].pts); });
+    P.section_pts = [...fresh, ...ed].sort((a2, c) => a2.x - c.x);
+  } catch (e) { console.error(e); }
+  P.sec_v = 3;
 }
 const SEC_SKIP = new Set(['outline_pts', 'rocker_pts', 'deck_pts', 'section_pts', 'pts_off', 'tools', 'deck_contours', 'swallow_rail', 'marks', 'anchors', 'handles', 'slices', 'target_volume', 'lock_volume']);
 const secSig = (P) => JSON.stringify(Object.keys(P).sort().filter((k) => !SEC_SKIP.has(k) && !PTS_KEYS.includes(k) && !PROFILE_KEYS.includes(k)).map((k) => [k, P[k]]));
