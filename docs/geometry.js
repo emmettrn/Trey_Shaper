@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=34';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=35';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;
@@ -1511,10 +1511,7 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   // contours: a single concave is one dish across the bottom (deepest at the stringer, the same curve all
   // the way out, so it reads as one concave); a vee keeps the stringer on the rocker and lifts the rails.
   // Always across the whole board from the stringer: a swallow's halves are cut out of the same bottom
-  // measured across the bottom from the stringer to the rail's edge (the tuck point), not to the outline: a concave or
-  // roll lives between the edges and leaves the rail line on the rocker (with a wide tuck it used to lift or drop it)
-  let cE = hs;
-  const contour = (yr) => { const eta = clip((yi + (yr * (hi - yi)) / hs) / cE, 0, 1); return con * (1 - eta * eta) + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 + vee * eta; };
+  const contour = (yr) => { const eta = clip((yi + (yr * (hi - yi)) / hs) / hs, 0, 1); return con * (1 - eta * eta) + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 + vee * eta; };
   // the deck: from the stringer round to the rail apex (a superellipse, as before), then the deck contours
   const dc = p.deck_contours && p.deck_contours.length ? deckContoursAt(p, xi) : null;
   const dtl = p.tools && p.tools.length ? deckToolsAt(p, xi) : null;
@@ -1582,7 +1579,6 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
     hf *= 0.5 + 0.5 * smoother(u);
   }
   const w = tk > 1e-6 ? (tk ** -4 + (cw * hi) ** -4) ** -0.25 : 0, yE = hi - w;
-  cE = Math.max(yi + (yE * (hi - yi)) / hs, 1e-6);
   const tool = (yr) => (tl ? toolLift(tl, yi + (yr * (hi - yi)) / hs) : 0);
   // a wide soft tuck under a low apex (a nose tuck) would make the quarter ellipse turn up in a tiny radius right
   // at the apex (a pinched rail): there it gets boxier (a superellipse), so it turns up sooner and the rail stays round
