@@ -2,11 +2,11 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES, fitOutlinePts, fitProfilePts, ptsPolyline } from './geometry.js?v=38';
-import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=38';
-import { importS3dx, setSectionAt } from './s3dx.js?v=38';
-import { exportS3dx } from './s3dxout.js?v=38';
-import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=38';
+import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES, fitOutlinePts, fitProfilePts, fitSectionPts, secCoupleAt, ptsPolyline } from './geometry.js?v=39';
+import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=39';
+import { importS3dx, setSectionAt } from './s3dx.js?v=39';
+import { exportS3dx } from './s3dxout.js?v=39';
+import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=39';
 
 const $ = (s) => document.querySelector(s);
 const state = {
@@ -301,7 +301,7 @@ function renderBottomTable() {
   if (!box) return;
   const xn = (r) => L - posToX(r, L);
   P.bottom.sort((p, q) => xn(p) - xn(q));
-  box.innerHTML = '';
+  box.innerHTML = P.section_pts ? '<div class="help">The sections are control points: the bottom shape (concave, vee) is in them. These stretches come back if the Sections graph\'s Control points are switched off.</div>' : '';
   for (const r of P.bottom) {
     const el = document.createElement('div');
     el.className = 'brow';
@@ -2038,6 +2038,10 @@ function fitPtsNow(P, b, which) {
     P.anchors.outline = []; P.handles.outline = {};
     for (const r of P.marks || []) if (r.width !== undefined) r.width = null;
   }
+  if (which.includes('sections') && !P.section_pts) {
+    P.section_pts = fitSectionPts(b, P);
+    P.slices = []; state.sel = null;                    // what the shaped sections did is in the points now
+  }
   if (which.includes('profile') && !P.rocker_pts) {
     const f = fitProfilePts(pr.x, pr.zb, pr.traw, p.length);
     P.rocker_pts = f.rocker; P.deck_pts = f.deck;
@@ -2050,12 +2054,19 @@ function autoPts(P) {
   const off = P.pts_off || {}, which = [];
   if (!P.outline_pts && !off.plan) which.push('plan');
   if (!P.rocker_pts && !off.profile) which.push('profile');
-  if (!which.length) return;
-  try { fitPtsNow(P, buildBoard(P), which); } catch (e) { console.error(e); }
+  try {
+    if (which.length) fitPtsNow(P, buildBoard(P), which);
+    if (!P.section_pts && !off.sections) fitPtsNow(P, buildBoard(P), ['sections']);   // the sections fitted to the final outline and foil
+  } catch (e) { console.error(e); }
 }
 function togglePts(name) {
   const P = state.params, b = state.board, prof = name === 'profile';
   P.pts_off = { ...(P.pts_off || {}) };
+  if (name === 'sections') {
+    if (P.section_pts) { delete P.section_pts; P.pts_off.sections = true; toast('The sections are built from the rail and bottom settings again (undo brings the control points back).'); }
+    else { delete P.pts_off.sections; fitPtsNow(P, b, ['sections']); if (!prefs.edit) { prefs.edit = true; savePrefs(); syncPanelTools(); } toast(`The sections are ${P.section_pts.length} sections of ${P.section_pts[0].pts.length} control points, blended along the board. Pick one under the Sections graph.`); }
+    state.pt = null; syncPtsButtons(); saveLocal(); schedule(); return;
+  }
   if (prof ? P.rocker_pts : P.outline_pts) {        // back to measurements: the readouts become the typed numbers
     if (prof) { delete P.rocker_pts; delete P.deck_pts; P.anchors.rocker = []; P.anchors.thickness = []; P.handles.rocker = {}; P.handles.thickness = {}; }
     else { delete P.outline_pts; P.anchors.outline = []; P.handles.outline = {}; }
@@ -2071,24 +2082,24 @@ function togglePts(name) {
   syncPtsButtons();
   saveLocal(); schedule();
 }
-const ptsLists = () => [state.params.outline_pts, state.params.rocker_pts, state.params.deck_pts].filter(Boolean);
+const ptsLists = () => [state.params.outline_pts, state.params.rocker_pts, state.params.deck_pts, ...(state.params.section_pts || []).map((c) => c.pts)].filter(Boolean);
 function toggleCorner() {
   const o = state.pt, pts = ptsLists().find((l) => l.includes(o));
-  if (!pts || o === pts[0] || o === pts[pts.length - 1] || o.m === 'w') return;
+  if (!pts || o === pts[0] || o === pts[pts.length - 1] || ['w', 'ds', 'bs', 'apex'].includes(o.m)) return;
   o.c = !o.c;
   if (!o.c) { const a = Math.atan2(Math.sin(o.aL) + Math.sin(o.aR), Math.cos(o.aL) + Math.cos(o.aR)); o.aL = o.aR = a; }
   syncPtsButtons(); saveLocal(); schedule();
 }
 function syncPtsButtons() {
   const P = state.params;
-  for (const [name, on] of [['plan', !!P.outline_pts], ['profile', !!P.rocker_pts]]) {
+  for (const [name, on] of [['plan', !!P.outline_pts], ['profile', !!P.rocker_pts], ['sections', !!P.section_pts]]) {
     const panel = document.querySelector(`.panel[data-panel="${name}"]`);
     const b = panel.querySelector('[data-act="pts"]'), c = panel.querySelector('[data-act="corner"]');
     if (!b) continue;
     b.classList.toggle('on', on);
     b.title = on ? 'On: control points with arms, like Shape3D. Click to go back to building the curves from the measurements.' : 'Edit as control points with arms, like Shape3D (the measurements become readouts)';
-    const o = state.pt, pts = (name === 'plan' ? [P.outline_pts] : [P.rocker_pts, P.deck_pts]).find((l) => l && l.includes(o));
-    const sel = pts && o !== pts[0] && o !== pts[pts.length - 1] && o.m !== 'w';
+    const o = state.pt, pts = (name === 'plan' ? [P.outline_pts] : name === 'profile' ? [P.rocker_pts, P.deck_pts] : (P.section_pts || []).map((c) => c.pts)).find((l) => l && l.includes(o));
+    const sel = pts && o !== pts[0] && o !== pts[pts.length - 1] && !['w', 'ds', 'bs', 'apex'].includes(o.m);
     if (c) { c.hidden = !sel; if (sel) c.textContent = o.c ? 'Make smooth' : 'Make corner'; }
   }
 }
@@ -2187,6 +2198,80 @@ function drawProfilePts(v, ctx, data) {
   drawPts(v, ctx, R, { L, sgn: -1, main: COLORS.accent, ceil: (xq) => dk(xq) - 0.25 });
   drawPts(v, ctx, P.deck_pts, { L, sgn: 0, main: COLORS.foam, floor: (xq) => zb(xq) + 0.25,
     tf: sc === 1 ? null : (x, y) => [x, zb(x) + sc * (y - zb(x))], inv: sc === 1 ? null : (x, y) => [x, zb(x) + (y - zb(x)) / sc] });
+}
+
+/* ---- sections as control points (Shape3D's couples) ---------------------- */
+const secPts = () => state.params.section_pts;
+/** The section of control points at the scrub position, if there is one there. */
+const secAtScrub = (data) => { const sp = secPts(), x = scrubX(data); return sp ? sp.findIndex((c) => Math.abs(c.x - x) < 0.13) : -1; };
+const unwrapNear = (a, ref) => { while (a - ref > Math.PI) a -= 2 * Math.PI; while (a - ref < -Math.PI) a += 2 * Math.PI; return a; };
+/** Split segment i of every section at t (the de Casteljau split, so no section changes shape): the sections keep
+ *  the same points, as Shape3D's couples do. Returns the new point of section ci. */
+function secSplit(i, t, ci) {
+  let mine = null;
+  secPts().forEach((c, k) => {
+    const a = c.pts[i], b = c.pts[i + 1], P0 = [a.x, a.y], P1 = armEnd(a, 1), P2 = armEnd(b, -1), P3 = [b.x, b.y];
+    const mix = (p, q) => [p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])];
+    const A = mix(P0, P1), B = mix(P1, P2), C = mix(P2, P3), D = mix(A, B), E = mix(B, C), F = mix(D, E);
+    a.lR = Math.hypot(A[0] - P0[0], A[1] - P0[1]); b.lL = Math.hypot(P3[0] - C[0], P3[1] - C[1]);
+    const ang = unwrapNear(Math.atan2(E[1] - D[1], E[0] - D[0]), a.aR);
+    const o = { x: F[0], y: F[1], aL: ang, lL: Math.hypot(F[0] - D[0], F[1] - D[1]), aR: ang, lR: Math.hypot(E[0] - F[0], E[1] - F[1]), c: false };
+    c.pts.splice(i + 1, 0, o);
+    if (k === ci) mine = o;
+  });
+  return mine;
+}
+function drawSecPts(v, ctx, data, s) {
+  const sp = secPts(), ci = secAtScrub(data);
+  if (ci < 0) return false;
+  const pts = sp[ci].pts, n = pts.length, yi = Math.max(s.yin || 0, 0), w = Math.max(s.h - yi, 1e-6), t = Math.max(s.t, 1e-6);
+  const tf = (u, q) => [yi + u * w, q * t], inv = (X, Z) => [(Math.abs(X) - yi) / w, Z / t];
+  const redo = () => syncPtsButtons();
+  const fixedDir = (o) => (o.m === 'ds' ? 0 : o.m === 'bs' ? Math.PI : o.m === 'apex' ? -Math.PI / 2 : null);
+  pts.forEach((o, i) => {
+    for (const side of [-1, 1]) {
+      if ((side < 0 && i === 0) || (side > 0 && i === n - 1)) continue;
+      const c0 = tf(o.x, o.y), q = tf(...armEnd(o, side));
+      const px = Math.hypot((q[0] - c0[0]) * v.s, (q[1] - c0[1]) * v.s * (v.vex || 1)), k = px < 14 && px > 1e-9 ? 14 / px : 1;
+      v.point(ctx, { x: c0[0] + (q[0] - c0[0]) * k, y: c0[1] + (q[1] - c0[1]) * k, kind: 'arm', color: o === state.pt ? COLORS.accent : 'rgba(223,231,236,.55)', ax: c0[0], ay: c0[1],
+        select: () => { state.pt = o; redo(); },
+        drag: (wx, wz) => {
+          const E = inv(wx, wz), dx = side * (E[0] - o.x), dy = side * (E[1] - o.y), f = fixedDir(o);
+          const old = side < 0 ? o.aL : o.aR;
+          let ang = f !== null ? old : unwrapNear(Math.atan2(dy, dx), old);
+          const len = f !== null ? Math.max(dx * Math.cos(ang) + dy * Math.sin(ang), 0) : Math.hypot(dx, dy);
+          if (side < 0) { o.aL = ang; o.lL = len; } else { o.aR = ang; o.lR = len; }
+          if (!o.c) { o.aL = o.aR = ang; }
+        } });
+    }
+  });
+  pts.forEach((o, i) => {
+    const [X, Z] = tf(o.x, o.y), tagged = !!o.m;
+    v.point(ctx, { x: X, y: Z, kind: tagged ? 'station' : 'anchor', color: o.m === 'apex' ? COLORS.accent : o.m === 'edge' ? COLORS.warm : o.m ? COLORS.sand : o.c ? COLORS.warm : COLORS.foam,
+      locked: o.m === 'ds', on: state.pt === o, select: () => { state.pt = o; redo(); },
+      drag: o.m === 'ds' ? null : (wx, wz) => {
+        const [u, q] = inv(wx, wz);
+        if (o.m !== 'bs' && o.m !== 'apex') o.x = clip(u, 0, 1);   // the apex stays on the outline, the stringer on the stringer
+        o.y = clip(q, -0.4, o.m === 'bs' ? 0.6 : 1.4);
+      },
+      remove: tagged ? null : () => { for (const c of sp) c.pts.splice(i, 1); if (state.pt === o) state.pt = null; redo(); } });
+    v.point(ctx, { x: -X, y: Z, kind: 'anchor', color: COLORS.foam, ghost: true });
+  });
+  // click the line to add a point: it goes into every section, at the same spot along its line
+  const dense = () => { const out = []; for (let i = 0; i < n - 1; i++) for (let k = 0; k <= 24; k++) { const P0 = [pts[i].x, pts[i].y], P1 = armEnd(pts[i], 1), P2 = armEnd(pts[i + 1], -1), P3 = [pts[i + 1].x, pts[i + 1].y], tt = k / 24, uu = 1 - tt;
+    const u = uu * uu * uu * P0[0] + 3 * uu * uu * tt * P1[0] + 3 * uu * tt * tt * P2[0] + tt * tt * tt * P3[0], q = uu * uu * uu * P0[1] + 3 * uu * uu * tt * P1[1] + 3 * uu * tt * tt * P2[1] + tt * tt * tt * P3[1];
+    out.push([i, tt, ...tf(u, q)]); } return out; };
+  const nearest = (wx, wz) => { let b = null, bd = Infinity; for (const d of dense()) { const dd = Math.hypot((d[2] - Math.abs(wx)) * v.s, (d[3] - wz) * v.s * (v.vex || 1)); if (dd < bd) { bd = dd; b = d; } } return [b, bd]; };
+  v.curves.push({
+    dist: (wx, wz) => nearest(wx, wz)[1],
+    add: (wx, wz) => {
+      const [b] = nearest(wx, wz); if (!b || b[1] < 0.02 || b[1] > 0.98) return null;
+      const o = secSplit(b[0], b[1], ci); state.pt = o; redo();
+      return { fn: (wx2, wz2) => { const [u, q] = inv(wx2, wz2); o.x = clip(u, 0, 1); o.y = clip(q, -0.4, 1.4); },
+        undo: () => { const j = sp[ci].pts.indexOf(o); if (j > 0) for (const c of sp) c.pts.splice(j, 1); } };
+    },
+  });
+  return true;
 }
 
 /* ---- plan: the outline --------------------------------------------------- */
@@ -2490,7 +2575,7 @@ function sectionCaption(v, ctx, data, s, color) {
   const L = data.params.length;
   v.text(ctx, `${whereText(s.x, L)} · ${fracIn(2 * s.h)}″ wide · ${fracIn(s.t)}″ thick`, 4, 12, color, 'left');
   const here = (data.params.tools || []).filter((t) => s.x >= t.x0 && s.x <= t.x1).map((t) => (t.surface === 'deck' ? (t.step === 'out' ? 'step deck' : 'deck step / pocket') : `${TOOL_SHAPES[t.shape].toLowerCase()}${t.kind === 'double' ? ' double' : ''} concave`));
-  v.text(ctx, `${shapeText(s.shape)}${here.length ? ' + ' + here.join(' + ') : ''} · rail apex ${fracIn(s.apex_in)}″ up`, 4, 25, COLORS.sand, 'left');
+  v.text(ctx, `${data.params.section_pts ? (secAtScrub(data) >= 0 ? "section of control points" : "blend of the sections either side") : shapeText(s.shape)}${here.length ? ' + ' + here.join(' + ') : ''} · rail apex ${fracIn(s.apex_in)}″ up`, 4, 25, COLORS.sand, 'left');
 }
 
 /** A point of a section line at arc-length position rho: where it is, where it was before anchor points, and the frame there. */
@@ -2566,6 +2651,12 @@ function drawSections(v, data) {
     ctx.strokeStyle = SLICE_COLOR; ctx.lineWidth = 1.8; ctx.stroke();
     sectionCaption(v, ctx, data, s, SLICE_COLOR);
     miniMap(v, ctx, data, s.x, true);
+    if (P.section_pts) {
+      const on = drawSecPts(v, ctx, data, s);
+      if (v.w > 300) v.text(ctx, on ? 'drag a point or an arm · click the line to add a point (to every section) · double-click a point to remove it'
+        : 'slide to roll through the board (a blend of the sections either side) · pick a section below, or Add a section here', v.w / 2, v.h - 6, 'rgba(132,148,159,.8)', 'center');
+      return;
+    }
     if (v.w > 300) v.text(ctx, 'slide to roll through the board · Edit here to shape this section', v.w / 2, v.h - 6, 'rgba(132,148,159,.8)', 'center');
     return;
   }
@@ -2709,7 +2800,18 @@ function sliceLabel(s, L) { return s.x > L / 2 ? `N ${fracIn(L - s.x)}″` : `T 
 
 /** Under the Sections title: a slider to roll through the board, or the controls of the section being shaped. */
 function renderSliceBar(data) {
-  const bar = $('#slicebar'), L = data.params.length, list = data.params.slices, x = scrubX(data);
+  const bar = $('#slicebar'), L = data.params.length, x = scrubX(data);
+  if (state.params.section_pts) {                     // sections of control points: pick one, add one here or remove one
+    const sp = state.params.section_pts, ci = secAtScrub(data);
+    const sig = JSON.stringify(['pts', L, ci, sp.map((c) => sliceLabel(c, L))]);
+    if (bar.dataset.sig !== sig) {
+      bar.dataset.sig = sig;
+      const chips = sp.map((c, i) => `<button data-cx="${i}" class="${i === ci ? 'on' : ''}" title="Go to this section">${sliceLabel(c, L)}</button>`).join('');
+      bar.innerHTML = `<input type="range" id="scrub" min="0.5" max="${L - 0.5}" step="0.25" aria-label="Position along the board"><span class="where" id="scrub-where"></span>
+        ${ci >= 0 ? `<button data-cdel title="Take this section out (the ones either side blend across)" ${sp.length <= 2 ? 'disabled' : ''}>Remove</button>` : '<button data-cadd title="Add a section of control points here (it starts as the blend, so nothing changes)">Add a section here</button>'}${chips}`;
+    }
+  } else {
+  const list = data.params.slices;
   const near = state.sel === null ? list.find((s) => Math.abs(s.x - x) < 0.4) : null;
   const sig = JSON.stringify([state.sel, L, near?.id ?? null, list.map((s) => [s.id, sliceLabel(s, L)])]);
   if (bar.dataset.sig !== sig) {
@@ -2725,12 +2827,27 @@ function renderSliceBar(data) {
         <button data-del title="Remove this shaped section">Remove</button>${chips}`;
     }
   }
+  }
   const r = $('#scrub');
   if (r) {
     if (document.activeElement !== r || Math.abs(+r.value - x) > 0.13) r.value = x;
     r.style.setProperty('--pct', `${((x - 0.5) / (L - 1)) * 100}%`);
     $('#scrub-where').textContent = x > L / 2 ? `N ${fracIn(L - x)}″` : `T ${fracIn(x)}″`;
   }
+}
+function secBarClick(b) {
+  const P = state.params, sp = P.section_pts, L = state.board.params.length;
+  if ('cx' in b.dataset) { state.scrub = sp[+b.dataset.cx].x; state.pt = null; scrubChanged(); return true; }
+  if ('cadd' in b.dataset) {
+    const x = clip(snap(scrubX(state.board), 0.25), 0.5, L - 0.5);
+    sp.push({ x, pts: secCoupleAt(state.board.params.section_pts, x) }); sp.sort((a, c) => a.x - c.x);
+    state.scrub = x; saveLocal(); schedule(); return true;
+  }
+  if ('cdel' in b.dataset) {
+    const i = secAtScrub(state.board); if (i >= 0 && sp.length > 2) sp.splice(i, 1);
+    state.pt = null; saveLocal(); schedule(); return true;
+  }
+  return false;
 }
 
 /** The scrub position moved: nothing about the board changed, so just redraw. */
@@ -2774,6 +2891,7 @@ function wirePanels() {
   });
   $('#slicebar').addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;
+    if (state.params.section_pts && secBarClick(b)) return;
     const P = state.params;
     if ('edit' in b.dataset) {                          // shape the section at the scrub position (reuse one that is already there)
       const x = scrubX(state.board), near = P.slices.find((s) => Math.abs(s.x - x) < 0.4);

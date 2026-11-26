@@ -374,7 +374,7 @@ can be measured from the nose, from the tail, or ahead of / behind center.
 ## Control points (Shape3D style)
 
 New boards, loaded designs, photo traces and Shape3D imports open as control points: the outline (Plan) and the
-rocker and deck (Profile) are each a few points with arms, cubic Beziers in between, like Shape3D. The fit uses as
+rocker and deck (Profile) and the sections are each a few points with arms, cubic Beziers in between, like Shape3D. The fit uses as
 few points as it can (about 6 to 10 per curve, within about 1/20"), since every extra point is another place for a
 kink. The measurements become readouts of the points; typing one moves the points to give it.
 
@@ -387,6 +387,14 @@ kink. The measurements become readouts of the points; typing one moves the point
 - **Control points** in each graph's tools switches that graph back to building from the measurements (and back
   again). A board switched off stays off when it is loaded again.
 - The rocker can't rise into the deck and the deck can't drop into the rocker (1/4" apart at least).
+- **Sections** (Shape3D's couples): a handful of sections along the board (about 9, placed where the board changes
+  most), each six control points: deck stringer, deck, rail apex, rail edge, bottom, bottom stringer. Each is drawn as
+  shares of the half width and thickness there, and between sections every point eases along the board, so changing
+  the outline or foil carries the sections with it. Pick a section with the chips under the Sections graph; Add a
+  section here puts one in at the scrub spot (as the blend, so nothing changes); Remove takes one out. Clicking the
+  line adds a point to every section at the same spot along its line (they always have the same points).
+  The bottom shape (concave, vee) and shaped slices are in the points; tools, channels, deck contours and a
+  swallow's rail bevel still go on top.
 
 ## 3D view
 
