@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=35';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=37';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;
@@ -106,7 +106,7 @@ export function paramsFromDict(d = {}) {
   const base = { ...DEFAULTS };
   for (const k of Object.keys(DEFAULTS)) if (k in d) base[k] = d[k];
   base.tools = Array.isArray(d.tools) ? d.tools : [];      // concave tools (newer than the generated defaults)
-  for (const k of ['rail_tuck_nose', 'rail_tuck_tail', 'hard_edge', 'rail_reach_nose', 'rail_reach_tail', 'swallow_round', 'swallow_rail', 'deck_contours', 'curve_v', 'deck_flat', 'diamond_depth', 'deck_flat_corner', 'deck_flat_in', 'nose_beak', 'nose_beak_pos']) if (k in d) base[k] = d[k];   // rail tucks (newer too)
+  for (const k of ['rail_tuck_nose', 'rail_tuck_tail', 'hard_edge', 'rail_reach_nose', 'rail_reach_tail', 'swallow_round', 'swallow_rail', 'deck_contours', 'curve_v', 'deck_flat', 'diamond_depth', 'deck_flat_corner', 'deck_flat_in', 'nose_beak', 'nose_beak_pos', 'outline_pts']) if (k in d) base[k] = d[k];   // rail tucks (newer too)
   const L = base.length;
   const xl = L / 2 + base.rocker_low_point, xt = L / 2 + base.thickness_point_offset;
   for (const [side, nose] of [['nose', true], ['tail', false]]) {
@@ -126,6 +126,10 @@ export function paramsFromDict(d = {}) {
  */
 export function validated(src) {
   const p = { ...src };
+  // an outline drawn with control points (Shape3D style): the points are the outline, and the width, the 12" widths,
+  // the tail block and the wide point are read off it
+  p.outline_pts = cleanPts(p.outline_pts, p.length);
+  if (p.outline_pts) Object.assign(p, ptsReadouts(p.outline_pts, p.length, p.tail_type));
   const w = [], auto = [];
   const clamp = (name, lo, hi, label) => {
     const v = p[name], nv = Math.min(Math.max(v, lo), hi);
@@ -547,6 +551,136 @@ function bottomAt(p, x) {
   return out;
 }
 
+/* =========================================================================
+   Outline control points (Shape3D style). Each point: { x, y, aL, lL, aR, lR, c }: position (inches along the board,
+   half width), and its two arms as angle (radians, the direction the curve runs through the point, toward the nose)
+   and length. The arm toward the tail sits at (x, y) - lL (cos aL, sin aL), the one toward the nose at
+   (x, y) + lR (cos aR, sin aR). c = a corner (the two arms turn on their own); otherwise aL = aR (smooth).
+   The first point is the tail end (x = 0), the last the nose tip (x = L, y = 0). Between points: cubic Beziers.
+   ========================================================================= */
+function cleanPts(pts, L) {
+  if (!Array.isArray(pts) || pts.length < 2) return null;
+  const q = pts.map((o) => ({ x: +o.x, y: +o.y, aL: +o.aL, lL: Math.max(+o.lL || 0, 0), aR: +o.aR, lR: Math.max(+o.lR || 0, 0), c: !!o.c }))
+    .filter((o) => [o.x, o.y, o.aL, o.aR].every(Number.isFinite)).sort((a, b) => a.x - b.x);
+  if (q.length < 2) return null;
+  const k = L / Math.max(q[q.length - 1].x, 1e-6);       // the nose tip is at the board's length
+  if (Math.abs(k - 1) > 1e-9) for (const o of q) { o.x *= k; }
+  q[0].x = 0; q[q.length - 1].x = L; q[q.length - 1].y = 0;
+  for (const o of q) o.y = Math.max(o.y, 0);
+  // the outline stays a curve along the board (no loops): every arm points forward or straight across, and reaches no
+  // further along the board than most of the way to the next point
+  const cap = (ang, len, gap) => { const c = Math.cos(ang); return c > 1e-6 ? Math.min(len, (0.95 * gap) / c) : len; };
+  for (let i = 0; i < q.length; i++) {
+    const o = q[i];
+    o.aL = clip(o.aL, -Math.PI / 2, Math.PI / 2); o.aR = clip(o.aR, -Math.PI / 2, Math.PI / 2);
+    if (i > 0) o.lL = cap(o.aL, o.lL, o.x - q[i - 1].x);
+    if (i < q.length - 1) o.lR = cap(o.aR, o.lR, q[i + 1].x - o.x);
+  }
+  return q;
+}
+/** The outline as a dense polyline [xs, ys] (x kept increasing). */
+export function ptsPolyline(pts, per = 120) {
+  const X = [], Y = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1];
+    const P1 = [a.x + a.lR * Math.cos(a.aR), a.y + a.lR * Math.sin(a.aR)], P2 = [b.x - b.lL * Math.cos(b.aL), b.y - b.lL * Math.sin(b.aL)];
+    for (let j = i ? 1 : 0; j <= per; j++) {
+      const t = j / per, u = 1 - t, w0 = u * u * u, w1 = 3 * u * u * t, w2 = 3 * u * t * t, w3 = t * t * t;
+      X.push(w0 * a.x + w1 * P1[0] + w2 * P2[0] + w3 * b.x); Y.push(Math.max(w0 * a.y + w1 * P1[1] + w2 * P2[1] + w3 * b.y, 0));
+    }
+  }
+  for (let i = 1; i < X.length; i++) if (X[i] < X[i - 1]) X[i] = X[i - 1];
+  return [X, Y];
+}
+const PTS_CACHE = new WeakMap();
+function ptsHalfWidth(pts, x) {
+  let pl = PTS_CACHE.get(pts);
+  if (!pl) { pl = ptsPolyline(pts, 200); PTS_CACHE.set(pts, pl); }
+  const [X, Y] = pl, out = new Float64Array(x.length);
+  let j = 0;
+  const xs = Array.from(x), order = xs.map((_, i) => i).sort((a, b) => xs[a] - xs[b]);
+  for (const i of order) {
+    const xq = xs[i];
+    while (j < X.length - 2 && X[j + 1] < xq) j++;
+    const x0 = X[j], x1 = X[j + 1], f = x1 > x0 ? clip((xq - x0) / (x1 - x0), 0, 1) : 1;
+    // where the outline turns straight across (a square tail end), the widest it gets at that x
+    out[i] = xq <= X[0] ? Y[0] : xq >= X[X.length - 1] ? Y[Y.length - 1] : Y[j] + f * (Y[j + 1] - Y[j]);
+  }
+  return out;
+}
+/** The measurements an outline of control points has: width, 12" widths, tail block, wide point. */
+function ptsReadouts(pts, L, tailType) {
+  const [X, Y] = ptsPolyline(pts, 200);
+  let im = 0; for (let i = 1; i < Y.length; i++) if (Y[i] > Y[im]) im = i;
+  const at = (xq) => ptsHalfWidth(pts, [xq])[0], r16 = (v) => Math.round(v * 1600) / 1600;
+  const out = { width: r16(2 * Y[im]), nose_width_12: r16(2 * at(L - 12)), tail_width_12: r16(2 * at(12)), wide_point_offset: Math.round((X[im] - L / 2) * 100) / 100 };
+  if (!TAIL_TYPES[tailType]?.closes) out.tail_block_width = r16(2 * pts[0].y);
+  return out;
+}
+/** Control points fitted to an outline (x, h): knots at the tail end, 12", the wide point, 12" from the nose and the
+ *  nose tip (and a diamond's corners), more where the fit strays past tol. Smooth everywhere but the tail end. */
+export function fitOutlinePts(x, h, L, { corners = [], tol = 0.02, max = 16 } = {}) {
+  const P = []; for (let i = 0; i < x.length; i++) P.push([x[i], h[i]]);
+  const n = P.length, near = (xq) => { let b = 0; for (let i = 1; i < n; i++) if (Math.abs(P[i][0] - xq) < Math.abs(P[b][0] - xq)) b = i; return b; };
+  let iw = 0; for (let i = 1; i < n; i++) if (h[i] > h[iw]) iw = i;
+  const knots = [...new Set([0, n - 1, near(12), iw, near(L - 12), ...corners.map(near)])].filter((i) => i >= 0 && i < n).sort((a, b) => a - b);
+  const isCorner = new Set([0, n - 1, ...corners.map(near)]);
+  const unit = (v) => { const l = Math.hypot(v[0], v[1]); return l > 1e-12 ? [v[0] / l, v[1] / l] : [1, 0]; };
+  const tan = (i, side) => {                              // through the points about 1/2" either side (one side at a corner)
+    const walk = (dir) => { let j = i, d = 0; while (j + dir >= 0 && j + dir < n && d < 0.5) { d += Math.hypot(P[j + dir][0] - P[j][0], P[j + dir][1] - P[j][1]); j += dir; } return j; };
+    if (i === iw) return [1, 0];
+    const corner = isCorner.has(i);
+    const jb = corner && side > 0 ? i : walk(-1), jf = corner && side < 0 ? i : walk(1);
+    return unit([P[jf][0] - P[jb][0], P[jf][1] - P[jb][1]]);
+  };
+  const seg = (i0, i1) => {
+    const a = P[i0], d = P[i1], t0 = tan(i0, 1), t1 = tan(i1, -1), chord = Math.hypot(d[0] - a[0], d[1] - a[1]);
+    let u = [0], acc = 0;
+    for (let i = i0 + 1; i <= i1; i++) { acc += Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]); u.push(acc); }
+    u = u.map((v) => v / (acc || 1));
+    let al = chord / 3, be = chord / 3;
+    for (let it = 0; it < 6; it++) {
+      let c11 = 0, c12 = 0, c22 = 0, x1 = 0, x2 = 0;
+      for (let j = 1; j < u.length - 1; j++) {
+        const t = u[j], s = 1 - t, B0 = s * s * s, B1 = 3 * s * s * t, B2 = 3 * s * t * t, B3 = t * t * t;
+        const A1 = [t0[0] * B1, t0[1] * B1], A2 = [-t1[0] * B2, -t1[1] * B2];
+        const r = [P[i0 + j][0] - ((B0 + B1) * a[0] + (B2 + B3) * d[0]), P[i0 + j][1] - ((B0 + B1) * a[1] + (B2 + B3) * d[1])];
+        c11 += A1[0] * A1[0] + A1[1] * A1[1]; c12 += A1[0] * A2[0] + A1[1] * A2[1]; c22 += A2[0] * A2[0] + A2[1] * A2[1];
+        x1 += A1[0] * r[0] + A1[1] * r[1]; x2 += A2[0] * r[0] + A2[1] * r[1];
+      }
+      const det = c11 * c22 - c12 * c12;
+      if (Math.abs(det) > 1e-12) { al = (x1 * c22 - x2 * c12) / det; be = (c11 * x2 - c12 * x1) / det; }
+      al = clip(al, chord * 0.02, chord * 0.9); be = clip(be, chord * 0.02, chord * 0.9);
+      const b = [a[0] + t0[0] * al, a[1] + t0[1] * al], c = [d[0] - t1[0] * be, d[1] - t1[1] * be];
+      for (let j = 1; j < u.length - 1; j++) {
+        const t = u[j], s = 1 - t;
+        const q = [0, 1].map((k) => s * s * s * a[k] + 3 * s * s * t * b[k] + 3 * s * t * t * c[k] + t * t * t * d[k]);
+        const q1 = [0, 1].map((k) => 3 * (s * s * (b[k] - a[k]) + 2 * s * t * (c[k] - b[k]) + t * t * (d[k] - c[k])));
+        const q2 = [0, 1].map((k) => 6 * (s * (c[k] - 2 * b[k] + a[k]) + t * (d[k] - 2 * c[k] + b[k])));
+        const r = [q[0] - P[i0 + j][0], q[1] - P[i0 + j][1]], num = r[0] * q1[0] + r[1] * q1[1], den = q1[0] * q1[0] + q1[1] * q1[1] + r[0] * q2[0] + r[1] * q2[1];
+        if (Math.abs(den) > 1e-12) u[j] = clip(t - num / den, 0, 1);
+      }
+    }
+    const b = [a[0] + t0[0] * al, a[1] + t0[1] * al], c = [d[0] - t1[0] * be, d[1] - t1[1] * be];
+    let worst = 0, wi = Math.round((i0 + i1) / 2);
+    const S = []; for (let k = 0; k <= 300; k++) { const t = k / 300, s = 1 - t; S.push([0, 1].map((q) => s * s * s * a[q] + 3 * s * s * t * b[q] + 3 * s * t * t * c[q] + t * t * t * d[q])); }
+    for (let j = i0 + 1; j < i1; j++) { let best = Infinity; for (const q of S) best = Math.min(best, Math.hypot(q[0] - P[j][0], q[1] - P[j][1])); if (best > worst) { worst = best; wi = j; } }
+    return { t0, t1, al, be, worst, wi };
+  };
+  let segs;
+  for (;;) {
+    segs = []; let worst = 0, at = -1;
+    for (let k = 0; k < knots.length - 1; k++) { const sg = seg(knots[k], knots[k + 1]); segs.push(sg); if (sg.worst > worst && knots[k + 1] - knots[k] > 2) { worst = sg.worst; at = k; } }
+    if (worst <= tol || knots.length >= max || at < 0) break;
+    knots.splice(at + 1, 0, segs[at].wi);
+  }
+  return knots.map((i, k) => {
+    const r = k < knots.length - 1 ? segs[k] : null, l = k ? segs[k - 1] : null;
+    const tR = r ? r.t0 : l.t1, tL = l ? l.t1 : r.t0;
+    return { x: P[i][0], y: P[i][1], aL: Math.atan2(tL[1], tL[0]), lL: l ? l.be : 0, aR: Math.atan2(tR[1], tR[0]), lR: r ? r.al : 0, c: isCorner.has(i) && k > 0 && k < knots.length - 1 };
+  });
+}
+
 /**
  * Correction for one design curve, evaluated at the stations x (base: the closed-form curve there,
  * baseFn(xs) the same curve anywhere). Every point works the same way, measured or anchor:
@@ -560,6 +694,7 @@ function bottomAt(p, x) {
  */
 function curveDelta(p, name, x, arms, baseFn) {
   const out = new Float64Array(x.length);
+  if (name === 'outline' && p.outline_pts) { if (arms) arms.pins = {}; return out; }   // control points: the curve is the points
   const pts = [...p.anchors[name], ...p._marks[name]].sort((a, b) => a[0] - b[0]);
   const L = p.length, pin = pinsFor(p, name), H = p.handles[name];
   const P = [[0, 'tail']];
@@ -862,6 +997,7 @@ function closureExponent(r, b, uRef) {
 }
 
 function halfWidth(p, x) {
+  if (p.outline_pts) return ptsHalfWidth(p.outline_pts, x);
   const L = p.length, W2 = p.width / 2, xw = L / 2 + p.wide_point_offset;
   const bn = NOSE_TYPES[p.nose_type];
   const an = closureExponent(p.nose_width_12 / p.width, bn, (L - 12 - xw) / (L - xw));
