@@ -2,11 +2,11 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES, fitOutlinePts, ptsPolyline } from './geometry.js?v=37';
-import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=37';
-import { importS3dx, setSectionAt } from './s3dx.js?v=37';
-import { exportS3dx } from './s3dxout.js?v=37';
-import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=37';
+import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES, fitOutlinePts, fitProfilePts, ptsPolyline } from './geometry.js?v=38';
+import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=38';
+import { importS3dx, setSectionAt } from './s3dx.js?v=38';
+import { exportS3dx } from './s3dxout.js?v=38';
+import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=38';
 
 const $ = (s) => document.querySelector(s);
 const state = {
@@ -110,7 +110,7 @@ function buildStationTable() {
       </table>
       <div class="wp-row"><span>Wide point</span><input class="cell" id="wp-offset" type="text" spellcheck="false" aria-label="Wide point from center"><span class="unit">from center (+ = nose)</span></div>
       <div class="bottom-actions"><button class="ghost" id="mark-add" title="Add a row to the table: hold the width, rocker and / or thickness at any other spot along the board">+ Add a measurement</button></div>
-      <label class="toggle fix"><input type="checkbox" id="fix-dims"><span>Fix dimensions <small>only anchor points can be dragged on the graphs</small></span></label>
+      <label class="toggle fix"><input type="checkbox" id="fix-dims"><span>Fix dimensions <small>the measured points stay put on the graphs (control points: only their arms turn)</small></span></label>
       <div class="help">Inches, fractions OK: 19 3/4. Leave a box blank and it is worked out from the rest of the board (shown as ~). Rocker is bottom height above a flat table.</div>
     </div>`;
   bindCell(det.querySelector('#wp-offset'), 'wide_point_offset', 0.25);
@@ -1037,7 +1037,7 @@ function showValue(key, v, except) {
 }
 
 function setParam(key, v, src) {
-  if (state.params.outline_pts && PTS_KEYS.includes(key) && Number.isFinite(v) && Number.isFinite(state.params[key])) {
+  if (((state.params.outline_pts && PTS_KEYS.includes(key)) || (state.params.rocker_pts && PROFILE_KEYS.includes(key))) && Number.isFinite(v) && Number.isFinite(state.params[key])) {
     ptsSetMeasure(state.params, key, v);                // control points: the typed measurement moves the points
     state.params[key] = v; showValue(key, v, src === 'slider' ? 'field' : src);
     saveLocal(); schedule(); return;
@@ -1147,6 +1147,7 @@ function applyParams(p, keepSel = null) {
   state.pt = null;
   for (const [k, fe] of Object.entries(state.fieldEls)) fe.set(state.params[k]);
   for (const [k, ce] of Object.entries(state.cellEls)) ce.set(state.params[k]);
+  if (!hist.restoring) autoPts(P);                       // control points unless they were switched off
   renderBottomTable();
   renderTools();
   renderDeck();
@@ -1231,9 +1232,10 @@ function schedule() {
       const board = buildBoard(state.params);
       board.curves = curves(board);
       state.board = board;
-      if (state.params.outline_pts) for (const k of PTS_KEYS) {   // read off the control points
+      const read = [...(state.params.outline_pts ? PTS_KEYS : []), ...(state.params.rocker_pts ? PROFILE_KEYS : [])];
+      for (const k of read) {                                    // read off the control points
         const v = board.params[k];
-        if (k !== 'length' && Number.isFinite(v) && Math.abs(v - (state.params[k] ?? NaN)) > 1e-6) { state.params[k] = v; showValue(k, v); }
+        if (k !== 'length' && Number.isFinite(v) && !(Math.abs(v - state.params[k]) <= 1e-6)) { state.params[k] = v; showValue(k, v); }
       }
       render(board);
     } catch (e) {
@@ -1942,117 +1944,222 @@ const station = (v, ctx, x, y, color, apply, id = null) =>
 const rawMark = (r) => state.params.marks.find((q) => q.pos === r.pos && q.from === r.from);
 const markPos = (raw, wx) => { const L = state.board.params.length, x = clip(snap(wx, 0.25), 1.25, L - 1.25); raw.pos = raw.from === 'nose' ? L - x : raw.from === 'center' ? x - L / 2 : x; };
 
-/* ---- plan: the outline as control points (Shape3D style) ------------------ */
+/* ---- control points (Shape3D style): the outline, the rocker and the deck ---- */
 const PTS_KEYS = ['length', 'width', 'nose_width_12', 'tail_width_12', 'tail_block_width', 'wide_point_offset'];
+const ROCKER_KEYS = ['tail_rocker', 'nose_rocker', 'tail_rocker_12', 'nose_rocker_12', 'rocker_low_point'];
+const DECK_KEYS = ['thickness', 'tail_thickness', 'nose_thickness', 'tail_thickness_12', 'nose_thickness_12', 'thickness_point_offset'];
+const PROFILE_KEYS = [...ROCKER_KEYS, ...DECK_KEYS];
 const armEnd = (o, side) => (side > 0 ? [o.x + o.lR * Math.cos(o.aR), o.y + o.lR * Math.sin(o.aR)] : [o.x - o.lL * Math.cos(o.aL), o.y - o.lL * Math.sin(o.aL)]);
-/** Move every point and both its arm ends through f([x, y]) -> [x, y]; smooth points stay smooth. */
-function warpPts(pts, f) {
+/** Move every point and both its arm ends through f([x, y]) -> [x, y]; smooth points stay smooth, the wide (or low)
+ *  point stays level. */
+function warpPts(pts, f, outline = true) {
   for (const o of pts) {
     const P0 = f([o.x, o.y]), A = f(armEnd(o, -1)), B = f(armEnd(o, 1));
-    o.x = P0[0]; o.y = Math.max(P0[1], 0);
+    o.x = P0[0]; o.y = outline ? Math.max(P0[1], 0) : P0[1];
     o.lL = Math.hypot(o.x - A[0], o.y - A[1]); o.lR = Math.hypot(B[0] - o.x, B[1] - o.y);
     if (o.lL > 1e-9) o.aL = Math.atan2(o.y - A[1], o.x - A[0]);
     if (o.lR > 1e-9) o.aR = Math.atan2(B[1] - o.y, B[0] - o.x);
     if (!o.c) { const a = o.lL > 1e-9 && o.lR > 1e-9 ? Math.atan2(Math.sin(o.aL) + Math.sin(o.aR), Math.cos(o.aL) + Math.cos(o.aR)) : o.lR > 1e-9 ? o.aR : o.aL; o.aL = o.aR = a; }
+    if (o.m === 'w') o.aL = o.aR = 0;
   }
-  pts[0].x = 0; pts[pts.length - 1].y = 0;
+  pts[0].x = 0; if (outline) pts[pts.length - 1].y = 0;
 }
-const ptsHalf = (P, xq) => { const [X, Y] = ptsPolyline(P.outline_pts, 200); return lerpAt(X, Y, xq); };
-function ptsWidest(P) { const [X, Y] = ptsPolyline(P.outline_pts, 200); let i = 0; for (let j = 1; j < Y.length; j++) if (Y[j] > Y[i]) i = j; return [X[i], Y[i]]; }
-/** A measurement typed in while the outline is control points: the points move to give it (like Shape3D's scale and
- *  move commands). Width and length scale the whole outline; a 12" width, the tail block or the wide point move the
- *  points near it, easing out over a foot or so. */
+const ptsY = (pts, xq) => { const [X, Y] = ptsPolyline(pts, 200); return lerpAt(X, Y, xq); };
+const ptsHalf = (P, xq) => ptsY(P.outline_pts, xq);
+function ptsExt(pts, sgn = 1) { const [X, Y] = ptsPolyline(pts, 200); let i = 0; for (let j = 1; j < Y.length; j++) if (sgn * Y[j] > sgn * Y[i]) i = j; return [X[i], Y[i]]; }
+const ptsWidest = (P) => ptsExt(P.outline_pts, 1);
+/** Older control points (and ones just made) get their measured points marked: the wide (or low) point, and the
+ *  points 12" from each end. */
+function tagPts(pts, L, sgn) {
+  const inner = pts.slice(1, -1);
+  if (sgn && inner.length && !pts.some((o) => o.m === 'w')) {
+    let b = inner[0]; for (const o of inner) if (sgn * o.y > sgn * b.y) b = o;
+    if (!b.m) b.m = 'w';
+  }
+  for (const [m, xq] of [['t12', 12], ['n12', L - 12]]) if (!pts.some((o) => o.m === m)) { const b = inner.find((o) => !o.m && Math.abs(o.x - xq) < 0.3); if (b) b.m = m; }
+}
+const bell = (xq, xc, R) => { const u = Math.abs(xq - xc) / Math.max(R, 1e-6); return u >= 1 ? 0 : (1 - u * u) ** 2; };
+/** A measurement typed in while a curve is control points: the points move to give it (like Shape3D's scale and move
+ *  commands). Width and length scale the whole outline; a 12" width, the tail block, a rocker or a thickness move the
+ *  points near it, easing out over a foot or so. Rocker moves the deck with it, so the thickness stays. */
 function ptsSetMeasure(P, key, v) {
-  const pts = P.outline_pts, L = P.length;
-  const bell = (xq, xc, R) => { const u = Math.abs(xq - xc) / R; return u >= 1 ? 0 : (1 - u * u) ** 2; };
-  if (key === 'width') { const [, hw] = ptsWidest(P), k = v / 2 / Math.max(hw, 1e-6); warpPts(pts, ([x, y]) => [x, y * k]); return; }
-  if (key === 'length') { const k = v / L; warpPts(pts, ([x, y]) => [x * k, y]); return; }
-  if (key === 'tail_block_width') { const d = v / 2 - pts[0].y; warpPts(pts, ([x, y]) => [x, y + d * bell(x, 0, 12)]); return; }
-  if (key === 'nose_width_12' || key === 'tail_width_12') {
-    const xc = key === 'nose_width_12' ? L - 12 : 12;
-    for (let it = 0; it < 4; it++) { const d = v / 2 - ptsHalf(P, xc); if (Math.abs(d) < 1e-4) break; warpPts(pts, ([x, y]) => [x, y + d * bell(x, xc, 12)]); }
+  const L = P.length;
+  if (PTS_KEYS.includes(key)) {
+    const pts = P.outline_pts;
+    if (key === 'width') { const [, hw] = ptsWidest(P), k = v / 2 / Math.max(hw, 1e-6); warpPts(pts, ([x, y]) => [x, y * k]); return; }
+    if (key === 'length') { const k = v / L; warpPts(pts, ([x, y]) => [x * k, y]); if (P.rocker_pts) { warpPts(P.rocker_pts, ([x, y]) => [x * k, y], false); warpPts(P.deck_pts, ([x, y]) => [x * k, y], false); } return; }
+    if (key === 'tail_block_width') { const d = v / 2 - pts[0].y; warpPts(pts, ([x, y]) => [x, y + d * bell(x, 0, 12)]); return; }
+    if (key === 'nose_width_12' || key === 'tail_width_12') {
+      const xc = key === 'nose_width_12' ? L - 12 : 12;
+      for (let it = 0; it < 4; it++) { const d = v / 2 - ptsHalf(P, xc); if (Math.abs(d) < 1e-4) break; warpPts(pts, ([x, y]) => [x, y + d * bell(x, xc, 12)]); }
+      return;
+    }
+    if (key === 'wide_point_offset') xWarp(pts, 1, L / 2 + v, L, true);
     return;
   }
-  if (key === 'wide_point_offset') {
-    for (let it = 0; it < 4; it++) {
-      const [xw] = ptsWidest(P), d = L / 2 + v - xw; if (Math.abs(d) < 0.02) break;
-      warpPts(pts, ([x, y]) => [x + d * (x <= xw ? x / Math.max(xw, 1e-6) : (L - x) / Math.max(L - xw, 1e-6)) ** 1.5, y]);
+  const R = P.rocker_pts, D = P.deck_pts, zb = (xq) => ptsY(R, xq), th = (xq) => ptsY(D, xq) - zb(xq);
+  const lift = (both, xc, rad, d) => { const f = ([x, y]) => [x, y + d * bell(x, xc, rad)]; if (both) warpPts(R, f, false); warpPts(D, f, false); };
+  const ends = { tail_rocker: [0, true], nose_rocker: [L, true], tail_rocker_12: [12, true], nose_rocker_12: [L - 12, true],
+    tail_thickness: [0, false], nose_thickness: [L, false], tail_thickness_12: [12, false], nose_thickness_12: [L - 12, false] };
+  if (ends[key]) {
+    const [xc, rock] = ends[key];
+    for (let it = 0; it < 4; it++) { const d = v - (rock ? zb(xc) : th(xc)); if (Math.abs(d) < 1e-4) break; lift(rock, xc, 12, d); }
+    return;
+  }
+  if (key === 'rocker_low_point') { xWarp(R, -1, L / 2 + v, L, false); return; }
+  if (key === 'thickness_point_offset') { thickWarp(D, R, L / 2 + v, L); return; }
+  if (key === 'thickness') {
+    for (let it = 0; it < 6; it++) {
+      const xt = thickAt(D, R, L), d = v - th(xt); if (Math.abs(d) < 1e-4) break;
+      warpPts(D, ([x, y]) => [x, y + d * bell(x, xt, x < xt ? Math.max(xt - 12, 2) : Math.max(L - 12 - xt, 2))], false);
     }
   }
 }
-function togglePts() {
-  const P = state.params, b = state.board;
-  if (P.outline_pts) {                                  // back to measurements: the readouts become the typed numbers
-    delete P.outline_pts;
+/** Slide the points along the board so the wide (sgn 1) or low (sgn -1) point lands at xt; the ends stay put. */
+function xWarp(pts, sgn, xt, L, outline) {
+  for (let it = 0; it < 4; it++) {
+    const [xw] = ptsExt(pts, sgn), d = xt - xw; if (Math.abs(d) < 0.02) break;
+    warpPts(pts, ([x, y]) => [x + d * (x <= xw ? x / Math.max(xw, 1e-6) : (L - x) / Math.max(L - xw, 1e-6)) ** 1.5, y], outline);
+  }
+}
+function thickAt(D, R, L) { let b = 0, bt = -Infinity; for (let i = 0; i <= 200; i++) { const xq = (L * i) / 200, t = ptsY(D, xq) - ptsY(R, xq); if (t > bt) { bt = t; b = xq; } } return b; }
+function thickWarp(D, R, xt, L) {
+  for (let it = 0; it < 4; it++) {
+    const xw = thickAt(D, R, L), d = xt - xw; if (Math.abs(d) < 0.05) break;
+    const zb = (xq) => ptsY(R, xq);           // move the deck's thickness, not its height, along the board
+    warpPts(D, ([x, y]) => { const nx = x + d * (x <= xw ? x / Math.max(xw, 1e-6) : (L - x) / Math.max(L - xw, 1e-6)) ** 1.5; return [nx, y - zb(x) + zb(nx)]; }, false);
+  }
+}
+/** Fit control points to the board as it is now: the outline ('plan') and / or the rocker and deck ('profile'). */
+function fitPtsNow(P, b, which) {
+  const pr = b._profiles, p = b.params;
+  if (which.includes('plan') && !P.outline_pts) {
+    P.outline_pts = fitOutlinePts(pr.x, pr.h, p.length, { corners: p.tail_type === 'diamond' ? [p.diamond_depth] : [], tol: 0.05, max: 10 });
     P.anchors.outline = []; P.handles.outline = {};
-    toast('The outline is built from its measurements again (the control points are gone; undo brings them back).');
+    for (const r of P.marks || []) if (r.width !== undefined) r.width = null;
+  }
+  if (which.includes('profile') && !P.rocker_pts) {
+    const f = fitProfilePts(pr.x, pr.zb, pr.traw, p.length);
+    P.rocker_pts = f.rocker; P.deck_pts = f.deck;
+    P.anchors.rocker = []; P.anchors.thickness = []; P.handles.rocker = {}; P.handles.thickness = {};
+    for (const r of P.marks || []) { if (r.rocker !== undefined) r.rocker = null; if (r.thickness !== undefined) r.thickness = null; }
+  }
+}
+/** New boards, loaded designs, traces and imports start as control points, unless they were switched off. */
+function autoPts(P) {
+  const off = P.pts_off || {}, which = [];
+  if (!P.outline_pts && !off.plan) which.push('plan');
+  if (!P.rocker_pts && !off.profile) which.push('profile');
+  if (!which.length) return;
+  try { fitPtsNow(P, buildBoard(P), which); } catch (e) { console.error(e); }
+}
+function togglePts(name) {
+  const P = state.params, b = state.board, prof = name === 'profile';
+  P.pts_off = { ...(P.pts_off || {}) };
+  if (prof ? P.rocker_pts : P.outline_pts) {        // back to measurements: the readouts become the typed numbers
+    if (prof) { delete P.rocker_pts; delete P.deck_pts; P.anchors.rocker = []; P.anchors.thickness = []; P.handles.rocker = {}; P.handles.thickness = {}; }
+    else { delete P.outline_pts; P.anchors.outline = []; P.handles.outline = {}; }
+    P.pts_off[name] = true;
+    toast(`The ${prof ? 'rocker and foil are' : 'outline is'} built from the measurements again (undo brings the control points back).`);
   } else {
-    const pr = b._profiles, p = b.params;
-    P.outline_pts = fitOutlinePts(pr.x, pr.h, p.length, { corners: p.tail_type === 'diamond' ? [p.diamond_depth] : [], tol: 0.03, max: 12 });
-    P.anchors.outline = []; P.handles.outline = {};
-    for (const r of P.marks) if (r.width !== undefined) r.width = null;
+    delete P.pts_off[name];
+    fitPtsNow(P, b, [name]);
     if (!prefs.edit) { prefs.edit = true; savePrefs(); syncPanelTools(); }
-    toast(`The outline is now ${P.outline_pts.length} control points, Shape3D style: drag a point or an arm, click the line to add a point.`);
+    toast(prof ? `The rocker is ${P.rocker_pts.length} control points and the deck ${P.deck_pts.length}.` : `The outline is ${P.outline_pts.length} control points.`);
   }
   state.pt = null;
   syncPtsButtons();
   saveLocal(); schedule();
 }
+const ptsLists = () => [state.params.outline_pts, state.params.rocker_pts, state.params.deck_pts].filter(Boolean);
 function toggleCorner() {
-  const o = state.pt, pts = state.params.outline_pts;
-  if (!pts || !pts.includes(o) || o === pts[0] || o === pts[pts.length - 1]) return;
+  const o = state.pt, pts = ptsLists().find((l) => l.includes(o));
+  if (!pts || o === pts[0] || o === pts[pts.length - 1] || o.m === 'w') return;
   o.c = !o.c;
   if (!o.c) { const a = Math.atan2(Math.sin(o.aL) + Math.sin(o.aR), Math.cos(o.aL) + Math.cos(o.aR)); o.aL = o.aR = a; }
   syncPtsButtons(); saveLocal(); schedule();
 }
 function syncPtsButtons() {
-  const P = state.params, panel = document.querySelector('.panel[data-panel="plan"]');
-  const b = panel.querySelector('[data-act="pts"]'), c = panel.querySelector('[data-act="corner"]');
-  if (!b) return;
-  b.classList.toggle('on', !!P.outline_pts);
-  b.textContent = P.outline_pts ? 'Control points' : 'Control points';
-  b.title = P.outline_pts ? 'On: the outline is control points with arms, like Shape3D. Click to go back to building it from the measurements.' : 'Edit the outline as control points with arms, like Shape3D (the measurements become readouts)';
-  const o = state.pt, pts = P.outline_pts;
-  const sel = pts && pts.includes(o) && o !== pts[0] && o !== pts[pts.length - 1];
-  c.hidden = !sel; if (sel) { c.textContent = o.c ? 'Make smooth' : 'Make corner'; }
+  const P = state.params;
+  for (const [name, on] of [['plan', !!P.outline_pts], ['profile', !!P.rocker_pts]]) {
+    const panel = document.querySelector(`.panel[data-panel="${name}"]`);
+    const b = panel.querySelector('[data-act="pts"]'), c = panel.querySelector('[data-act="corner"]');
+    if (!b) continue;
+    b.classList.toggle('on', on);
+    b.title = on ? 'On: control points with arms, like Shape3D. Click to go back to building the curves from the measurements.' : 'Edit as control points with arms, like Shape3D (the measurements become readouts)';
+    const o = state.pt, pts = (name === 'plan' ? [P.outline_pts] : [P.rocker_pts, P.deck_pts]).find((l) => l && l.includes(o));
+    const sel = pts && o !== pts[0] && o !== pts[pts.length - 1] && o.m !== 'w';
+    if (c) { c.hidden = !sel; if (sel) c.textContent = o.c ? 'Make smooth' : 'Make corner'; }
+  }
 }
-function drawPlanPts(v, ctx, data) {
-  const P = state.params, pts = P.outline_pts, L = data.params.length, n = pts.length;
-  const redo = () => { syncPtsButtons(); };
-  // the arms of every point (Shape3D shows them all), then the points
+/** Draw and edit one curve of control points.
+ *  cfg: L, sgn (1: no point goes wider than the wide point, -1: none lower than the low point, 0: no such point),
+ *  mirror (the outline: shown on both rails), outline (the nose end sits at 0), tf / inv (raw <-> drawn, for a deck
+ *  shown with the volume lock's scaling), main (colour of a free point). With Fix dimensions on, the measured points
+ *  (the wide or low point, 12" points, thickest point and the ends) can't be moved, only their arms turned. */
+function drawPts(v, ctx, pts, cfg) {
+  const { L, sgn = 0, mirror = false, outline = false } = cfg, n = pts.length, fix = prefs.fix;
+  const tf = cfg.tf || ((x, y) => [x, y]), inv = cfg.inv || ((x, y) => [x, y]);
+  tagPts(pts, L, sgn);
+  const W = sgn ? pts.find((o) => o.m === 'w') : null;
+  const redo = () => syncPtsButtons();
+  const ends = (o) => [armEnd(o, -1), armEnd(o, 1)];
+  // nothing but the wide (low) point gets past it: the curve stays inside its points and arm ends, so the widest spot
+  // stays at that point
+  const EPS = 0.02, lim = () => W.y - sgn * EPS;          // a hair inside, so there is never a tie for the widest spot
+  const bound0 = (y) => (!W ? y : sgn > 0 ? Math.min(y, lim()) : Math.max(y, lim()));
+  const bound = (y, x) => { let q = bound0(y); if (cfg.ceil) q = Math.min(q, cfg.ceil(x)); if (cfg.floor) q = Math.max(q, cfg.floor(x)); return q; };
+  const fitArms = (o) => {
+    if (!W || o === W) return;
+    for (const side of [-1, 1]) {
+      const a = side < 0 ? o.aL : o.aR, s = side * Math.sin(a) * sgn, len = side < 0 ? o.lL : o.lR;
+      if (s > 1e-6) { const m = Math.max((sgn * (lim() - o.y)) / s, 0); if (len > m) { if (side < 0) o.lL = m; else o.lR = m; } }
+    }
+  };
+  const lockedPt = (o, i) => (outline && i === n - 1) || (fix && (i === 0 || i === n - 1 || !!o.m));
+  const colorOf = (o, i) => (o.m === 'w' || o.m === 'thick' ? COLORS.accent : i === 0 || o.m === 't12' ? COLORS.warm : i === n - 1 || o.m === 'n12' ? COLORS.sand : o.c ? COLORS.warm : cfg.main || COLORS.foam);
   for (const o of pts) {
     const i = pts.indexOf(o);
     for (const side of [-1, 1]) {
       if ((side < 0 && i === 0) || (side > 0 && i === n - 1)) continue;
-      const len = side < 0 ? o.lL : o.lR;
-      const minPx = 14 / v.s, l = Math.max(len, minPx), a = side < 0 ? o.aL : o.aR;
-      const ex = o.x + side * l * Math.cos(a), ey = o.y + side * l * Math.sin(a);
-      v.point(ctx, { x: ex, y: ey, kind: 'arm', color: o === state.pt ? COLORS.accent : 'rgba(223,231,236,.55)', ax: o.x, ay: o.y,
+      const len = side < 0 ? o.lL : o.lR, a = side < 0 ? o.aL : o.aR;
+      const raw = [o.x + side * len * Math.cos(a), o.y + side * len * Math.sin(a)], q = tf(...raw), c0 = tf(o.x, o.y);
+      // a very short arm is drawn a little way out so it can be caught
+      const px = Math.hypot((q[0] - c0[0]) * v.s, (q[1] - c0[1]) * v.s * (v.vex || 1)), k = px < 14 && px > 1e-9 ? 14 / px : 1;
+      const ex = px > 1e-9 ? c0[0] + (q[0] - c0[0]) * k : c0[0] + (side * 14) / v.s, ey = px > 1e-9 ? c0[1] + (q[1] - c0[1]) * k : c0[1];
+      v.point(ctx, { x: ex, y: ey, kind: 'arm', color: o === state.pt ? COLORS.accent : 'rgba(223,231,236,.55)', ax: c0[0], ay: c0[1],
         select: () => { state.pt = o; redo(); },
         drag: (wx, wy) => {
+          const [rx, ry0] = inv(wx, mirror ? Math.abs(wy) : wy), ry = o === W ? o.y : bound(ry0, rx);
           // arms point along the board (never back on themselves) and reach most of the way to the next point at most
-          const dx = Math.max(side * (wx - o.x), 0), dy = side * (wy - o.y), ang = Math.atan2(dy, dx);
+          const dx = Math.max(side * (rx - o.x), 0), dy = side * (ry - o.y), ang = o === W ? 0 : Math.atan2(dy, dx);
           const nb = pts[i + side], gap = nb ? Math.abs(nb.x - o.x) : Infinity, c = Math.cos(ang);
           const d = Math.min(Math.hypot(dx, dy), c > 1e-6 ? (0.95 * gap) / c : Infinity);
           if (side < 0) { o.aL = ang; o.lL = d; } else { o.aR = ang; o.lR = d; }
-          if (!o.c) { o.aL = o.aR = ang; }
+          if (!o.c) { o.aL = o.aR = ang; fitArms(o); }
         } });
     }
   }
   pts.forEach((o, i) => {
-    const end = i === 0 || i === n - 1;
-    v.point(ctx, { x: o.x, y: o.y, kind: end ? 'station' : 'anchor', color: i === 0 ? COLORS.warm : i === n - 1 ? COLORS.sand : o.c ? COLORS.warm : COLORS.foam,
+    const end = i === 0 || i === n - 1, locked = lockedPt(o, i), [dx, dy] = tf(o.x, o.y);
+    v.point(ctx, { x: dx, y: dy, kind: end || o.m ? 'station' : 'anchor', color: colorOf(o, i), locked,
       on: state.pt === o, select: () => { state.pt = o; redo(); },
-      drag: i === n - 1 ? null : (wx, wy) => {
-        const lo = i === 0 ? 0 : pts[i - 1].x + 0.25, hi = i === 0 ? 0 : pts[i + 1].x - 0.25;
-        o.x = i === 0 ? 0 : clip(wx, lo, hi); o.y = Math.max(Math.abs(wy), 0);
+      drag: locked ? null : (wx, wy) => {
+        const [rx, ry] = inv(wx, mirror ? Math.abs(wy) : wy);
+        // the 12" points stay 12" from the ends (they are the 12" measurements)
+        if (i > 0 && i < n - 1 && o.m !== 't12' && o.m !== 'n12') o.x = clip(rx, pts[i - 1].x + 0.25, pts[i + 1].x - 0.25);
+        let y = outline ? Math.max(ry, 0) : ry;
+        if (o === W) {                                    // the wide point stays the widest: it can't go inside another point
+          for (const q of pts) if (q !== W) for (const e of [[q.x, q.y], ...ends(q)]) y = sgn > 0 ? Math.max(y, e[1] + EPS) : Math.min(y, e[1] - EPS);
+        } else y = bound(y, o.x);
+        o.y = y; fitArms(o);
       },
-      remove: end ? null : () => { dropFrom(pts, o); if (state.pt === o) state.pt = null; redo(); } });
-    v.point(ctx, { x: o.x, y: -o.y, kind: 'anchor', color: COLORS.foam, ghost: true });
+      remove: end || o.m ? null : () => { dropFrom(pts, o); if (state.pt === o) state.pt = null; redo(); } });
+    if (mirror) v.point(ctx, { x: dx, y: -dy, kind: 'anchor', color: COLORS.foam, ghost: true });
   });
   // click the line to add a point there: the Bezier is split at that spot, so the shape doesn't change
   v.curves.push({
-    at: (wx, wy) => (wx < 0.3 || wx > L - 0.3 ? null : (wy < 0 ? -1 : 1) * ptsHalf(P, wx)),
+    at: (wx, wy) => (wx < 0.3 || wx > L - 0.3 ? null : (mirror && wy < 0 ? -1 : 1) * tf(wx, ptsY(pts, wx))[1]),
     add: (wx) => {
       let i = 0; while (i < n - 2 && pts[i + 1].x < wx) i++;
       const a = pts[i], b = pts[i + 1], P0 = [a.x, a.y], P1 = armEnd(a, 1), P2 = armEnd(b, -1), P3 = [b.x, b.y];
@@ -2065,9 +2172,21 @@ function drawPlanPts(v, ctx, data) {
       const o = { x: F[0], y: F[1], aL: ang, lL: Math.hypot(F[0] - D[0], F[1] - D[1]), aR: ang, lR: Math.hypot(E[0] - F[0], E[1] - F[1]), c: false };
       pts.splice(i + 1, 0, o);
       state.pt = o; redo();
-      return { fn: (wx2, wy2) => { o.x = clip(wx2, pts[i].x + 0.25, pts[i + 2].x - 0.25); o.y = Math.abs(wy2); }, undo: () => dropFrom(pts, o) };
+      return { fn: (wx2, wy2) => { const [rx, ry] = inv(wx2, mirror ? Math.abs(wy2) : wy2); o.x = clip(rx, pts[i].x + 0.25, pts[i + 2].x - 0.25); o.y = bound(outline ? Math.max(ry, 0) : ry, o.x); fitArms(o); }, undo: () => dropFrom(pts, o) };
     },
   });
+}
+function drawPlanPts(v, ctx, data) {
+  drawPts(v, ctx, state.params.outline_pts, { L: data.params.length, sgn: 1, mirror: true, outline: true });
+}
+/** The rocker (bottom) and the deck as control points. The deck points are where the deck is before the volume lock
+ *  scales the thickness; they are drawn scaled, on the deck line. */
+function drawProfilePts(v, ctx, data) {
+  const P = state.params, L = data.params.length, sc = data.thickness_scale || 1, R = P.rocker_pts;
+  const zb = (xq) => ptsY(R, clip(xq, 0, L)), dk = (xq) => ptsY(P.deck_pts, clip(xq, 0, L));
+  drawPts(v, ctx, R, { L, sgn: -1, main: COLORS.accent, ceil: (xq) => dk(xq) - 0.25 });
+  drawPts(v, ctx, P.deck_pts, { L, sgn: 0, main: COLORS.foam, floor: (xq) => zb(xq) + 0.25,
+    tf: sc === 1 ? null : (x, y) => [x, zb(x) + sc * (y - zb(x))], inv: sc === 1 ? null : (x, y) => [x, zb(x) + (y - zb(x)) / sc] });
 }
 
 /* ---- plan: the outline --------------------------------------------------- */
@@ -2268,6 +2387,7 @@ function drawProfile(v, data) {
   }
 
   if (drawToolCenters(v, ctx, data)) return;
+  if (P.rocker_pts) { drawProfilePts(v, ctx, data); tip(v, ctx, 'drag a point or the end of an arm · click a line to add a point · double-click a point to remove it'); return; }
 
   // measurements: rocker on the bottom line, thickness on the deck line
   const now = () => state.board, bz = (xq) => lerpAt(now()._profiles.x, now()._profiles.zb, xq);
@@ -2672,7 +2792,7 @@ function wirePanels() {
       const act = e.target.closest('button')?.dataset.act; if (!act) return;
       if (act === 'max') setFocus(name);
       if (act === 'trace') openTrace();
-      if (act === 'pts') togglePts();
+      if (act === 'pts') togglePts(name);
       if (act === 'corner') toggleCorner();
       if (act === 'photo') { state.photoOn = !state.photoOn; syncPhotoButton(); v.redraw(); }
       if (act === 'edit') { prefs.edit = !prefs.edit; if (!prefs.edit) state.pt = null; savePrefs(); syncPanelTools(); drawPanels(); }
@@ -2880,7 +3000,8 @@ function applyTrace() {
   const sorted = [...TR.pts].sort((a, b) => a[0] - b[0]), x0 = sorted[0][0];
   const L = sorted[sorted.length - 1][0] - x0, pts = sorted.map(([x, y]) => [x - x0, y]);      // tail end at 0
   const cut = TR.cut && TR.cut.depth >= 0.75 ? TR.cut : null;
-  const fit = fitOutline(pts, L, state.params, buildBoard, { NOSE_TYPES, TAIL_TYPES }, cut, traceCurve(pts, TR.arms));
+  const base = { ...state.params, outline_pts: null, pts_off: { ...(state.params.pts_off || {}), plan: false } };
+  const fit = fitOutline(pts, L, base, buildBoard, { NOSE_TYPES, TAIL_TYPES }, cut, traceCurve(pts, TR.arms));
   applyParams(fit.params);
   $('#preset').value = '';
   state.photo = { canvas: TR.rect, ...TR.frame, flip: TR.side < 0, shift: x0 };
@@ -3106,7 +3227,7 @@ function wireUI() {
       setTimeout(() => {
         try {
           setSectionAt(sectionAt);
-          const { params, report: r } = importS3dx(text, buildBoard, sectionBase, { NOSE_TYPES, TAIL_TYPES }, state.params);
+          const { params, report: r } = importS3dx(text, buildBoard, sectionBase, { NOSE_TYPES, TAIL_TYPES }, { ...state.params, outline_pts: null, rocker_pts: null, deck_pts: null, pts_off: null });
           applyParams(params); sel.value = ''; state.fitted = false;
           toast(`Shape3D design${r.name ? ` "${r.name}"` : ''}: ${r.nose.replace(/_/g, ' ')} nose, ${r.tail.replace(/_/g, ' ')} tail, ${r.sections} cross sections, ${r.volume.toFixed(1)} L (the file says ${r.fileVolume.toFixed(1)} L). Fins are left out.`);
         } catch (err) { toast(`Could not read that Shape3D file (${err.message}).`); }

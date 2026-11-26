@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=37';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=38';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;
@@ -106,7 +106,7 @@ export function paramsFromDict(d = {}) {
   const base = { ...DEFAULTS };
   for (const k of Object.keys(DEFAULTS)) if (k in d) base[k] = d[k];
   base.tools = Array.isArray(d.tools) ? d.tools : [];      // concave tools (newer than the generated defaults)
-  for (const k of ['rail_tuck_nose', 'rail_tuck_tail', 'hard_edge', 'rail_reach_nose', 'rail_reach_tail', 'swallow_round', 'swallow_rail', 'deck_contours', 'curve_v', 'deck_flat', 'diamond_depth', 'deck_flat_corner', 'deck_flat_in', 'nose_beak', 'nose_beak_pos', 'outline_pts']) if (k in d) base[k] = d[k];   // rail tucks (newer too)
+  for (const k of ['rail_tuck_nose', 'rail_tuck_tail', 'hard_edge', 'rail_reach_nose', 'rail_reach_tail', 'swallow_round', 'swallow_rail', 'deck_contours', 'curve_v', 'deck_flat', 'diamond_depth', 'deck_flat_corner', 'deck_flat_in', 'nose_beak', 'nose_beak_pos', 'outline_pts', 'rocker_pts', 'deck_pts', 'pts_off']) if (k in d) base[k] = d[k];   // rail tucks (newer too)
   const L = base.length;
   const xl = L / 2 + base.rocker_low_point, xt = L / 2 + base.thickness_point_offset;
   for (const [side, nose] of [['nose', true], ['tail', false]]) {
@@ -128,8 +128,14 @@ export function validated(src) {
   const p = { ...src };
   // an outline drawn with control points (Shape3D style): the points are the outline, and the width, the 12" widths,
   // the tail block and the wide point are read off it
-  p.outline_pts = cleanPts(p.outline_pts, p.length);
+  p.outline_pts = cleanPts(p.outline_pts, p.length, true);
   if (p.outline_pts) Object.assign(p, ptsReadouts(p.outline_pts, p.length, p.tail_type));
+  // rocker and deck drawn with control points: the bottom and deck lines along the stringer; the rockers, thicknesses
+  // and where the low and thick points are are read off them
+  p.rocker_pts = cleanPts(p.rocker_pts, p.length, false);
+  p.deck_pts = p.rocker_pts ? cleanPts(p.deck_pts, p.length, false) : null;
+  if (!p.deck_pts) p.rocker_pts = null;
+  if (p.rocker_pts) Object.assign(p, profileReadouts(p.rocker_pts, p.deck_pts, p.length));
   const w = [], auto = [];
   const clamp = (name, lo, hi, label) => {
     const v = p[name], nv = Math.min(Math.max(v, lo), hi);
@@ -558,15 +564,15 @@ function bottomAt(p, x) {
    (x, y) + lR (cos aR, sin aR). c = a corner (the two arms turn on their own); otherwise aL = aR (smooth).
    The first point is the tail end (x = 0), the last the nose tip (x = L, y = 0). Between points: cubic Beziers.
    ========================================================================= */
-function cleanPts(pts, L) {
+function cleanPts(pts, L, outline) {
   if (!Array.isArray(pts) || pts.length < 2) return null;
-  const q = pts.map((o) => ({ x: +o.x, y: +o.y, aL: +o.aL, lL: Math.max(+o.lL || 0, 0), aR: +o.aR, lR: Math.max(+o.lR || 0, 0), c: !!o.c }))
+  const q = pts.map((o) => ({ x: +o.x, y: +o.y, aL: +o.aL, lL: Math.max(+o.lL || 0, 0), aR: +o.aR, lR: Math.max(+o.lR || 0, 0), c: !!o.c, ...(o.m ? { m: String(o.m) } : {}) }))
     .filter((o) => [o.x, o.y, o.aL, o.aR].every(Number.isFinite)).sort((a, b) => a.x - b.x);
   if (q.length < 2) return null;
   const k = L / Math.max(q[q.length - 1].x, 1e-6);       // the nose tip is at the board's length
   if (Math.abs(k - 1) > 1e-9) for (const o of q) { o.x *= k; }
-  q[0].x = 0; q[q.length - 1].x = L; q[q.length - 1].y = 0;
-  for (const o of q) o.y = Math.max(o.y, 0);
+  q[0].x = 0; q[q.length - 1].x = L;
+  if (outline) { q[q.length - 1].y = 0; for (const o of q) o.y = Math.max(o.y, 0); }
   // the outline stays a curve along the board (no loops): every arm points forward or straight across, and reaches no
   // further along the board than most of the way to the next point
   const cap = (ang, len, gap) => { const c = Math.cos(ang); return c > 1e-6 ? Math.min(len, (0.95 * gap) / c) : len; };
@@ -586,7 +592,7 @@ export function ptsPolyline(pts, per = 120) {
     const P1 = [a.x + a.lR * Math.cos(a.aR), a.y + a.lR * Math.sin(a.aR)], P2 = [b.x - b.lL * Math.cos(b.aL), b.y - b.lL * Math.sin(b.aL)];
     for (let j = i ? 1 : 0; j <= per; j++) {
       const t = j / per, u = 1 - t, w0 = u * u * u, w1 = 3 * u * u * t, w2 = 3 * u * t * t, w3 = t * t * t;
-      X.push(w0 * a.x + w1 * P1[0] + w2 * P2[0] + w3 * b.x); Y.push(Math.max(w0 * a.y + w1 * P1[1] + w2 * P2[1] + w3 * b.y, 0));
+      X.push(w0 * a.x + w1 * P1[0] + w2 * P2[0] + w3 * b.x); Y.push(w0 * a.y + w1 * P1[1] + w2 * P2[1] + w3 * b.y);
     }
   }
   for (let i = 1; i < X.length; i++) if (X[i] < X[i - 1]) X[i] = X[i - 1];
@@ -608,6 +614,19 @@ function ptsHalfWidth(pts, x) {
   }
   return out;
 }
+/** The rocker and foil measurements of a bottom and deck drawn with control points. */
+function profileReadouts(rp, dp, L) {
+  const xs = []; for (let i = 0; i <= 400; i++) xs.push((L * i) / 400);
+  const zb = ptsHalfWidth(rp, xs), zd = ptsHalfWidth(dp, xs), r16 = (v) => Math.round(v * 1600) / 1600;
+  let il = 0, it = 0; for (let i = 1; i <= 400; i++) { if (zb[i] < zb[il]) il = i; if (zd[i] - zb[i] > zd[it] - zb[it]) it = i; }
+  const at = (a, xq) => ptsHalfWidth(a, [xq])[0], t = (xq) => at(dp, xq) - at(rp, xq);
+  return {
+    tail_rocker: r16(at(rp, 0)), nose_rocker: r16(at(rp, L)), tail_rocker_12: r16(at(rp, 12)), nose_rocker_12: r16(at(rp, L - 12)),
+    rocker_low_point: Math.round((xs[il] - L / 2) * 100) / 100,
+    thickness: r16(zd[it] - zb[it]), tail_thickness: r16(t(0)), nose_thickness: r16(t(L)), tail_thickness_12: r16(t(12)), nose_thickness_12: r16(t(L - 12)),
+    thickness_point_offset: Math.round((xs[it] - L / 2) * 100) / 100,
+  };
+}
 /** The measurements an outline of control points has: width, 12" widths, tail block, wide point. */
 function ptsReadouts(pts, L, tailType) {
   const [X, Y] = ptsPolyline(pts, 200);
@@ -617,16 +636,19 @@ function ptsReadouts(pts, L, tailType) {
   if (!TAIL_TYPES[tailType]?.closes) out.tail_block_width = r16(2 * pts[0].y);
   return out;
 }
-/** Control points fitted to an outline (x, h): knots at the tail end, 12", the wide point, 12" from the nose and the
- *  nose tip (and a diamond's corners), more where the fit strays past tol. Smooth everywhere but the tail end. */
-export function fitOutlinePts(x, h, L, { corners = [], tol = 0.02, max = 16 } = {}) {
-  const P = []; for (let i = 0; i < x.length; i++) P.push([x[i], h[i]]);
+/** Control points fitted to a curve (x, y) along the board: as few as it takes. Knots at the ends and at `at` (x
+ *  positions: measured spots), `level` = x where the curve is level (the wide or low point), `corners` = x positions
+ *  where the arms turn on their own. Knots are added where the fit strays past tol, then any added knot that can go
+ *  without the fit straying past tol is taken out again (fewer points, fewer places for a kink). */
+export function fitPts(x, y, L, { at = [], level = null, corners = [], tol = 0.04, max = 10 } = {}) {
+  const P = []; for (let i = 0; i < x.length; i++) P.push([x[i], y[i]]);
   const n = P.length, near = (xq) => { let b = 0; for (let i = 1; i < n; i++) if (Math.abs(P[i][0] - xq) < Math.abs(P[b][0] - xq)) b = i; return b; };
-  let iw = 0; for (let i = 1; i < n; i++) if (h[i] > h[iw]) iw = i;
-  const knots = [...new Set([0, n - 1, near(12), iw, near(L - 12), ...corners.map(near)])].filter((i) => i >= 0 && i < n).sort((a, b) => a - b);
+  const iw = level === null ? -1 : near(level);
+  const must = new Set([0, n - 1, ...at.map(near), ...(iw >= 0 ? [iw] : []), ...corners.map(near)]);
+  const knots = [...must].filter((i) => i >= 0 && i < n).sort((a, b) => a - b);
   const isCorner = new Set([0, n - 1, ...corners.map(near)]);
   const unit = (v) => { const l = Math.hypot(v[0], v[1]); return l > 1e-12 ? [v[0] / l, v[1] / l] : [1, 0]; };
-  const tan = (i, side) => {                              // through the points about 1/2" either side (one side at a corner)
+  const tan = (i, side) => {
     const walk = (dir) => { let j = i, d = 0; while (j + dir >= 0 && j + dir < n && d < 0.5) { d += Math.hypot(P[j + dir][0] - P[j][0], P[j + dir][1] - P[j][1]); j += dir; } return j; };
     if (i === iw) return [1, 0];
     const corner = isCorner.has(i);
@@ -668,17 +690,52 @@ export function fitOutlinePts(x, h, L, { corners = [], tol = 0.02, max = 16 } = 
     return { t0, t1, al, be, worst, wi };
   };
   let segs;
+  const solve = () => { segs = []; for (let k = 0; k < knots.length - 1; k++) segs.push(seg(knots[k], knots[k + 1])); };
   for (;;) {
-    segs = []; let worst = 0, at = -1;
-    for (let k = 0; k < knots.length - 1; k++) { const sg = seg(knots[k], knots[k + 1]); segs.push(sg); if (sg.worst > worst && knots[k + 1] - knots[k] > 2) { worst = sg.worst; at = k; } }
-    if (worst <= tol || knots.length >= max || at < 0) break;
-    knots.splice(at + 1, 0, segs[at].wi);
+    solve();
+    let worst = 0, at2 = -1;
+    segs.forEach((sg, k) => { if (sg.worst > worst && knots[k + 1] - knots[k] > 2) { worst = sg.worst; at2 = k; } });
+    if (worst <= tol || knots.length >= max || at2 < 0) break;
+    knots.splice(at2 + 1, 0, segs[at2].wi);
   }
+  // take out any knot that isn't needed
+  for (let changed = true; changed;) {
+    changed = false;
+    for (let k = 1; k < knots.length - 1; k++) {
+      if (must.has(knots[k])) continue;
+      if (seg(knots[k - 1], knots[k + 1]).worst <= tol) { knots.splice(k, 1); changed = true; break; }
+    }
+  }
+  solve();
   return knots.map((i, k) => {
     const r = k < knots.length - 1 ? segs[k] : null, l = k ? segs[k - 1] : null;
     const tR = r ? r.t0 : l.t1, tL = l ? l.t1 : r.t0;
     return { x: P[i][0], y: P[i][1], aL: Math.atan2(tL[1], tL[0]), lL: l ? l.be : 0, aR: Math.atan2(tR[1], tR[0]), lR: r ? r.al : 0, c: isCorner.has(i) && k > 0 && k < knots.length - 1 };
   });
+}
+/** Mark the measured knots: m = 'w' (the wide or low point: level arms), 't12' / 'n12' (12" from the tail / nose),
+ *  'thick' (the thickest spot). */
+function tagPts(pts, tags) {
+  for (const [m, xq] of tags) {
+    if (xq === null) continue;
+    let b = null; for (const o of pts) if (!b || Math.abs(o.x - xq) < Math.abs(b.x - xq)) b = o;
+    if (b && !b.m && b !== pts[0] && b !== pts[pts.length - 1] && Math.abs(b.x - xq) < 1) b.m = m;
+  }
+  return pts;
+}
+/** The outline's control points: knots at 12", the wide point (level) and 12" from the nose, and a diamond's corners. */
+export function fitOutlinePts(x, h, L, { corners = [], tol = 0.05, max = 10 } = {}) {
+  let iw = 0; for (let i = 1; i < h.length; i++) if (h[i] > h[iw]) iw = i;
+  return tagPts(fitPts(x, h, L, { at: [12, L - 12], level: x[iw], corners, tol, max }), [['w', x[iw]], ['t12', 12], ['n12', L - 12]]);
+}
+/** The rocker's and deck's control points, from the bottom (zb) and the thickness (t, before any scaling). */
+export function fitProfilePts(x, zb, t, L, { tol = 0.03, max = 9 } = {}) {
+  let il = 0, it = 0; for (let i = 1; i < zb.length; i++) { if (zb[i] < zb[il]) il = i; if (t[i] > t[it]) it = i; }
+  const deck = Float64Array.from(zb, (v, i) => v + t[i]);
+  return {
+    rocker: tagPts(fitPts(x, zb, L, { at: [12, L - 12], level: x[il], tol, max }), [['w', x[il]], ['t12', 12], ['n12', L - 12]]),
+    deck: tagPts(fitPts(x, deck, L, { at: [12, L - 12, x[it]], tol, max }), [['thick', x[it]], ['t12', 12], ['n12', L - 12]]),
+  };
 }
 
 /**
@@ -694,7 +751,7 @@ export function fitOutlinePts(x, h, L, { corners = [], tol = 0.02, max = 16 } = 
  */
 function curveDelta(p, name, x, arms, baseFn) {
   const out = new Float64Array(x.length);
-  if (name === 'outline' && p.outline_pts) { if (arms) arms.pins = {}; return out; }   // control points: the curve is the points
+  if ((name === 'outline' && p.outline_pts) || (name === 'rocker' && p.rocker_pts) || (name === 'thickness' && p.deck_pts)) { if (arms) arms.pins = {}; return out; }   // control points: the curve is the points
   const pts = [...p.anchors[name], ...p._marks[name]].sort((a, b) => a[0] - b[0]);
   const L = p.length, pin = pinsFor(p, name), H = p.handles[name];
   const P = [[0, 'tail']];
@@ -1082,6 +1139,7 @@ function foilExponents(p) {
 }
 
 function rocker(p, x) {
+  if (p.rocker_pts) return ptsHalfWidth(p.rocker_pts, x);
   const L = p.length, xl = L / 2 + p.rocker_low_point;
   const [kn, kt] = rockerExponents(p);
   return Float64Array.from(x, (xi) => (xi >= xl
@@ -1090,6 +1148,7 @@ function rocker(p, x) {
 }
 
 function foil(p, x) {
+  if (p.deck_pts) { const d = ptsHalfWidth(p.deck_pts, x), r = rocker(p, x); return Float64Array.from(d, (v, i) => Math.max(v - r[i], 0.02)); }
   const L = p.length, xt = L / 2 + p.thickness_point_offset;
   const [en, et] = foilExponents(p);
   return Float64Array.from(x, (xi) => {
@@ -1907,6 +1966,7 @@ function buildMesh(p, tScale) {
   const dh = curveDelta(p, 'outline', x, arms.outline, (q) => halfWidth(p, q)), dz = curveDelta(p, 'rocker', x, arms.rocker, (q) => rocker(p, q)), dt = curveDelta(p, 'thickness', x, arms.thickness, (q) => foil(p, q));
   const h = Float64Array.from(h0, (v, i) => Math.max(v + dh[i], 0.15 * v));
   const zb = Float64Array.from(zb0, (v, i) => v + dz[i]);
+  const traw = Float64Array.from(foil0, (v, i) => Math.max(v + dt[i], 0.15 * v));
   const t = Float64Array.from(foil0, (v, i) => {
     const ti = Math.max(v + dt[i], 0.15 * v) * tScale;
     let tq = ti * Math.tanh((3 * h[i]) / Math.max(ti, 1e-9));   // pinch only right where the outline closes (the tip stays a small rounded nub, like Shape3D's)
@@ -2008,7 +2068,7 @@ function buildMesh(p, tScale) {
     for (let f = 0; f < faces.length; f += 3) { const tmp = faces[f]; faces[f] = faces[f + 2]; faces[f + 2] = tmp; }
     vol = -vol;
   }
-  return { V, F: faces, patches, vol, prof: { x, h, yin, zb, t, Y, Z, M, h0, zb0, foil0, sl, arms } };
+  return { V, F: faces, patches, vol, prof: { x, h, yin, zb, t, traw, Y, Z, M, h0, zb0, foil0, sl, arms } };
 }
 
 function meshVolume(V, F) {
