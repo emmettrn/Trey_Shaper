@@ -2,11 +2,11 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES, fitOutlinePts, fitProfilePts, fitSectionPts, secCoupleAt, ptsPolyline } from './geometry.js?v=39';
-import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=39';
-import { importS3dx, setSectionAt } from './s3dx.js?v=39';
-import { exportS3dx } from './s3dxout.js?v=39';
-import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=39';
+import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES, fitOutlinePts, fitProfilePts, fitSectionPts, secCoupleAt, ptsPolyline } from './geometry.js?v=40';
+import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=40';
+import { importS3dx, setSectionAt } from './s3dx.js?v=40';
+import { exportS3dx } from './s3dxout.js?v=40';
+import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=40';
 
 const $ = (s) => document.querySelector(s);
 const state = {
@@ -1147,7 +1147,9 @@ function applyParams(p, keepSel = null) {
   state.pt = null;
   for (const [k, fe] of Object.entries(state.fieldEls)) fe.set(state.params[k]);
   for (const [k, ce] of Object.entries(state.cellEls)) ce.set(state.params[k]);
-  if (!hist.restoring) autoPts(P);                       // control points unless they were switched off
+  if (!hist.restoring) autoPts(P);
+  state.secSigV = undefined; state.secSel = null;
+  if (P.section_pts) P.section_pts = P.section_pts.filter((c) => !(c.n && !c.e));   // a section opened and never shaped                       // control points unless they were switched off
   renderBottomTable();
   renderTools();
   renderDeck();
@@ -1232,6 +1234,11 @@ function schedule() {
       const board = buildBoard(state.params);
       board.curves = curves(board);
       state.board = board;
+      if (state.params.section_pts) {                         // a rail or bottom setting changed: the board's own sections follow it
+        const sg = secSig(state.params);
+        if (state.secSigV !== undefined && sg !== state.secSigV) refitAuto();
+        state.secSigV = sg;
+      }
       const read = [...(state.params.outline_pts ? PTS_KEYS : []), ...(state.params.rocker_pts ? PROFILE_KEYS : [])];
       for (const k of read) {                                    // read off the control points
         const v = board.params[k];
@@ -1381,7 +1388,7 @@ function buildRibs(data) {
   ribs.geometry.dispose();
   ribs.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(seg), 3));
   const ed = [];
-  for (const sl of data.params.slices) {
+  for (const sl of [...data.params.slices, ...edSecs(data.params)]) {
     if (!sl.edited) continue;
     const q = sectionAt(data, sl.x), X0 = sl.x - L / 2, z0 = lerpAt(x, data._profiles.zb, sl.x);   // the section sits on the rocker there
     for (const part of [q.deck, q.bottom]) for (const side of [1, -1])
@@ -2051,12 +2058,12 @@ function fitPtsNow(P, b, which) {
 }
 /** New boards, loaded designs, traces and imports start as control points, unless they were switched off. */
 function autoPts(P) {
-  const off = P.pts_off || {}, which = [];
+  const off = {}, which = [];                        // control points always (pts_off from round 25 / 26 is no longer used)
   if (!P.outline_pts && !off.plan) which.push('plan');
   if (!P.rocker_pts && !off.profile) which.push('profile');
   try {
     if (which.length) fitPtsNow(P, buildBoard(P), which);
-    if (!P.section_pts && !off.sections) fitPtsNow(P, buildBoard(P), ['sections']);   // the sections fitted to the final outline and foil
+    if (!P.section_pts) fitPtsNow(P, buildBoard(P), ['sections']);   // the sections fitted to the final outline and foil
   } catch (e) { console.error(e); }
 }
 function togglePts(name) {
@@ -2095,9 +2102,8 @@ function syncPtsButtons() {
   for (const [name, on] of [['plan', !!P.outline_pts], ['profile', !!P.rocker_pts], ['sections', !!P.section_pts]]) {
     const panel = document.querySelector(`.panel[data-panel="${name}"]`);
     const b = panel.querySelector('[data-act="pts"]'), c = panel.querySelector('[data-act="corner"]');
-    if (!b) continue;
-    b.classList.toggle('on', on);
-    b.title = on ? 'On: control points with arms, like Shape3D. Click to go back to building the curves from the measurements.' : 'Edit as control points with arms, like Shape3D (the measurements become readouts)';
+    if (b) b.classList.toggle('on', on);
+    if (b) b.title = on ? 'On: control points with arms, like Shape3D. Click to go back to building the curves from the measurements.' : 'Edit as control points with arms, like Shape3D (the measurements become readouts)';
     const o = state.pt, pts = (name === 'plan' ? [P.outline_pts] : name === 'profile' ? [P.rocker_pts, P.deck_pts] : (P.section_pts || []).map((c) => c.pts)).find((l) => l && l.includes(o));
     const sel = pts && o !== pts[0] && o !== pts[pts.length - 1] && !['w', 'ds', 'bs', 'apex'].includes(o.m);
     if (c) { c.hidden = !sel; if (sel) c.textContent = o.c ? 'Make smooth' : 'Make corner'; }
@@ -2202,6 +2208,8 @@ function drawProfilePts(v, ctx, data) {
 
 /* ---- sections as control points (Shape3D's couples) ---------------------- */
 const secPts = () => state.params.section_pts;
+/** Edited sections of control points, drawn like edited slices (highlighted in the graphs and the skeleton). */
+const edSecs = (p) => (p.section_pts || []).filter((c) => c.e).map((c) => ({ x: c.x, edited: true }));
 /** The section of control points at the scrub position, if there is one there. */
 const secAtScrub = (data) => { const sp = secPts(), x = scrubX(data); return sp ? sp.findIndex((c) => Math.abs(c.x - x) < 0.13) : -1; };
 const unwrapNear = (a, ref) => { while (a - ref > Math.PI) a -= 2 * Math.PI; while (a - ref < -Math.PI) a += 2 * Math.PI; return a; };
@@ -2222,8 +2230,9 @@ function secSplit(i, t, ci) {
   return mine;
 }
 function drawSecPts(v, ctx, data, s) {
-  const sp = secPts(), ci = secAtScrub(data);
+  const sp = secPts(), cur = secSel(), ci = sp.indexOf(cur);
   if (ci < 0) return false;
+  const mark = () => { cur.e = true; };
   const pts = sp[ci].pts, n = pts.length, yi = Math.max(s.yin || 0, 0), w = Math.max(s.h - yi, 1e-6), t = Math.max(s.t, 1e-6);
   const tf = (u, q) => [yi + u * w, q * t], inv = (X, Z) => [(Math.abs(X) - yi) / w, Z / t];
   const redo = () => syncPtsButtons();
@@ -2242,6 +2251,7 @@ function drawSecPts(v, ctx, data, s) {
           const len = f !== null ? Math.max(dx * Math.cos(ang) + dy * Math.sin(ang), 0) : Math.hypot(dx, dy);
           if (side < 0) { o.aL = ang; o.lL = len; } else { o.aR = ang; o.lR = len; }
           if (!o.c) { o.aL = o.aR = ang; }
+          mark();
         } });
     }
   });
@@ -2252,9 +2262,10 @@ function drawSecPts(v, ctx, data, s) {
       drag: o.m === 'ds' ? null : (wx, wz) => {
         const [u, q] = inv(wx, wz);
         if (o.m !== 'bs' && o.m !== 'apex') o.x = clip(u, 0, 1);   // the apex stays on the outline, the stringer on the stringer
-        o.y = clip(q, -0.4, o.m === 'bs' ? 0.6 : 1.4);
+        o.y = clip(q, -0.4, o.m === 'bs' ? 0.6 : o.m === 'apex' ? 0.98 : 1.4);
+        mark();
       },
-      remove: tagged ? null : () => { for (const c of sp) c.pts.splice(i, 1); if (state.pt === o) state.pt = null; redo(); } });
+      remove: tagged ? null : () => { for (const c of sp) c.pts.splice(i, 1); mark(); if (state.pt === o) state.pt = null; redo(); } });
     v.point(ctx, { x: -X, y: Z, kind: 'anchor', color: COLORS.foam, ghost: true });
   });
   // click the line to add a point: it goes into every section, at the same spot along its line
@@ -2266,7 +2277,7 @@ function drawSecPts(v, ctx, data, s) {
     dist: (wx, wz) => nearest(wx, wz)[1],
     add: (wx, wz) => {
       const [b] = nearest(wx, wz); if (!b || b[1] < 0.02 || b[1] > 0.98) return null;
-      const o = secSplit(b[0], b[1], ci); state.pt = o; redo();
+      const o = secSplit(b[0], b[1], ci); state.pt = o; mark(); redo();
       return { fn: (wx2, wz2) => { const [u, q] = inv(wx2, wz2); o.x = clip(u, 0, 1); o.y = clip(q, -0.4, 1.4); },
         undo: () => { const j = sp[ci].pts.indexOf(o); if (j > 0) for (const c of sp) c.pts.splice(j, 1); } };
     },
@@ -2459,8 +2470,8 @@ function drawProfile(v, data) {
     ctx.strokeStyle = col; ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(v.X(sx), v.Y(zb(sx))); ctx.lineTo(v.X(sx), v.Y(dk(sx))); ctx.stroke(); ctx.setLineDash([]);
   }
-  for (const sl of p.slices) {
-    ctx.strokeStyle = SLICE_COLOR; ctx.globalAlpha = sl.id === state.sel ? 1 : 0.5;
+  for (const sl of [...p.slices, ...edSecs(p)]) {          // shaped sections (edited control-point sections highlighted)
+    ctx.strokeStyle = sl.edited && !sl.id ? EDITED_COLOR : SLICE_COLOR; ctx.globalAlpha = sl.id === state.sel || (state.secSel != null && Math.abs(sl.x - state.secSel) < 1e-6) ? 1 : 0.6;
     ctx.beginPath(); ctx.moveTo(v.X(sl.x), v.Y(zb(sl.x))); ctx.lineTo(v.X(sl.x), v.Y(dk(sl.x))); ctx.stroke(); ctx.globalAlpha = 1;
   }
   if (state.sel === null) {                             // where the Sections view is looking
@@ -2575,7 +2586,7 @@ function sectionCaption(v, ctx, data, s, color) {
   const L = data.params.length;
   v.text(ctx, `${whereText(s.x, L)} · ${fracIn(2 * s.h)}″ wide · ${fracIn(s.t)}″ thick`, 4, 12, color, 'left');
   const here = (data.params.tools || []).filter((t) => s.x >= t.x0 && s.x <= t.x1).map((t) => (t.surface === 'deck' ? (t.step === 'out' ? 'step deck' : 'deck step / pocket') : `${TOOL_SHAPES[t.shape].toLowerCase()}${t.kind === 'double' ? ' double' : ''} concave`));
-  v.text(ctx, `${data.params.section_pts ? (secAtScrub(data) >= 0 ? "section of control points" : "blend of the sections either side") : shapeText(s.shape)}${here.length ? ' + ' + here.join(' + ') : ''} · rail apex ${fracIn(s.apex_in)}″ up`, 4, 25, COLORS.sand, 'left');
+  v.text(ctx, `${data.params.section_pts ? (secSel() ? 'shaping this section' : 'section') : shapeText(s.shape)}${here.length ? ' + ' + here.join(' + ') : ''} · rail apex ${fracIn(s.apex_in)}″ up`, 4, 25, COLORS.sand, 'left');
 }
 
 /** A point of a section line at arc-length position rho: where it is, where it was before anchor points, and the frame there. */
@@ -2610,7 +2621,7 @@ function miniMap(v, ctx, data, xNow, live) {
   for (let i = 0; i < x.length; i++) (i ? ctx.lineTo(X(x[i]), Y(h[i])) : ctx.moveTo(X(x[i]), Y(h[i])));
   for (let i = x.length - 1; i >= 0; i--) ctx.lineTo(X(x[i]), Y(-h[i]));
   ctx.closePath(); ctx.fillStyle = 'rgba(243,239,230,0.07)'; ctx.fill(); ctx.strokeStyle = 'rgba(243,239,230,0.55)'; ctx.stroke();
-  for (const sl of data.params.slices) {
+  for (const sl of [...data.params.slices, ...edSecs(data.params)]) {
     const q = lerpAt(x, h, sl.x);
     ctx.strokeStyle = sl.edited ? EDITED_COLOR : 'rgba(180,140,255,0.45)'; ctx.lineWidth = sl.edited ? 1.6 : 1;
     ctx.beginPath(); ctx.moveTo(X(sl.x), Y(-q)); ctx.lineTo(X(sl.x), Y(q)); ctx.stroke();
@@ -2621,7 +2632,7 @@ function miniMap(v, ctx, data, xNow, live) {
   ctx.fillStyle = SLICE_COLOR; ctx.beginPath(); ctx.moveTo(X(xNow) - 4, y0 + mh + 6); ctx.lineTo(X(xNow) + 4, y0 + mh + 6); ctx.lineTo(X(xNow), y0 + mh); ctx.closePath(); ctx.fill();
   ctx.font = '9px "IBM Plex Mono", monospace'; ctx.fillStyle = COLORS.muted; ctx.textAlign = 'left'; ctx.fillText('tail', x0 + 4, y0 + mh + 11);
   ctx.textAlign = 'right'; ctx.fillText('nose', x0 + mw - 4, y0 + mh + 11);
-  if (data.params.slices.some((sl) => sl.edited)) { ctx.fillStyle = EDITED_COLOR; ctx.textAlign = 'center'; ctx.fillText('edited', x0 + mw / 2, y0 + mh + 11); }
+  if ([...data.params.slices, ...edSecs(data.params)].some((sl) => sl.edited)) { ctx.fillStyle = EDITED_COLOR; ctx.textAlign = 'center'; ctx.fillText('edited', x0 + mw / 2, y0 + mh + 11); }
   ctx.restore();
   if (!live) return;
   const toX = (px) => clip(snap(((px - x0 - 6) / (mw - 12)) * L, 0.25), 0.5, L - 0.5);
@@ -2651,10 +2662,9 @@ function drawSections(v, data) {
     ctx.strokeStyle = SLICE_COLOR; ctx.lineWidth = 1.8; ctx.stroke();
     sectionCaption(v, ctx, data, s, SLICE_COLOR);
     miniMap(v, ctx, data, s.x, true);
-    if (P.section_pts) {
-      const on = drawSecPts(v, ctx, data, s);
-      if (v.w > 300) v.text(ctx, on ? 'drag a point or an arm · click the line to add a point (to every section) · double-click a point to remove it'
-        : 'slide to roll through the board (a blend of the sections either side) · pick a section below, or Add a section here', v.w / 2, v.h - 6, 'rgba(132,148,159,.8)', 'center');
+    if (P.section_pts && secSel()) {
+      drawSecPts(v, ctx, data, s);
+      if (v.w > 300) v.text(ctx, 'drag a point or an arm · click the line to add a point · double-click a point to remove it', v.w / 2, v.h - 6, 'rgba(132,148,159,.8)', 'center');
       return;
     }
     if (v.w > 300) v.text(ctx, 'slide to roll through the board · Edit here to shape this section', v.w / 2, v.h - 6, 'rgba(132,148,159,.8)', 'center');
@@ -2801,14 +2811,18 @@ function sliceLabel(s, L) { return s.x > L / 2 ? `N ${fracIn(L - s.x)}″` : `T 
 /** Under the Sections title: a slider to roll through the board, or the controls of the section being shaped. */
 function renderSliceBar(data) {
   const bar = $('#slicebar'), L = data.params.length, x = scrubX(data);
-  if (state.params.section_pts) {                     // sections of control points: pick one, add one here or remove one
-    const sp = state.params.section_pts, ci = secAtScrub(data);
-    const sig = JSON.stringify(['pts', L, ci, sp.map((c) => sliceLabel(c, L))]);
+  if (state.params.section_pts) {                     // sections of control points: roll to a spot, Edit here opens its points
+    const ed = state.params.section_pts.filter((c) => c.e), cur = secSel();
+    const near = cur ? null : ed.find((c) => Math.abs(c.x - x) < 0.4);
+    const sig = JSON.stringify(['pts', L, state.secSel, near?.x ?? null, ed.map((c) => c.x)]);
     if (bar.dataset.sig !== sig) {
       bar.dataset.sig = sig;
-      const chips = sp.map((c, i) => `<button data-cx="${i}" class="${i === ci ? 'on' : ''}" title="Go to this section">${sliceLabel(c, L)}</button>`).join('');
-      bar.innerHTML = `<input type="range" id="scrub" min="0.5" max="${L - 0.5}" step="0.25" aria-label="Position along the board"><span class="where" id="scrub-where"></span>
-        ${ci >= 0 ? `<button data-cdel title="Take this section out (the ones either side blend across)" ${sp.length <= 2 ? 'disabled' : ''}>Remove</button>` : '<button data-cadd title="Add a section of control points here (it starts as the blend, so nothing changes)">Add a section here</button>'}${chips}`;
+      const chips = ed.filter((c) => c !== cur).map((c) => `<button data-cx="${c.x}" title="Edited section: open it">${sliceLabel(c, L)}</button>`).join('');
+      bar.innerHTML = cur
+        ? `<span class="editing">Shaping ${sliceLabel(cur, L)}</span><button data-done title="Finish and go back to rolling through the board (Esc)">Done</button>
+          <button data-del title="${cur.u ? 'Remove this section' : 'Put this section back to the board\'s own shape'}">${cur.u ? 'Remove' : 'Reset'}</button>${chips}`
+        : `<input type="range" id="scrub" min="0.5" max="${L - 0.5}" step="0.25" aria-label="Position along the board"><span class="where" id="scrub-where"></span>
+          <button data-edit title="Shape the section at this spot with control points">${near ? 'Edit this one' : 'Edit here'}</button>${chips}`;
     }
   } else {
   const list = data.params.slices;
@@ -2837,18 +2851,57 @@ function renderSliceBar(data) {
 }
 function secBarClick(b) {
   const P = state.params, sp = P.section_pts, L = state.board.params.length;
-  if ('cx' in b.dataset) { state.scrub = sp[+b.dataset.cx].x; state.pt = null; scrubChanged(); return true; }
-  if ('cadd' in b.dataset) {
-    const x = clip(snap(scrubX(state.board), 0.25), 0.5, L - 0.5);
-    sp.push({ x, pts: secCoupleAt(state.board.params.section_pts, x) }); sp.sort((a, c) => a.x - c.x);
-    state.scrub = x; saveLocal(); schedule(); return true;
+  const open = (c) => { state.secSel = c.x; state.scrub = c.x; state.pt = null; if (!prefs.edit) { prefs.edit = true; savePrefs(); syncPanelTools(); } };
+  if ('cx' in b.dataset) { const c = sp.find((q) => Math.abs(q.x - +b.dataset.cx) < 1e-6); if (c) { secDone(); open(c); } saveLocal(); schedule(); return true; }
+  if ('edit' in b.dataset) {
+    const x = scrubX(state.board);
+    // an edited section close by, or one of the board's own sections right here; otherwise a new one (the blend, so
+    // nothing changes until it is shaped)
+    let c = sp.find((q) => q.e && Math.abs(q.x - x) < 0.4) || sp.find((q) => Math.abs(q.x - x) < 0.13);
+    if (!c) {
+      const xs = clip(snap(x, 0.25), 0.5, L - 0.5);
+      c = { x: xs, pts: secCoupleAt(state.board.params.section_pts, xs), u: true, n: true };
+      sp.push(c); sp.sort((a, q) => a.x - q.x);
+    }
+    open(c); schedule(); return true;
   }
-  if ('cdel' in b.dataset) {
-    const i = secAtScrub(state.board); if (i >= 0 && sp.length > 2) sp.splice(i, 1);
-    state.pt = null; saveLocal(); schedule(); return true;
+  if ('done' in b.dataset) { secDone(); saveLocal(); schedule(); return true; }
+  if ('del' in b.dataset) {
+    const c = secSel();
+    if (c && c.u) sp.splice(sp.indexOf(c), 1);
+    else if (c) { c.e = false; refitAuto(true); }
+    state.secSel = null; state.pt = null; saveLocal(); schedule(); return true;
   }
   return false;
 }
+const secSel = () => (state.secSel == null ? null : (state.params.section_pts || []).find((c) => Math.abs(c.x - state.secSel) < 1e-6) || null);
+/** Leave the section being shaped: one opened with Edit here and never changed goes away again. */
+function secDone() {
+  const c = secSel(), sp = state.params.section_pts;
+  if (c && c.n && !c.e) sp.splice(sp.indexOf(c), 1);
+  if (c) delete c.n;
+  state.secSel = null; state.pt = null;
+}
+/** The board's own sections (the ones not edited) follow the rail and bottom settings: refit them at their spots
+ *  when a setting changes. Edited sections stay as shaped. */
+function refitAuto(now = false) {
+  clearTimeout(state.refitT);
+  const go = () => {
+    const P = state.params, sp = P.section_pts;
+    if (!sp) return;
+    const auto = sp.filter((c) => !c.e);
+    if (!auto.length) return;
+    if (sp[0].pts.length !== 6) { if (!state.refitWarned) { state.refitWarned = true; toast('The sections have extra points now, so the rail and bottom settings no longer change them: shape them with Edit here.'); } return; }
+    try {
+      const input = { ...P, section_pts: null }, f = fitSectionPts(buildBoard(input), input, auto.map((c) => c.x));
+      auto.forEach((c, i) => { c.pts = f[i].pts; });
+    } catch (e) { console.error(e); return; }
+    saveLocal(); schedule();
+  };
+  if (now) go(); else state.refitT = setTimeout(go, 300);
+}
+const SEC_SKIP = new Set(['outline_pts', 'rocker_pts', 'deck_pts', 'section_pts', 'pts_off', 'tools', 'deck_contours', 'swallow_rail', 'marks', 'anchors', 'handles', 'slices', 'target_volume', 'lock_volume']);
+const secSig = (P) => JSON.stringify(Object.keys(P).sort().filter((k) => !SEC_SKIP.has(k) && !PTS_KEYS.includes(k) && !PROFILE_KEYS.includes(k)).map((k) => [k, P[k]]));
 
 /** The scrub position moved: nothing about the board changed, so just redraw. */
 function scrubChanged() {
@@ -2936,6 +2989,7 @@ function wirePanels() {
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || !$('#feedback').hidden || !$('#trace').hidden) return;
     if (state.tool != null) { state.tool = null; renderTools(); drawPanels(); }
+    else if (state.secSel != null) { secDone(); saveLocal(); schedule(); }
     else if (state.sel !== null) exitSection();              // Esc leaves the section being shaped first, then an expanded view
     else if (state.focus) setFocus(state.focus);
   });
@@ -2960,6 +3014,9 @@ function syncClearButtons() {
   const P = state.params, sl = P.slices.find((q) => q.id === state.sel);
   const hk = (n) => Object.keys((P.handles && P.handles[n]) || {}).length;
   const has = { plan: P.anchors.outline.length + P.anchors.swallow.length + hk('outline') + hk('swallow'), profile: P.anchors.rocker.length + P.anchors.thickness.length + hk('rocker') + hk('thickness'), sections: sl ? sl.deck.length + sl.bottom.length : 0 };
+  if (P.outline_pts) has.plan = 0;
+  if (P.rocker_pts) has.profile = 0;
+  if (P.section_pts) has.sections = 0;
   for (const [name, n] of Object.entries(has)) document.querySelector(`.panel[data-panel="${name}"] [data-act="clear"]`).hidden = !n;
 }
 

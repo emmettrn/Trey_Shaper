@@ -384,15 +384,17 @@ kink. The measurements become readouts of the points; typing one moves the point
 - **Fix dimensions** on: the measured points (wide / low point, 12" points, thickest point, ends) can't be dragged,
   only their arms turned, so no drag changes a measurement. Off: drag them to change the widths, rockers and
   thicknesses.
-- **Control points** in each graph's tools switches that graph back to building from the measurements (and back
-  again). A board switched off stays off when it is loaded again.
+- Control points are the only way to edit the outline, rocker, deck and sections: **Edit points** turns dragging on.
 - The rocker can't rise into the deck and the deck can't drop into the rocker (1/4" apart at least).
 - **Sections** (Shape3D's couples): a handful of sections along the board (about 9, placed where the board changes
   most), each six control points: deck stringer, deck, rail apex, rail edge, bottom, bottom stringer. Each is drawn as
   shares of the half width and thickness there, and between sections every point eases along the board, so changing
-  the outline or foil carries the sections with it. Pick a section with the chips under the Sections graph; Add a
-  section here puts one in at the scrub spot (as the blend, so nothing changes); Remove takes one out. Clicking the
-  line adds a point to every section at the same spot along its line (they always have the same points).
+  the outline or foil carries the sections with it. These sections are not shown: roll the slider to any spot and
+  **Edit here** opens the section there as control points (the apex slides up and down the rail). Once changed it is
+  an edited section, highlighted orange like the old shaped slices; **Done** closes it (one opened and not changed goes
+  away), **Remove** / **Reset** takes it out or puts it back to the board's own shape. Clicking the line adds a point
+  to every section at the same spot along its line. The board's own (unedited) sections follow the rail and bottom
+  settings: changing one refits them, edited sections stay as shaped (until points are added).
   The bottom shape (concave, vee) and shaped slices are in the points; tools, channels, deck contours and a
   swallow's rail bevel still go on top.
 
