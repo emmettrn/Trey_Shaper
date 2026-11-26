@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=40';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=41';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;
@@ -1677,10 +1677,9 @@ function cleanSecPts(sp) {
   const q = sp.filter((c) => c && Number.isFinite(+c.x) && Array.isArray(c.pts)).map((c) => ({ x: +c.x, ...(c.e ? { e: true } : {}), ...(c.u ? { u: true } : {}),
     pts: c.pts.map((o) => ({ x: +o.x, y: +o.y, aL: +o.aL, lL: Math.max(+o.lL || 0, 0), aR: +o.aR, lR: Math.max(+o.lR || 0, 0), c: !!o.c, ...(o.m ? { m: String(o.m) } : {}) })) }))
     .sort((a, b) => a.x - b.x);
-  const n = q[0]?.pts.length;
-  if (q.length < 2 || !(n >= 4) || q.some((c) => c.pts.length !== n || c.pts.some((o) => SEC_F.some((f) => !Number.isFinite(o[f]))))) return null;
+  if (q.length < 2 || q.some((c) => c.pts.length < 4 || c.pts.some((o) => SEC_F.some((f) => !Number.isFinite(o[f]))))) return null;
   for (const c of q) {
-    const P = c.pts; P[0].x = 0; P[0].y = 1; P[n - 1].x = 0; P[0].aL = P[0].aR = 0; P[n - 1].aL = P[n - 1].aR = Math.PI;
+    const P = c.pts, n = P.length; P[0].x = 0; P[0].y = 1; P[n - 1].x = 0; P[0].aL = P[0].aR = 0; P[n - 1].aL = P[n - 1].aR = Math.PI;
     const a = P.find((o) => o.m === 'apex'); if (a) { a.x = 1; a.aL = a.aR = -Math.PI / 2; }
   }
   return q;
@@ -1701,9 +1700,11 @@ function pchip(xs, ys, xq) {
   const h = xs[i + 1] - xs[i], t = (xq - xs[i]) / h, t2 = t * t, t3 = t2 * t;
   return (2 * t3 - 3 * t2 + 1) * ys[i] + (t3 - 2 * t2 + t) * h * m(i) + (-2 * t3 + 3 * t2) * ys[i + 1] + (t3 - t2) * h * m(i + 1);
 }
-/** The section's control points at x, blended from the sections either side. */
+/** The section's control points at x, blended from the sections either side (only when every section has the same
+ *  points; null otherwise). */
 export function secCoupleAt(sp, x) {
   const xs = sp.map((c) => c.x), n = sp[0].pts.length, out = [];
+  if (sp.some((c) => c.pts.length !== n)) return null;
   for (let j = 0; j < n; j++) {
     const o = { c: sp.some((c) => c.pts[j].c), ...(sp[0].pts[j].m ? { m: sp[0].pts[j].m } : {}) };
     for (const f of SEC_F) o[f] = pchip(xs, sp.map((c) => c.pts[j][f]), x);
@@ -1740,6 +1741,31 @@ function secSample(P, sx, sy, U, V) {
   for (let j = 1; j <= NF; j++) { const q = secRead(flat, (Lf * j) / NF); if (KA + NR - 1 + j < K) { U[KA + NR - 1 + j] = q[0]; V[KA + NR - 1 + j] = q[1]; } }
   return P[ia].y;
 }
+/** The section at x: each section's line sampled the same way (deck stringer -> apex -> rail edge -> bottom stringer),
+ *  and each sample eased along the board between the sections. Sections can have different points (a point added to
+ *  one section is only in that one). Fills U, V (shares) and returns the apex height share. */
+const SEC_SAMPLES = new WeakMap();
+function secFill(sp, x, U, V) {
+  for (const c of sp) if (!SEC_SAMPLES.has(c)) { const u = new Float64Array(K), v = new Float64Array(K); secSample(c.pts, 1, 0.25, u, v); SEC_SAMPLES.set(c, [u, v]); }
+  const n = sp.length, xs = sp.map((c) => c.x), S = sp.map((c) => SEC_SAMPLES.get(c));
+  if (x <= xs[0] || x >= xs[n - 1]) { const [u, v] = S[x <= xs[0] ? 0 : n - 1]; U.set(u); V.set(v); return V[KA]; }
+  let i = 0; while (i < n - 2 && xs[i + 1] < x) i++;
+  const h = xs[i + 1] - xs[i], t = (x - xs[i]) / h, t2 = t * t, t3 = t2 * t;
+  const h00 = 2 * t3 - 3 * t2 + 1, h10 = (t3 - 2 * t2 + t) * h, h01 = -2 * t3 + 3 * t2, h11 = (t3 - t2) * h;
+  const slope = (arr, k, j) => {                        // Fritsch-Carlson slope of sample k at section j
+    if (j === 0 || j === n - 1) return 0;
+    const a = (arr(j)[k] - arr(j - 1)[k]) / (xs[j] - xs[j - 1]), b = (arr(j + 1)[k] - arr(j)[k]) / (xs[j + 1] - xs[j]);
+    if (a * b <= 0) return 0;
+    const w1 = 2 * (xs[j + 1] - xs[j]) + (xs[j] - xs[j - 1]), w2 = (xs[j + 1] - xs[j]) + 2 * (xs[j] - xs[j - 1]);
+    return (w1 + w2) / (w1 / a + w2 / b);
+  };
+  const Uj = (j) => S[j][0], Vj = (j) => S[j][1];
+  for (let k = 0; k < K; k++) {
+    U[k] = h00 * Uj(i)[k] + h10 * slope(Uj, k, i) + h01 * Uj(i + 1)[k] + h11 * slope(Uj, k, i + 1);
+    V[k] = h00 * Vj(i)[k] + h10 * slope(Vj, k, i) + h01 * Vj(i + 1)[k] + h11 * slope(Vj, k, i + 1);
+  }
+  return V[KA];
+}
 /** A cubic from a to d with set end directions fitted to the points Q (a and d included): its two arm lengths. */
 function bezArms(Q, t0, t1) {
   const a = Q[0], d = Q[Q.length - 1], chord = Math.hypot(d[0] - a[0], d[1] - a[1]) || 1e-6;
@@ -1774,33 +1800,47 @@ function bezArms(Q, t0, t1) {
 /** Section control points fitted to a board's sections: six points each (deck stringer, deck, apex, rail edge,
  *  bottom, bottom stringer) at a handful of stations. Shares are measured from the stringer out to the outline and
  *  from the bottom at the rocker up by the thickness. */
+export { secFill };
+/** A section's line as samples in shares [U, V] (deck stringer -> apex -> rail edge -> bottom stringer). */
+export function secLine(pts) { const u = new Float64Array(K), v = new Float64Array(K); secSample(pts, 1, 0.25, u, v); return [u, v]; }
 export function fitSectionPts(board0, input = null, stations = null) {
   // fitted to the board without what goes on top of the points (tools, deck contours, a swallow's bevel): input is
   // the design as typed (the board is rebuilt from it without those)
   const p0 = board0.params, bare = !(p0.tools?.length || p0.deck_contours?.length || p0.swallow_rail);
   const board = bare || !input ? board0 : buildBoard({ ...input, tools: [], deck_contours: [], swallow_rail: 0, section_pts: null });
   const p = board.params, L = p.length, xw = L / 2 + p.wide_point_offset;
-  const xs = stations || [0.75, 12, xw, L - 12, L - 2];
+  const xs = stations || [0.75, 6, 12, (12 + xw) / 2, xw, (xw + L - 12) / 2, L - 12, L - 2];          // the tail changes fastest: a section every 6" there
   const sp = xs.map((x) => ({ x, pts: fitSectionAt(sectionAt(board, x)) }));
   if (stations) return sp;
   // then a section wherever the blend strays from the board by more than tol (in inches), up to max sections
-  const U = new Float64Array(K), V = new Float64Array(K), tol = 0.06, max = 9;
-  const err = (x) => {
-    const s = sectionAt(board, x), yi = Math.max(s.yin || 0, 0), w = Math.max(s.h - yi, 1e-6);
-    secSample(secCoupleAt(sp, x), w, s.t, U, V);
+  const U = new Float64Array(K), V = new Float64Array(K), tol = 0.04, max = 12;
+  const SA = new Map(), sAt = (x) => { if (!SA.has(x)) SA.set(x, sectionAt(board, x)); return SA.get(x); };
+  const err = (x, own = null) => {
+    const s = sAt(x), yi = Math.max(s.yin || 0, 0), w = Math.max(s.h - yi, 1e-6);
+    if (own) secSample(own, w, s.t, U, V); else secFill(sp, x, U, V);
+    // how far off, and how far the surface is turned off (the light shows a turn long before a gap): 1 degree counts
+    // as 1/12"
     let worst = 0;
-    for (const which of ['deck', 'bottom']) for (let i = 0; i < s[which].y.length; i += 12) {
-      let best = Infinity;
-      for (let k = 0; k < K; k += 3) best = Math.min(best, Math.hypot(yi + U[k] * w - s[which].y[i], V[k] * s.t - s[which].z[i]));
-      worst = Math.max(worst, best);
+    for (const which of ['deck', 'bottom']) {
+      const Ys = s[which].y, Zs = s[which].z, n = Ys.length;
+      for (let i = 6; i < n - 6; i += 12) {
+        let best = Infinity, bk = 0;
+        for (let k = 0; k < K; k += 3) { const d = Math.hypot(yi + U[k] * w - Ys[i], V[k] * s.t - Zs[i]); if (d < best) { best = d; bk = k; } }
+        const k0 = Math.max(bk - 3, 0), k1 = Math.min(bk + 3, K - 1);
+        const a1 = Math.atan2(Zs[i + 3] - Zs[i - 3], Ys[i + 3] - Ys[i - 3]), a2 = Math.atan2((V[k1] - V[k0]) * s.t, (U[k1] - U[k0]) * w);
+        let da = Math.abs(a1 - a2) % (2 * Math.PI); da = Math.min(da, 2 * Math.PI - da); da = Math.min(da, Math.abs(da - Math.PI));   // either way along the line
+        worst = Math.max(worst, best, ((da * 180) / Math.PI) / 12);
+      }
     }
     return worst;
   };
+  // what a section of its own would miss there: the blend is only blamed for what it adds on top
+  const self = new Map(), selfErr = (x) => { if (!self.has(x)) self.set(x, err(x, fitSectionAt(sAt(x)))); return self.get(x); };
   while (sp.length < max) {
     let wx = null, we = tol;
     for (let x = 1.5; x < L - 1.5; x += 1) {
       if (sp.some((c) => Math.abs(c.x - x) < 2.5)) continue;
-      const e = err(x); if (e > we) { we = e; wx = x; }
+      const e = err(x) - selfErr(x); if (e > we) { we = e; wx = x; }
     }
     if (wx === null) break;
     sp.push({ x: wx, pts: fitSectionAt(sectionAt(board, wx)) }); sp.sort((a, b) => a.x - b.x);
@@ -1815,9 +1855,10 @@ function fitSectionAt(s) {
   const bot = s.bottom.y.map((y, k) => N(y, s.bottom.z[k])).reverse();
   const ie = NR - 1;                                   // NR - 1 samples past the apex: the rail edge
   const near = (Q, u) => { let b = 0; for (let k = 1; k < Q.length; k++) if (Math.abs(Q[k][0] - u) < Math.abs(Q[b][0] - u)) b = k; return b; };
-  const id = near(deck, 0.55), flat = bot.slice(ie), ib = ie + near(flat, 0.5);
+  const id = near(deck, 0.55), flat = bot.slice(ie), ib = ie + clip(near(flat, Math.min(0.5, 0.5 * flat[0][0])), 3, flat.length - 4);   // the bottom point halfway in from the edge when the edge is past halfway in
   const all = [...deck, ...bot];                       // one line: 0 deck stringer .. KA apex .. bottom stringer
-  const ks = [0, id, KA, KA + ie, KA + ib, all.length - 1], tags = ['ds', null, 'apex', 'edge', null, 'bs'];
+  // a point half way round the rail too: the rail's turn is the part the light picks out
+  const ks = [0, id, KA, KA + Math.round(ie / 2), KA + ie, KA + ib, all.length - 1], tags = ['ds', null, 'apex', null, 'edge', null, 'bs'];
   const unit = (v) => { const l = Math.hypot(v[0], v[1]); return l > 1e-12 ? [v[0] / l, v[1] / l] : [1, 0]; };
   const dir = (k, side) => { const a = clip(k + (side < 0 ? -6 : 0), 0, all.length - 1), b = clip(k + (side > 0 ? 6 : 0), 0, all.length - 1); return unit([all[b][0] - all[a][0], all[b][1] - all[a][1]]); };
   const tan = ks.map((k, i) => {
@@ -1882,7 +1923,7 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
     // sections drawn with control points: the section is the blend of the nearest sections' points, scaled to the
     // outline and the thickness here (the thickness as it ends up: a beak's drop is in the points). Bottom contours,
     // rail settings and shaped slices are in the points; tools, deck contours and a swallow's bevel go on top.
-    const tt = tOrig * tipK, va = secSample(secCoupleAt(p.section_pts, xi), Math.max(hi - yi, 1e-6), tt, Y, Z);
+    const tt = tOrig * tipK, va = secFill(p.section_pts, xi, Y, Z);
     sh.ar = clip(va, 0.02, 0.98);
     const zA = zbi + va * tt, tdP = (1 - va) * tt, tbP = va * tt;
     const tl = p.tools && p.tools.length ? toolsAt(p, xi, hi, tt) : null;
@@ -1974,14 +2015,20 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   // a wide soft tuck under a low apex (a nose tuck) would make the quarter ellipse turn up in a tiny radius right
   // at the apex (a pinched rail): there it gets boxier (a superellipse), so it turns up sooner and the rail stays round
   const nT = 2 + clip(0.25 * (w / Math.max(tb, 1e-6) - 1), 0, 0.8);
+  // where the bottom is rolled or veed out at the rail edge, a soft tuck runs into it with no bend at the join (it
+  // eases in rather than finishing on a radius), so the rail and the roll read as one continuous bottom curve
+  const kR = hf < 1 ? smoother(clip(Math.abs(contour(yE)) / Math.max(0.25 * tb, 1e-6), 0, 1)) : 0;
   for (let j = 0; j < NR; j++) {
     const sp = j / (NR - 1), ph = (sp * Math.PI) / 2;
     // the boxier shape only turns the rail up sooner under the apex; at the edge (where the tuck meets the bottom) it
     // stays a plain round corner, so a big nose tuck doesn't read as a hard edge
     const yr = hi - w * ((1 - hf) * (1 - Math.cos(ph)) + hf * sp * sp);
-    const dz = tb * ((1 - hf) * Math.sin(ph) ** (2 / nT) + hf * sp);
+    const sS = Math.sin(ph) ** (2 / nT), sC = 1 - (1 - sS) ** 2;
+    const dz = tb * ((1 - hf) * (sS + kR * (sC - sS)) + hf * sp);
     Y[KA + j] = yi + (yr * (hi - yi)) / hs;
-    Z[KA + j] = zApex - dz + contour(yr) * sp + sMin(tool(yr), 0.95 * dz);   // a concave run off the rail lifts the rail too (never past the apex)
+    // the bottom contour eases in round the rail and arrives at the edge level with the bottom (sp(2 - sp) has no
+    // slope at the edge), so a soft tuck runs into a roll or vee without a crease (a shadow line along the tuck)
+    Z[KA + j] = zApex - dz + contour(yr) * sp * (2 - sp) + sMin(tool(yr), 0.95 * dz);   // a concave run off the rail lifts the rail too (never past the apex)
   }
   for (let j = 1; j <= NF; j++) {
     const yr = yE * (1 - j / NF);
