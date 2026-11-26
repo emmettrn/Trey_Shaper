@@ -371,6 +371,23 @@ can be measured from the nose, from the tail, or ahead of / behind center.
      through the tail (pinched in the middle, flaring out the tail).
 3. **By hand** on any cross section (Sections graph, **Edit here**).
 
+## Control points (Shape3D style)
+
+New boards, loaded designs, photo traces and Shape3D imports open as control points: the outline (Plan) and the
+rocker and deck (Profile) are each a few points with arms, cubic Beziers in between, like Shape3D. The fit uses as
+few points as it can (about 6 to 10 per curve, within about 1/20"), since every extra point is another place for a
+kink. The measurements become readouts of the points; typing one moves the points to give it.
+
+- The wide point (outline) and low point (rocker) are their own points with level arms. No other point or arm end can
+  go wider (lower), so the widest spot stays where it is while you drag the rest.
+- The 12" points stay 12" from the ends. The deck has a point at the thickest spot.
+- **Fix dimensions** on: the measured points (wide / low point, 12" points, thickest point, ends) can't be dragged,
+  only their arms turned, so no drag changes a measurement. Off: drag them to change the widths, rockers and
+  thicknesses.
+- **Control points** in each graph's tools switches that graph back to building from the measurements (and back
+  again). A board switched off stays off when it is loaded again.
+- The rocker can't rise into the deck and the deck can't drop into the rocker (1/4" apart at least).
+
 ## 3D view
 
 The board turns freely all the way around (end over end, past straight above and below), also

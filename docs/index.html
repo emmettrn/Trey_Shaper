@@ -14,7 +14,7 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 40 16%22%3E%3Cpath d=%22M2 8C8 1 30 1 38 8 30 15 8 15 2 8Z%22 fill=%22%233cc8b4%22/%3E%3C/svg%3E" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=37" />
+  <link rel="stylesheet" href="style.css?v=38" />
   <script type="importmap">
     {
       "imports": {
@@ -98,7 +98,7 @@
         </figure>
         <figure class="panel" data-panel="profile">
           <figcaption><b>Profile</b><span>rocker &amp; foil</span>
-            <span class="tools"><button data-act="edit" title="Switch between looking (zoom and pan only) and editing (drag points, click a line to add one)">Edit points</button><button data-act="clear" hidden title="Reset the rocker and foil: remove their anchor points and the angles and arms set on their measured points">Clear points</button><button data-act="vex" title="Switch between true scale and exaggerated height"></button><button data-act="in" title="Zoom in (or scroll)">+</button><button data-act="fit" title="Fit to panel">Fit</button><button data-act="max" title="Expand">⤢</button></span>
+            <span class="tools"><button data-act="edit" title="Switch between looking (zoom and pan only) and editing (drag points, click a line to add one)">Edit points</button><button data-act="pts" title="Edit the rocker and deck as control points with arms, like Shape3D">Control points</button><button data-act="corner" hidden title="Let this point's two arms turn on their own (a corner), or line them up again (smooth)">Make corner</button><button data-act="clear" hidden title="Reset the rocker and foil: remove their anchor points and the angles and arms set on their measured points">Clear points</button><button data-act="vex" title="Switch between true scale and exaggerated height"></button><button data-act="in" title="Zoom in (or scroll)">+</button><button data-act="fit" title="Fit to panel">Fit</button><button data-act="max" title="Expand">⤢</button></span>
           </figcaption><canvas id="c-rocker"></canvas>
         </figure>
         <figure class="panel" data-panel="sections">
@@ -180,6 +180,6 @@
     <button id="install-x" aria-label="Dismiss">Got it</button>
   </div>
 
-  <script type="module" src="app.js?v=37"></script>
+  <script type="module" src="app.js?v=38"></script>
 </body>
 </html>
