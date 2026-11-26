@@ -2,11 +2,11 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES } from './geometry.js?v=33';
-import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=33';
-import { importS3dx, setSectionAt } from './s3dx.js?v=33';
-import { exportS3dx } from './s3dxout.js?v=33';
-import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=33';
+import { railTuckFromOld, deckFlatFromOld, armsToAuto, buildBoard, curves, sliceInfo, sectionAt, sectionBase, specSheet, toSTL, toOBJ, zipOne, NULLABLE, BOTTOM_LABELS, posToX, FROM, TOOL_SHAPES, DECK_SHAPES, toolOutline, toolCenterLine, DECK_TYPES } from './geometry.js?v=34';
+import { DEFAULTS, PRESETS, GROUPS, STATION_TABLE, TAIL_TYPES, NOSE_TYPES } from './data.js?v=34';
+import { importS3dx, setSectionAt } from './s3dx.js?v=34';
+import { exportS3dx } from './s3dxout.js?v=34';
+import { traceFrame, traceHalf, tracePoints, fitOutline, pchip, traceCurve } from './trace.js?v=34';
 
 const $ = (s) => document.querySelector(s);
 const state = {
@@ -354,6 +354,7 @@ function renderBottomTable() {
     q('.until').addEventListener('click', () => {      // start the stretch a foot toward the tail (or the nose, near the tail)
       const x = posToX(r, L), x2 = x - 12 >= 2 ? x - 12 : Math.min(L - 2, x + 12);
       r.to = x2 > L / 2 ? { pos: snap(L - x2, 1), from: 'nose' } : { pos: snap(x2, 1), from: 'tail' };
+      r.blendNose = 0.5; r.blendTail = 0.5;             // a new stretch starts blended in and out at both ends, not as a hard-ended block
       paint(); bottomChanged(false);
     });
     q('.x2').addEventListener('click', () => { delete r.to; delete r.deep; delete r.blendNose; delete r.blendTail; paint(); bottomChanged(false); });
@@ -2539,8 +2540,10 @@ function wirePanels() {
       }
       if (act === 'clear') {
         const P = state.params;
-        if (name === 'plan') { P.anchors.outline = []; P.anchors.swallow = []; }
-        if (name === 'profile') { P.anchors.rocker = []; P.anchors.thickness = []; }
+        // clears the anchor points and every handle the curve's measured points were given (angles and arms), so a
+        // curve that has got tangled goes back to the smooth one its measurements make
+        if (name === 'plan') { P.anchors.outline = []; P.anchors.swallow = []; P.handles.outline = {}; P.handles.swallow = {}; }
+        if (name === 'profile') { P.anchors.rocker = []; P.anchors.thickness = []; P.handles.rocker = {}; P.handles.thickness = {}; }
         if (name === 'sections') { const s = P.slices.find((q) => q.id === state.sel); if (s) { s.deck = []; s.bottom = []; } }
         state.pt = null;
         saveLocal(); schedule();
@@ -2572,7 +2575,8 @@ function syncPanelTools() {
 
 function syncClearButtons() {
   const P = state.params, sl = P.slices.find((q) => q.id === state.sel);
-  const has = { plan: P.anchors.outline.length + P.anchors.swallow.length, profile: P.anchors.rocker.length + P.anchors.thickness.length, sections: sl ? sl.deck.length + sl.bottom.length : 0 };
+  const hk = (n) => Object.keys((P.handles && P.handles[n]) || {}).length;
+  const has = { plan: P.anchors.outline.length + P.anchors.swallow.length + hk('outline') + hk('swallow'), profile: P.anchors.rocker.length + P.anchors.thickness.length + hk('rocker') + hk('thickness'), sections: sl ? sl.deck.length + sl.bottom.length : 0 };
   for (const [name, n] of Object.entries(has)) document.querySelector(`.panel[data-panel="${name}"] [data-act="clear"]`).hidden = !n;
 }
 
@@ -3165,7 +3169,7 @@ function wireBoards() {
    Start screen: New board (type in the measurements, pick the board type, nose and tail, then
    Generate) or Load board. Anything left blank comes from that type's sample board.
    ========================================================================= */
-const BOARD_TYPES = [['shortboard', 'Shortboard', "Shortboard 6'0¾\""], ['fish', 'Fish', "Fish 5'6\""], ['midlength', 'Mid-length', "Mid-length 7'6\""], ['longboard', 'Longboard', "Longboard 9'2\""]];
+const BOARD_TYPES = [['shortboard', 'Shortboard', "Shortboard 6'0¾\""], ['fish', 'Fish', "Fish 5'6\""], ['midlength', 'Mid-length', "Mid-length 7'6\""], ['longboard', 'Longboard', "Longboard 9'6\""]];
 const NEW_FIELDS = [
   ['Size', [['length', 'Length', 'ftin'], ['width', 'Width', 'in'], ['thickness', 'Thickness', 'in']]],
   ['Outline', [['nose_width_12', 'Nose width 12″ in', 'in'], ['tail_width_12', 'Tail width 12″ in', 'in'], ['tail_block_width', 'Tail block width', 'in'], ['wide_point_offset', 'Wide point from center (+ toward nose)', 'in']]],
@@ -3186,13 +3190,11 @@ function renderNewForm() {
   const f = $('#st-form'), base = typeBase();
   const nose = startPick.nose || base.nose_type, tail = startPick.tail || base.tail_type;
   const chips = (key, opts, cur) => `<div class="choice" data-k="${key}">${opts.map(([v, l]) => `<button type="button" data-v="${v}" class="${v === cur ? 'on' : ''}">${l}</button>`).join('')}</div>`;
-  const val = (k) => base[k] ?? null;
-  const shown = (k, u) => (val(k) === null ? 'auto' : u === 'ftin' ? ftin(val(k)) : fracIn(val(k)) + '″');
-  f.innerHTML = `<p>Type in what you know; anything left blank comes from the ${BOARD_TYPES.find((t) => t[0] === startPick.type)[1].toLowerCase()} sample board (shown in grey).</p>
+    f.innerHTML = `<p>Type in what you know. Leave the rest blank: those are worked out from what you typed and the board type, as smooth as possible.</p>
     <h3>Board type</h3>${chips('type', BOARD_TYPES.map((t) => [t[0], t[1]]), startPick.type)}
     <h3>Nose</h3>${chips('nose', Object.keys(NOSE_TYPES).map((k) => [k, NOSE_LABELS[k] || k]), nose)}
     <h3>Tail</h3>${chips('tail', Object.keys(TAIL_TYPES).map((k) => [k, TAIL_LABELS[k] || k]), tail)}
-    ${NEW_FIELDS.map(([g, fl]) => `<h3>${g}</h3><div class="start-grid">${fl.map(([k, l, u]) => `<label>${l}<input data-k="${k}" data-u="${u}" inputmode="decimal" placeholder="${shown(k, u)}" value="${(startPick.vals || {})[k] ?? ''}"></label>`).join('')}</div>`).join('')}
+    ${NEW_FIELDS.map(([g, fl]) => `<h3>${g}</h3><div class="start-grid">${fl.map(([k, l, u]) => `<label>${l}<input data-k="${k}" data-u="${u}" inputmode="decimal" placeholder="" value="${(startPick.vals || {})[k] ?? ''}"></label>`).join('')}</div>`).join('')}
     <div class="sheet-actions">
       <button type="button" class="ghost" id="st-back">Back</button>
       <button type="button" class="ghost" id="st-trace" title="Generate, then trace the outline from a photo of a board or template">Generate &amp; trace photo</button>
@@ -3226,9 +3228,11 @@ function generate() {
   // a new board starts from clean curves (no anchors, handles or edited sections from the sample)
   P.anchors = { outline: [], rocker: [], thickness: [], swallow: [] }; P.handles = { outline: {}, rocker: {}, thickness: {}, swallow: {} };
   P.marks = []; P.slices = [];
-  // widths left blank follow the width typed in; thicknesses at the ends stay as they are
+  // anything left blank: the length, width and thickness come from the board type; every in-between measurement
+  // (12" widths and rockers, foil) is left automatic, so the curves are the smoothest the typed numbers allow
+  for (const k of ['nose_width_12', 'tail_width_12', 'nose_rocker_12', 'tail_rocker_12', 'nose_thickness_12', 'tail_thickness_12']) if (!(k in vals)) P[k] = null;
   const kW = Number.isFinite(vals.width) ? vals.width / P.width : 1, kL = Number.isFinite(vals.length) ? vals.length / P.length : 1;
-  for (const k of ['nose_width_12', 'tail_width_12', 'tail_block_width', 'swallow_width']) if (Number.isFinite(P[k]) && !(k in vals)) P[k] = Math.round(P[k] * kW * 16) / 16;
+  for (const k of ['tail_block_width', 'swallow_width']) if (Number.isFinite(P[k]) && !(k in vals)) P[k] = Math.round(P[k] * kW * 16) / 16;
   if (!('wide_point_offset' in vals) && Number.isFinite(P.wide_point_offset)) P.wide_point_offset = Math.round(P.wide_point_offset * kL * 4) / 4;
   for (const [k, n] of Object.entries(vals)) P[k] = n;
   // stretches of bottom contour placed from the nose or tail stay where they were; tools from the sample are dropped
