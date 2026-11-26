@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=33';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=34';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;
@@ -635,35 +635,37 @@ function curveDelta(p, name, x, arms, baseFn) {
     const H3 = 10 * t3 - 15 * t4 + 6 * t5, H4 = -4 * t3 + 7 * t4 - 3 * t5, H5 = 0.5 * (t3 - 2 * t4 + t5);
     out[i] = H0 * ys[seg] + H1 * h * m[seg] + H2 * h * h * kap[seg] + H3 * ys[seg + 1] + H4 * h * m[seg + 1] + H5 * h * h * kap[seg + 1];
   }
-  // fullness: an arm longer or shorter than a third of its span pulls the curve toward, or away from, its line
-  const pulls = [];
-  for (let i = 0; i < n; i++) for (const side of [-1, 1]) {
-    if (tip(i)) continue;
-    const len = K[i][side < 0 ? 3 : 4], j = i + side;
-    if (!Number.isFinite(len) || j < 0 || j >= n) continue;
-    const span = Math.abs(xs[j] - xs[i]), r = clip(len / (span / 3), 0.1, 3);
-    if (Math.abs(r - 1) < 1e-3) continue;
-    const bx = Float64Array.of(xs[i] - 0.01, xs[i], xs[i] + 0.01), bv = baseFn(bx);
-    const y0 = bv[1] + ys[i], S = (bv[2] - bv[0]) / 0.02 + m[i];
-    pulls.push({ i, x0: xs[i], x1: xs[j], y0, S, lam: r >= 1 ? Math.min(r - 1, 1) : Math.max(r - 1, -0.5), ex: r > 2 ? r - 1 : 1 });
+  // arms work like Shape3D's: each point's arms are real Bezier handles along its tangent. A span whose arms are at
+  // their automatic length (a third of the span) is the smooth curve above; where an arm was dragged, the span takes the
+  // difference between the Bezier with the dragged arms and the Bezier with automatic ones. Pulling an arm in lets the
+  // curve leave the point sooner and run straighter toward the next point; pushing it out holds the curve along the
+  // tangent longer (fuller). The tangent at the point never changes, so there is no corner.
+  const spans = [];
+  for (let i = 0; i < n - 1; i++) {
+    if (tip(i) || tip(i + 1)) continue;                  // a tip's span already is its Bezier
+    const h = xs[i + 1] - xs[i], aR = K[i][4], aL = K[i + 1][3];
+    if (!Number.isFinite(aR) && !Number.isFinite(aL)) continue;
+    const a = clip(Number.isFinite(aR) ? aR : h / 3, 0.02 * h, 0.66 * h), b = clip(Number.isFinite(aL) ? aL : h / 3, 0.02 * h, 0.66 * h);
+    if (Math.abs(a - h / 3) < 1e-4 && Math.abs(b - h / 3) < 1e-4) continue;
+    const e = Math.min(0.01, 0.001 * h), bv = baseFn(Float64Array.of(xs[i] - e, xs[i], xs[i] + e, xs[i + 1] - e, xs[i + 1], xs[i + 1] + e));
+    const Y0 = bv[1] + ys[i], Y1 = bv[4] + ys[i + 1], S0 = (bv[2] - bv[0]) / (2 * e) + m[i], S1 = (bv[5] - bv[3]) / (2 * e) + m[i + 1];
+    spans.push({ x0: xs[i], h, a, b, Y0, Y1, S0, S1 });
   }
-  // at the point itself both sides pull alike (the average of the two), so the bend is the same either side of it
-  for (const q of pulls) { const both = pulls.filter((o) => o.i === q.i); q.lam0 = both.reduce((acc, o) => acc + o.lam, 0) / 2; }
-  if (pulls.length) {
-    const bx = Float64Array.from(x), bv = baseFn(bx);
-    const add = new Float64Array(x.length);
-    for (const q of pulls) {
-      const lo = Math.min(q.x0, q.x1), hi = Math.max(q.x0, q.x1);
-      for (let i = 0; i < x.length; i++) {
-        if (x[i] <= lo || x[i] >= hi) continue;
-        // the pull starts at the point at the average of both sides' pulls, turns to its own over the first third, and fades
-        // out with no corner at the next point (smootherstep), so the curve never kinks at either end
-        const sN = Math.abs(x[i] - q.x0) / (hi - lo), sx = sN ** q.ex, S5 = (t) => { t = clip(t, 0, 1); return t * t * t * (10 - 15 * t + 6 * t * t); };
-        const w = (q.lam0 + (q.lam - q.lam0) * S5(sN / 0.3)) * (1 - S5(sx));
-        add[i] += w * (q.y0 + q.S * (x[i] - q.x0) - (bv[i] + out[i]));
-      }
+  if (spans.length) for (let i = 0; i < x.length; i++) {
+    for (const q of spans) {
+      const u = x[i] - q.x0;
+      if (!(u > 0 && u < q.h)) continue;
+      // the dragged Bezier: control points (0, Y0), (a, Y0 + S0 a), (h - b, Y1 - S1 b), (h, Y1); find t with x(t) = u
+      const X = (t) => { const s1 = 1 - t; return 3 * s1 * s1 * t * q.a + 3 * s1 * t * t * (q.h - q.b) + t * t * t * q.h; };
+      let lo = 0, hi = 1, t = u / q.h;
+      for (let it = 0; it < 40; it++) { const v = X(t) - u; if (Math.abs(v) < 1e-9) break; if (v > 0) hi = t; else lo = t; t = 0.5 * (lo + hi); }
+      const s1 = 1 - t;
+      const yB = s1 * s1 * s1 * q.Y0 + 3 * s1 * s1 * t * (q.Y0 + q.S0 * q.a) + 3 * s1 * t * t * (q.Y1 - q.S1 * q.b) + t * t * t * q.Y1;
+      // the automatic one: the cubic through the same ends and slopes (a Bezier with thirds), at u
+      const w = u / q.h, w2 = w * w, w3 = w2 * w;
+      const yH = (2 * w3 - 3 * w2 + 1) * q.Y0 + (w3 - 2 * w2 + w) * q.h * q.S0 + (-2 * w3 + 3 * w2) * q.Y1 + (w3 - w2) * q.h * q.S1;
+      out[i] += yB - yH;
     }
-    for (let i = 0; i < x.length; i++) out[i] += add[i];
   }
   if (arms) fillArms(arms, K, m, curve);
   return out;
@@ -685,7 +687,7 @@ function fillArms(arms, K, m, curve) {
   for (let i = 0; i < K.length; i++) {
     if (curve && (K[i][5] === 'tail' || K[i][5] === 'nose')) { arms.pins[K[i][5]] = curve.arms[i]; continue; }   // the tips: their Bezier arms, as before
     const gl = i > 0 ? (K[i][0] - K[i - 1][0]) / 3 : NaN, gr = i < K.length - 1 ? (K[i + 1][0] - K[i][0]) / 3 : NaN;
-    const r = { x: K[i][0], m: m[i] ?? 0, aL: Number.isFinite(K[i][3]) ? Math.min(K[i][3], 3 * gl) : gl, aR: Number.isFinite(K[i][4]) ? Math.min(K[i][4], 3 * gr) : gr };
+    const r = { x: K[i][0], m: m[i] ?? 0, aL: Number.isFinite(K[i][3]) ? clip(K[i][3], 0.06 * gl, 1.98 * gl) : gl, aR: Number.isFinite(K[i][4]) ? clip(K[i][4], 0.06 * gr, 1.98 * gr) : gr };
     if (K[i][5]) arms.pins[K[i][5]] = r; else arms.push(r);
   }
 }
@@ -742,7 +744,9 @@ function sliceTables(p) {
   const zero = new Float64Array(GRID), adj = {};
   for (const k of Object.keys(ADJ)) {
     const on = sl.filter((s) => s.set.includes(k));
-    if (on.length) adj[k] = sliceTrack(on.map((s) => s.x), on.map((s) => Float64Array.of(s.adj[k])), L);
+    // the rail apex (its height and its arms) carries on from the outermost edited section all the way to the tip, so an
+    // apex edited at T12 runs out the tail in one continuous line; other settings ease back out as before
+    if (on.length) adj[k] = sliceTrack(on.map((s) => s.x), on.map((s) => Float64Array.of(s.adj[k])), L, /^(rail_apex|apex_)/.test(k));
   }
   const deck = [zero, ...sl.map((s) => table(s.deck))], bottom = [zero, ...sl.map((s) => table(s.bottom))];
   const rows = (which) => {
@@ -758,7 +762,7 @@ function sliceTables(p) {
  * toward the tip a distance D away: the end value eases toward k = 1 - D/24 of itself (kept
  * whole at the tip, gone if 24" or more away), within 24".
  */
-function sliceTrack(xs, Y, L) {
+function sliceTrack(xs, Y, L, hold = false) {
   const n = xs.length, G = Y[0].length, M = Y.map(() => new Float64Array(G));
   if (n > 1) {
     const col = new Float64Array(n);
@@ -773,7 +777,7 @@ function sliceTrack(xs, Y, L) {
     if (x <= xs[0] || x >= xs[n - 1]) {
       const head = x <= xs[0], i = head ? 0 : n - 1, D = head ? xs[0] : L - xs[n - 1];
       const Wd = Math.min(D, 24), d = Math.min(Math.abs(x - xs[i]), Wd), t = Wd > 1e-6 ? d / Wd : 0;   // fades within 24" at most
-      const k = clip(1 - D / 24, 0, 1), f = 1 - (1 - k) * smoother(t);
+      const k = hold ? 1 : clip(1 - D / 24, 0, 1), f = 1 - (1 - k) * smoother(t);
       for (let g = 0; g < G; g++) out[g] = f * Y[i][g];
       return out;
     }
@@ -1507,7 +1511,10 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
   // contours: a single concave is one dish across the bottom (deepest at the stringer, the same curve all
   // the way out, so it reads as one concave); a vee keeps the stringer on the rocker and lifts the rails.
   // Always across the whole board from the stringer: a swallow's halves are cut out of the same bottom
-  const contour = (yr) => { const eta = clip((yi + (yr * (hi - yi)) / hs) / hs, 0, 1); return con * (1 - eta * eta) + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 + vee * eta; };
+  // measured across the bottom from the stringer to the rail's edge (the tuck point), not to the outline: a concave or
+  // roll lives between the edges and leaves the rail line on the rocker (with a wide tuck it used to lift or drop it)
+  let cE = hs;
+  const contour = (yr) => { const eta = clip((yi + (yr * (hi - yi)) / hs) / cE, 0, 1); return con * (1 - eta * eta) + (dbl * eta ** 1.5 * (1 - eta) ** 2) / K2 + vee * eta; };
   // the deck: from the stringer round to the rail apex (a superellipse, as before), then the deck contours
   const dc = p.deck_contours && p.deck_contours.length ? deckContoursAt(p, xi) : null;
   const dtl = p.tools && p.tools.length ? deckToolsAt(p, xi) : null;
@@ -1575,13 +1582,16 @@ function sectionDense(p, xi, hi, yi, ti, zbi, d, rowD, rowB, Y, Z, aux) {
     hf *= 0.5 + 0.5 * smoother(u);
   }
   const w = tk > 1e-6 ? (tk ** -4 + (cw * hi) ** -4) ** -0.25 : 0, yE = hi - w;
+  cE = Math.max(yi + (yE * (hi - yi)) / hs, 1e-6);
   const tool = (yr) => (tl ? toolLift(tl, yi + (yr * (hi - yi)) / hs) : 0);
   // a wide soft tuck under a low apex (a nose tuck) would make the quarter ellipse turn up in a tiny radius right
   // at the apex (a pinched rail): there it gets boxier (a superellipse), so it turns up sooner and the rail stays round
   const nT = 2 + clip(0.25 * (w / Math.max(tb, 1e-6) - 1), 0, 0.8);
   for (let j = 0; j < NR; j++) {
     const sp = j / (NR - 1), ph = (sp * Math.PI) / 2;
-    const yr = hi - w * ((1 - hf) * (1 - Math.cos(ph) ** (2 / nT)) + hf * sp * sp);
+    // the boxier shape only turns the rail up sooner under the apex; at the edge (where the tuck meets the bottom) it
+    // stays a plain round corner, so a big nose tuck doesn't read as a hard edge
+    const yr = hi - w * ((1 - hf) * (1 - Math.cos(ph)) + hf * sp * sp);
     const dz = tb * ((1 - hf) * Math.sin(ph) ** (2 / nT) + hf * sp);
     Y[KA + j] = yi + (yr * (hi - yi)) / hs;
     Z[KA + j] = zApex - dz + contour(yr) * sp + sMin(tool(yr), 0.95 * dz);   // a concave run off the rail lifts the rail too (never past the apex)

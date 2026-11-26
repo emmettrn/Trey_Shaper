@@ -458,32 +458,137 @@ export const PRESETS = {
     "tools": [],
     "deck_contours": []
   },
-  "Longboard 9'2\"": {
-    "length": 110,
-    "width": 23.0,
-    "thickness": 3.0,
-    "wide_point_offset": 2.0,
-    "nose_type": "blunt",
+  "Longboard 9'6\"": {
+    "length": 114,
+    "width": 23,
+    "thickness": 3,
+    "wide_point_offset": 2,
+    "nose_type": "round",
     "tail_type": "square",
-    "nose_width_12": 18.5,
-    "tail_width_12": 15.0,
-    "tail_block_width": 11.0,
-    "nose_rocker": 4.2,
-    "nose_rocker_12": 2.25,
-    "tail_rocker_12": 1.3125,
-    "tail_rocker": 2.4,
+    "nose_width_12": 18,
+    "tail_width_12": 16.25,
+    "tail_block_width": 8,
+    "swallow_depth": 4.5,
+    "swallow_tip": 1,
+    "swallow_width": 5,
+    "nose_rocker": 4,
+    "nose_rocker_12": null,
+    "tail_rocker_12": null,
+    "tail_rocker": 3.5,
     "rocker_low_point": -4,
-    "nose_thickness": 1.2,
-    "nose_thickness_12": 2.0,
-    "tail_thickness_12": 2.1875,
-    "tail_thickness": 1.5,
+    "nose_thickness": 0.5,
+    "nose_thickness_12": null,
+    "tail_thickness_12": null,
+    "tail_thickness": 0.3,
+    "thickness_point_offset": 0.5,
     "rail_apex": 0.5,
+    "rail_apex_in": 1.5,
     "rail_fullness": 0.75,
+    "deck_dome": 0.23,
     "rail_hardness_nose": 0.05,
     "rail_hardness_tail": 0.55,
-    "concave_depth": 0.1,
-    "vee_depth": 0.1,
-    "rail_apex_in": 1.25
+    "lock_volume": false,
+    "target_volume": 29,
+    "stations": 161,
+    "section_points": 48,
+    "anchors": {
+      "outline": [],
+      "rocker": [],
+      "thickness": [],
+      "swallow": []
+    },
+    "marks": [],
+    "handles": {
+      "outline": {
+        "tail": [
+          0.5877270934631961,
+          null,
+          0.8634859431606969
+        ],
+        "tail12": [
+          -0.03525979723979278,
+          null,
+          13.289012358493629
+        ],
+        "origin": [
+          null,
+          9.061527040496614,
+          null
+        ]
+      },
+      "rocker": {},
+      "thickness": {},
+      "swallow": {}
+    },
+    "slices": [
+      {
+        "id": 1,
+        "x": 55,
+        "adj": {
+          "rail_tuck_in": 1.6086,
+          "rail_apex_in": -0.32948653030198005,
+          "apex_deck_angle": 10,
+          "apex_deck_arm": 0.13,
+          "apex_bottom_angle": 19.2,
+          "apex_bottom_arm": 0.3424
+        },
+        "deck": [],
+        "bottom": [],
+        "v": 2
+      },
+      {
+        "id": 2,
+        "x": 89.75,
+        "adj": {
+          "rail_apex_in": -0.42129087049887404
+        },
+        "deck": [],
+        "bottom": [],
+        "v": 2
+      }
+    ],
+    "bottom": [
+      {
+        "pos": 0,
+        "from": "nose",
+        "type": "concave",
+        "to": {
+          "pos": 30,
+          "from": "nose"
+        },
+        "blendNose": 0.55,
+        "blendTail": 1,
+        "depth": 0.25,
+        "depth2": 0.0625,
+        "deep": {
+          "pos": 6,
+          "from": "nose"
+        }
+      },
+      {
+        "pos": 0,
+        "from": "tail",
+        "type": "roll",
+        "to": {
+          "pos": 70,
+          "from": "tail"
+        },
+        "blendNose": 0.8,
+        "blendTail": 0.15,
+        "depth": 0.125,
+        "depth2": 0.0625
+      }
+    ],
+    "rail_tuck_nose": 3.625,
+    "rail_tuck_tail": 3.625,
+    "hard_edge": false,
+    "rail_reach_tail": 0.38,
+    "rail_reach_nose": 0.27,
+    "curve_v": 2,
+    "deck_flat_in": 0.25,
+    "nose_beak_pos": 2,
+    "tools": [],
+    "deck_contours": []
   },
   "Step-up 6'8\u00bd\"": {
     "length": 80.5,
@@ -656,33 +761,6 @@ export const PRESETS = {
     "rail_reach_tail": 0.09,
     "rail_reach_nose": 0.33,
     "nose_beak_pos": 2
-  },
-  "Round pin 6'0\" (v3 example)": {
-    "length": 72,
-    "width": 19.0,
-    "thickness": 2.375,
-    "wide_point_offset": 0.0,
-    "nose_type": "semi_pointed",
-    "tail_type": "rounded_pin",
-    "nose_width_12": 12.5,
-    "tail_width_12": 14.5,
-    "nose_rocker": 5.25,
-    "nose_rocker_12": 1.75,
-    "tail_rocker_12": 1.0,
-    "tail_rocker": 2.375,
-    "rocker_low_point": 0,
-    "nose_thickness": 0.5,
-    "nose_thickness_12": 1.625,
-    "tail_thickness_12": 1.75,
-    "tail_thickness": 0.5,
-    "rail_apex": 0.42,
-    "rail_fullness": 0.4,
-    "deck_dome": 0.2,
-    "rail_hardness_nose": 0.3,
-    "rail_hardness_tail": 0.3,
-    "concave_depth": 0.0,
-    "vee_depth": 0.0,
-    "rail_apex_in": 1.0
   }
 };
 
