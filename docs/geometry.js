@@ -7,7 +7,7 @@
  *
  * Board space, inches:  x along the stringer (0 = tail, L = nose),  y across,  z up.
  */
-import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=39';
+import { DEFAULTS, NOSE_TYPES, TAIL_TYPES } from './data.js?v=40';
 
 export const IN3_TO_L = 0.016387064;
 const A_MIN = 1.2;
@@ -1674,7 +1674,7 @@ function beakF(p, x) {
 const SEC_F = ['x', 'y', 'aL', 'lL', 'aR', 'lR'];
 function cleanSecPts(sp) {
   if (!Array.isArray(sp) || sp.length < 2) return null;
-  const q = sp.filter((c) => c && Number.isFinite(+c.x) && Array.isArray(c.pts)).map((c) => ({ x: +c.x,
+  const q = sp.filter((c) => c && Number.isFinite(+c.x) && Array.isArray(c.pts)).map((c) => ({ x: +c.x, ...(c.e ? { e: true } : {}), ...(c.u ? { u: true } : {}),
     pts: c.pts.map((o) => ({ x: +o.x, y: +o.y, aL: +o.aL, lL: Math.max(+o.lL || 0, 0), aR: +o.aR, lR: Math.max(+o.lR || 0, 0), c: !!o.c, ...(o.m ? { m: String(o.m) } : {}) })) }))
     .sort((a, b) => a.x - b.x);
   const n = q[0]?.pts.length;
